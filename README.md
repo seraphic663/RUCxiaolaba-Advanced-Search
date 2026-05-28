@@ -1,35 +1,76 @@
-# RUCer苦小喇叭久矣！
-本项目是个个人开发的草台班子项目，旨在改善用户的小喇叭搜索体验。
+# RUC小喇叭 高级搜索
 
+中国人民大学"RUC小喇叭"（云上校友圈/奇喵缘分）匿名论坛的高级搜索工具。
 
-校园网环境下用  http://10.46.140.197:8080   即可访问
+## 项目来源
 
+本项目 fork 自 [revalue-o/RUCxiaolaba-Advanced-Search](https://github.com/revalue-o/RUCxiaolaba-Advanced-Search)，感谢学长的开创性工作。
 
+**原项目（2024-2025）**：
+- 爬虫目标：`ruc.yunshangxiaoyuan.cn`（旧版 API）
+- 鉴权方式：请求体中的 `openid`
+- 技术栈：Flask + DuckDB + 阿里百炼 AI
+- 功能：多关键词搜索、评论搜索、AI 总结
 
-网站原理为每天凌晨三点到四点停机爬取小喇叭前一天的内容，其他时间可对已爬内容进行搜索。
+**2026.05 更新（本 fork）**：
+- 旧版 API 已不可用，重新逆向发现新版 API
+- 新版 API 域名：`ys.qimiaoyuanfen.com`
+- 新版鉴权：Cookie session（`ys7_ysxy_session`）
+- 通过 mitmproxy 抓包完成 API 逆向
+- 新增 `spider_new.py`（新版爬虫）、`test_api.py`（API 测试）、`mitm_filter.py`（抓包工具）
 
+## 快速开始
 
+```bash
+# 1. 安装依赖
+pip install requests
 
-相比小喇叭原本的搜索有以下优势：
-* 可多关键词搜索
-* 可以搜索到评论内容
-* 数据保存时间长（小喇叭会删除一年以上的数据）
-* 不受某些删帖影响（如果爬的时候没删就不影响）
-* 可以用AI总结
+# 2. 配置 Cookie
+cp data/config.example.txt data/config.txt
+# 编辑 data/config.txt，填入你的 session cookie
+# 获取方式：mitmproxy 抓包 或 WeChat PC DevTools
 
-## TODO List
-* 帖子显示时间（算完成一半）
-* 支持按照时间过滤
-* 高亮搜索关键词（已完成）
-* 支持按照热度排序（已完成）
-* 爬取2024-1-1之前的帖子
-* 人工筛选出高信息密度的帖子并弄出一个置顶按钮来看
-* 弄出一个AI总结昨日热点的按钮，帮助快速浏览小喇叭（优先实现）
+# 3. 爬取数据
+python spider_new.py
 
+# 4. 测试 API 连通性
+python test_api.py
+```
 
+## 项目结构
 
-## 致谢
-感谢看到这里的用户，如果你觉得有用，可以给这个仓库点个star。
+```
+├── spider.py            # 旧版爬虫（ruc.yunshangxiaoyuan.cn，已失效，保留供参考）
+├── spider_new.py        # 新版爬虫（ys.qimiaoyuanfen.com，当前可用）
+├── test_api.py          # API 连通性测试
+├── mitm_filter.py       # mitmproxy 抓包过滤脚本
+├── app.py               # Flask 搜索服务（待适配新版 API）
+├── utils.py             # DuckDB 查询 + AI 搜索逻辑（待适配）
+├── init_duckdb.py       # 数据库初始化
+├── data/                # 数据存储目录（gitignored）
+│   ├── config.example.txt  # 配置文件模板
+│   └── config.txt          # 实际配置（含 cookie，不提交）
+├── templates/           # 前端页面
+├── static/              # 静态资源
+└── README.md
+```
 
+## Cookie 维护
 
-不太懂开源协议，总之这个仓库里的代码（屎山）可以随便用，包括二次开发
+Session cookie 有时效限制。过期后 API 返回 `code: 1000`，需更新 `data/config.txt`：
+
+1. 打开微信 → 进入"云上校友圈"小程序
+2. mitmweb 面板中复制任意 `ys.qimiaoyuanfen.com` 请求的 Cookie
+3. 更新 `data/config.txt`
+
+## TODO
+
+- [ ] `spider_new.py` 接入 DuckDB 替换 CSV
+- [ ] 新版 API 评论接口适配
+- [ ] Flask 搜索适配新版数据格式
+- [ ] Cookie 过期自动提醒
+- [ ] 定时爬取（cron / GitHub Actions）
+
+## License
+
+MIT。原仓库作者声明"代码可以随便用，包括二次开发"。
