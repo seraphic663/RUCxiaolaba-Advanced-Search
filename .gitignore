@@ -1,0 +1,5 @@
+data/
+__pycache__/
+*.pyc
+.env
+captured_requests.jsonl
