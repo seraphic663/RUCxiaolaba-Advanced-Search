@@ -1,75 +1,80 @@
 # RUC小喇叭 高级搜索
 
-中国人民大学"RUC小喇叭"（云上校友圈/奇喵缘分）匿名论坛的高级搜索工具。
+中国人民大学"RUC小喇叭"（云上校友圈）匿名论坛的数据爬取与搜索工具。
 
 ## 项目来源
 
-本项目 fork 自 [revalue-o/RUCxiaolaba-Advanced-Search](https://github.com/revalue-o/RUCxiaolaba-Advanced-Search)，感谢学长的开创性工作。
+Fork 自 [revalue-o/RUCxiaolaba-Advanced-Search](https://github.com/revalue-o/RUCxiaolaba-Advanced-Search)，感谢学长的开创性工作。
 
-**原项目（2024-2025）**：
-- 爬虫目标：`ruc.yunshangxiaoyuan.cn`（旧版 API）
-- 鉴权方式：请求体中的 `openid`
-- 技术栈：Flask + DuckDB + 阿里百炼 AI
-- 功能：多关键词搜索、评论搜索、AI 总结
+**原项目（2024-2025）**：基于旧版 API（`ruc.yunshangxiaoyuan.cn`），Flask + DuckDB + 阿里百炼 AI。旧版 API 已停止响应。
 
-**2026.05 更新（本 fork）**：
-- 旧版 API 已不可用，重新逆向发现新版 API
-- 新版 API 域名：`ys.qimiaoyuanfen.com`
-- 新版鉴权：Cookie session（`ys7_ysxy_session`）
-- 通过 mitmproxy 抓包完成 API 逆向
-- 新增 `spider_new.py`（新版爬虫）、`test_api.py`（API 测试）、`mitm_filter.py`（抓包工具）
+**本 fork（2026.05）**：通过 mitmproxy 代理逆向发现新版 API（`ys.qimiaoyuanfen.com`），完全重写爬虫和搜索前端，适配新鉴权方式与数据结构。
 
 ## 快速开始
 
 ```bash
-# 1. 安装依赖
-pip install requests
+pip install requests urllib3
 
-# 2. 配置 Cookie
+# 1. 配置 Cookie
 cp data/config.example.txt data/config.txt
-# 编辑 data/config.txt，填入你的 session cookie
-# 获取方式：mitmproxy 抓包 或 WeChat PC DevTools
+# 编辑 data/config.txt 填入 session cookie
+# 获取方式：双击 start_proxy.bat → 开微信小程序 → mitmweb 面板复制
 
-# 3. 爬取数据
-python spider_new.py
+# 2. 爬取数据
+python spider.py 30        # 爬最近30页帖子+评论+赞+浏览
 
-# 4. 测试 API 连通性
-python test_api.py
+# 3. 启动搜索
+python server.py            # → http://127.0.0.1:8080
 ```
 
 ## 项目结构
 
 ```
-├── spider.py            # 旧版爬虫（ruc.yunshangxiaoyuan.cn，已失效，保留供参考）
-├── spider_new.py        # 新版爬虫（ys.qimiaoyuanfen.com，当前可用）
-├── test_api.py          # API 连通性测试
-├── mitm_filter.py       # mitmproxy 抓包过滤脚本
-├── app.py               # Flask 搜索服务（待适配新版 API）
-├── utils.py             # DuckDB 查询 + AI 搜索逻辑（待适配）
-├── init_duckdb.py       # 数据库初始化
-├── data/                # 数据存储目录（gitignored）
-│   ├── config.example.txt  # 配置文件模板
-│   └── config.txt          # 实际配置（含 cookie，不提交）
-├── templates/           # 前端页面
-├── static/              # 静态资源
+├── spider.py          # 爬虫：帖子列表 → 逐条详情（含评论、赞、浏览量）
+├── server.py          # Web 搜索界面（单文件，数据内嵌，纯前端搜索）
+├── test_api.py        # API 连通性测试
+├── mitm_filter.py     # mitmproxy 抓包过滤脚本
+├── start_proxy.bat    # 一键启动代理（获取 Cookie 用）
+├── captured_requests.jsonl  # 抓包原始数据（gitignored）
+├── data/
+│   ├── config.txt           # Session cookie（gitignored）
+│   ├── config.example.txt   # 配置模板
+│   ├── posts_list.csv       # 帖子列表（基础信息）
+│   └── posts_full.csv       # 完整数据（含 comments_json）
 └── README.md
 ```
 
+## Web 搜索功能
+
+- 多关键词搜索（空格分隔，AND 逻辑）
+- 搜索范围包括帖子正文 + 评论内容
+- 四种排序：按时间 / 点赞 / 浏览 / 热度
+- 关键词高亮
+- 展开评论：显示序号、时间、点赞数、嵌套回复、楼主标记
+- 全部数据内嵌 HTML，瞬间响应
+
+## API 架构
+
+| 端点 | 用途 |
+|------|------|
+| `article/article/lists2` | 帖子列表（分页） |
+| `article/article/info` | 帖子详情（内嵌评论列表+嵌套回复） |
+| `article/article/datehot` | 热门帖子 |
+| `article/article/star` | 点赞帖子 |
+| `article/article_comment/star` | 点赞评论 |
+| `base/community/info` | 社群信息 |
+
+鉴权方式：Cookie `ys7_ysxy_session`，有时效限制。
+
 ## Cookie 维护
 
-Session cookie 有时效限制。过期后 API 返回 `code: 1000`，需更新 `data/config.txt`：
+Cookie 过期（API 返回 `code: 1000`）时更新：
 
-1. 打开微信 → 进入"云上校友圈"小程序
-2. mitmweb 面板中复制任意 `ys.qimiaoyuanfen.com` 请求的 Cookie
-3. 更新 `data/config.txt`
-
-## TODO
-
-- [ ] `spider_new.py` 接入 DuckDB 替换 CSV
-- [ ] 新版 API 评论接口适配
-- [ ] Flask 搜索适配新版数据格式
-- [ ] Cookie 过期自动提醒
-- [ ] 定时爬取（cron / GitHub Actions）
+1. 双击 `start_proxy.bat`
+2. Windows 代理设为 `127.0.0.1:8899`
+3. 微信打开"云上校友圈"小程序
+4. 浏览器 `http://127.0.0.1:8900/?token=xlb123` 复制 Cookie
+5. 更新 `data/config.txt`
 
 ## License
 

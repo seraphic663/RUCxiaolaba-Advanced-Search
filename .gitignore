@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .env
 captured_requests.jsonl
+!data/config.example.txt
