@@ -1,13 +1,38 @@
-# Local config and crawl data
+# Local notes and agent state
+CLAUDE.md
+.claude/
+
+# Local secrets and config
 .env
+.env.*
+!.env.example
+
+# Runtime crawl/search data
 data/*
 !data/config.example.txt
-captured_requests*.jsonl
+*.csv
+*.jsonl
+*.ndjson
 
 # Runtime logs
 *.log
 *_log.txt
 *_err.txt
+scan_*.txt
+crawl_*.txt
+detail_*.txt
+analyze_*.txt
+
+# One-off local analysis scripts
+analyze_*.py
+
+# Local databases and generated storage
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+*.db-shm
+*.db-wal
 
 # Python and test cache
 __pycache__/
@@ -15,7 +40,11 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+.mypy_cache/
+.ruff_cache/
 
-# Local tool state and upstream comparison clones
-.claude/
+# Local upstream comparison clones and temp worktrees
 upstream_test_*/
+.tmp/
+tmp/
+temp/
