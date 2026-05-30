@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RUC小喇叭 搜索</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f5f5f5; min-height: 100vh; }
+.header { background: #8b0012; color: #fff; padding: 20px 16px; text-align: center; position: relative; }
+.header h1 { font-size: 1.5em; }
+.header p { opacity: 0.8; margin-top: 4px; font-size: 0.85em; }
+.header .admin-link { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: rgba(255,255,255,0.4); text-decoration: none; font-size: 0.85em; }
+.header .admin-link:hover { color: #fff; }
+
+/* Search */
+.search-wrap { max-width: 760px; margin: 16px auto; padding: 0 16px; }
+.search-wrap input { width: 100%; padding: 12px 16px; font-size: 16px; border: 2px solid #ddd; border-radius: 12px; outline: none; transition: border-color .2s; }
+.search-wrap input:focus { border-color: #8b0012; }
+
+/* Sort bar */
+.sort-bar { max-width: 760px; margin: 0 auto 12px; padding: 0 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sort-bar button { padding: 6px 14px; border: 1px solid #ddd; border-radius: 16px; background: #fff; cursor: pointer; font-size: 0.85em; color: #666; transition: all .2s; }
+.sort-bar button:hover { border-color: #8b0012; color: #8b0012; }
+.sort-bar button.active { background: #8b0012; color: #fff; border-color: #8b0012; }
+.sort-bar .count-text { margin-left: auto; color: #999; font-size: 0.8em; }
+
+/* Results */
+.results { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+
+/* Post card */
+.post { background: #fff; border-radius: 12px; padding: 16px 18px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); transition: box-shadow .2s; }
+.post:hover { box-shadow: 0 2px 8px rgba(0,0,0,.1); }
+.post .post-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 2px; }
+.post .post-header .left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.post .post-cat { background: #fff0f0; color: #8b0012; padding: 2px 8px; border-radius: 4px; font-size: 0.78em; white-space: nowrap; }
+.post .post-user { color: #333; font-size: 0.9em; font-weight: 500; }
+.post .post-time-right { color: #bbb; font-size: 0.78em; white-space: nowrap; flex-shrink: 0; }
+.post .post-id { color: #bbb; font-size: 0.78em; white-space: nowrap; }
+
+/* Content */
+.post .post-content { line-height: 1.75; color: #222; word-break: break-word; position: relative; }
+.post .post-content.collapsed { max-height: 4.9em; overflow: hidden; }
+.post .post-content.collapsed::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 2.2em; background: linear-gradient(transparent, #fff); pointer-events: none; z-index: 0; }
+.post .expand-bar { margin-top: 4px; }
+.post .expand-btn { color: #8b0012; cursor: pointer; font-size: 0.85em; user-select: none; display: inline-block; padding: 2px 0; }
+.post .expand-btn:hover { text-decoration: underline; }
+
+/* Bottom row: stats + comment toggle on same line */
+.post-bottom-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0f0f0; flex-wrap: wrap; }
+.post-stats-inline { display: flex; gap: 12px; font-size: 0.82em; color: #999; }
+.post-stats-inline span { cursor: default; }
+.comment-toggle-inline { color: #8b0012; cursor: pointer; font-size: 0.85em; user-select: none; white-space: nowrap; }
+.comment-toggle-inline:hover { text-decoration: underline; }
+
+/* Comments */
+.post .comments-wrap { margin-top: 8px; border-left: 3px solid #f0f0f0; padding-left: 14px; }
+.cmt { padding: 8px 0; border-bottom: 1px solid #f5f5f5; font-size: 0.88em; }
+.cmt:last-child { border-bottom: none; }
+.cmt .cmt-meta { color: #999; font-size: 0.82em; margin-bottom: 3px; }
+.cmt .cmt-meta .op-tag { color: #8b0012; font-size: 0.85em; }
+.cmt .cmt-text { color: #444; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.cmt .replies { margin-left: 14px; border-left: 2px solid #eee; padding-left: 12px; margin-top: 4px; }
+.cmt .reply { padding: 5px 0; font-size: 0.95em; }
+.loading { text-align: center; color: #999; padding: 20px; font-size: 0.9em; }
+.spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #ddd; border-top-color: #8b0012; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Pagination */
+.pagination { max-width: 760px; margin: 20px auto; padding: 0 16px; display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pagination button { padding: 8px 16px; border: 1px solid #ddd; border-radius: 8px; background: #fff; cursor: pointer; font-size: 0.9em; color: #333; transition: all .2s; }
+.pagination button:hover:not(:disabled) { border-color: #8b0012; color: #8b0012; }
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+.pagination .page-info { color: #666; font-size: 0.9em; margin: 0 4px; }
+.pagination .page-input { width: 50px; padding: 7px 4px; text-align: center; border: 1px solid #ddd; border-radius: 8px; font-size: 0.9em; outline: none; }
+.pagination .page-input:focus { border-color: #8b0012; }
+.pagination .total-pages { color: #999; font-size: 0.85em; }
+
+/* Filter bar */
+.filter-bar { max-width: 760px; margin: 0 auto 12px; padding: 0 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.filter-bar label { font-size: 0.8em; color: #888; white-space: nowrap; }
+.filter-bar select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; font-size: 0.82em; color: #333; cursor: pointer; outline: none; }
+.filter-bar select:focus { border-color: #8b0012; }
+
+/* Empty state */
+.empty { text-align: center; color: #999; padding: 60px 20px; }
+.empty .icon { font-size: 3em; margin-bottom: 12px; }
+.empty .text { font-size: 1em; }
+
+/* Info */
+.info { color: #bbb; text-align: center; margin: 30px 0 40px; font-size: 0.8em; }
+.info a { color: #8b0012; text-decoration: none; }
+.info a:hover { text-decoration: underline; }
+
+/* Mobile */
+@media (max-width: 600px) {
+  .header { padding: 14px 12px; }
+  .header h1 { font-size: 1.2em; }
+  .header p { font-size: 0.75em; }
+  .header .admin-link { position: static; display: block; margin-top: 6px; transform: none; }
+  .search-wrap { margin: 10px auto; }
+  .search-wrap input { padding: 10px 14px; font-size: 15px; }
+  .sort-bar { gap: 4px; }
+  .sort-bar button { padding: 5px 10px; font-size: 0.78em; }
+  .post { padding: 12px 14px; }
+  .post .post-content.collapsed { max-height: 4.5em; }
+  .pagination { gap: 4px; }
+  .pagination button { padding: 7px 12px; font-size: 0.82em; }
+}
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>RUC小喇叭 搜索</h1>
+  <p>共 __TOTAL__ 条帖子 &nbsp;·&nbsp; 时间跨度 __EARLIEST_TIME__ ~ __LATEST_TIME__ &nbsp;·&nbsp; 数据更新于 __CRAWL_TIME__</p>
+  <a class="admin-link" href="/admin" title="管理面板">&#128274; 管理</a>
+</div>
+
+<div class="search-wrap">
+  <input type="text" id="q" placeholder="搜索关键词（空格分隔多个词），空着即显示最新..." autofocus>
+</div>
+
+<div class="sort-bar">
+  <button id="btn-time" class="active" onclick="setSort('time')">按时间</button>
+  <button id="btn-stars" onclick="setSort('stars')">按点赞</button>
+  <button id="btn-views" onclick="setSort('views')">按浏览</button>
+  <button id="btn-hot" onclick="setSort('hot')">按热度</button>
+  <span class="count-text" id="count-text"></span>
+</div>
+
+<div class="filter-bar">
+  <label>分类:</label>
+  <select id="filter-category" onchange="doSearch()">
+    <option value="">全部</option>
+  </select>
+  <label>时间:</label>
+  <select id="filter-date" onchange="doSearch()">
+    <option value="">全部时间</option>
+    <option value="1d">最近 24 小时</option>
+    <option value="3d">最近 3 天</option>
+    <option value="7d">最近 7 天</option>
+    <option value="30d">最近 30 天</option>
+  </select>
+  <label>范围:</label>
+  <select id="filter-scope" onchange="doSearch()">
+    <option value="all">正文 + 评论</option>
+    <option value="content">仅正文</option>
+  </select>
+</div>
+
+<div class="results" id="results">
+  <div class="loading"><span class="spinner"></span>加载中...</div>
+</div>
+
+<div class="pagination" id="pagination"></div>
+
+<div class="info">
+  <a href="/">RUC小喇叭 第三方搜索</a> · 数据仅供研究使用
+</div>
+
+<script>
+// ===== State =====
+let currentPage = 1;
+let currentSort = 'time';
+let currentQuery = '';
+let totalPages = 1;
+const PAGE_SIZE = 50;
+const TRUNCATE_LEN = 140;
+
+// ===== Format helpers =====
+function formatTime(t) {
+  if (!t) return '';
+  return t.replace(/^2026-/, '').replace(/-05-/, '/5/').replace(' ', ' ');
+}
+
+function escapeHtml(s) {
+  let d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function highlightText(text, keywords) {
+  if (!keywords || keywords.length === 0) return escapeHtml(text);
+  let escaped = escapeHtml(text);
+  keywords.forEach(k => {
+    if (!k) return;
+    let re = new RegExp('(' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    escaped = escaped.replace(re, '<mark>$1</mark>');
+  });
+  return escaped;
+}
+
+// ===== Truncation =====
+function truncateContent(text) {
+  if (text.length <= TRUNCATE_LEN) return { truncated: false, preview: text, full: text };
+  return { truncated: true, preview: text.substring(0, TRUNCATE_LEN) + '...', full: text };
+}
+
+// ===== Render post card =====
+let _postData = {};       // index -> { fullContent, postId, commentCount }
+let _contentState = {};   // index -> bool (true=expanded, false=collapsed)
+
+function renderPost(post, index, keywords) {
+  let fullContent = post.content || '';
+  let tc = truncateContent(fullContent);
+  _postData[index] = { fullContent: fullContent, postId: post.id, commentCount: post.comments || 0 };
+  _contentState[index] = false;
+
+  // ---- Header: [category] user #ID ······ time ----
+  let hdrHtml = '<div class="post-header">' +
+    '<div class="left">' +
+      '<span class="post-cat">' + escapeHtml(post.category || '?') + '</span>' +
+      '<span class="post-user">' + escapeHtml(post.user || '?') + '</span>' +
+      '<span class="post-id">#' + escapeHtml(post.id) + '</span>' +
+    '</div>' +
+    '<span class="post-time-right">' + escapeHtml(post.time || '') + '</span>' +
+  '</div>';
+
+  // ---- Content ----
+  let truncatedClass = tc.truncated ? ' collapsed' : '';
+  let displayText = tc.truncated ? tc.preview : fullContent;
+  let contentHtml = '<div class="post-content' + truncatedClass + '" id="content-' + index + '">' +
+    highlightText(displayText, keywords) +
+  '</div>';
+
+  // ---- Expand bar (only if truncated) ----
+  let expandBarHtml = '';
+  if (tc.truncated) {
+    expandBarHtml = '<div class="expand-bar" id="expbar-' + index + '">' +
+      '<span class="expand-btn" id="expbtn-' + index + '" onclick="toggleContent(' + index + ')">&#9654; 展开全文 (' + fullContent.length + '字)</span>' +
+    '</div>';
+  }
+
+  // ---- Bottom row: comment toggle (left) + stats (right) ----
+  let bottomRowHtml = '<div class="post-bottom-row">';
+
+  if (post.comments > 0) {
+    bottomRowHtml += '<span class="comment-toggle-inline" id="cmt-btn-' + index + '" onclick="toggleComments(' + index + ')">&#9654; 展开 ' + post.comments + ' 条评论</span>';
+  } else {
+    bottomRowHtml += '<span></span>';  // spacer
+  }
+
+  bottomRowHtml += '<span class="post-stats-inline">' +
+      '<span>&#10084; ' + (post.stars||0) + '</span>' +
+      '<span>&#128172; ' + (post.comments||0) + '</span>' +
+      '<span>&#128099; ' + (post.trace||0) + '</span>' +
+      '<span>&#128065; ' + (post.views||0) + '</span>' +
+    '</span>' +
+  '</div>';
+
+  // ---- Comments container ----
+  let cmtContainer = '<div class="comments-wrap" id="cmts-' + index + '" style="display:none"></div>';
+
+  return '<div class="post" id="post-' + index + '">' +
+    hdrHtml + contentHtml + expandBarHtml + bottomRowHtml + cmtContainer +
+  '</div>';
+}
+
+// ===== Content expand/collapse =====
+function toggleContent(index) {
+  var contentEl = document.getElementById('content-' + index);
+  var data = _postData[index];
+  if (!contentEl || !data) return;
+
+  var keywords = currentQuery.split(/\s+/).filter(Boolean);
+  var isCollapsed = contentEl.classList.contains('collapsed');
+
+  if (isCollapsed) {
+    // ----- EXPAND -----
+    contentEl.classList.remove('collapsed');
+    contentEl.style.maxHeight = 'none';
+    contentEl.style.overflow = 'visible';
+    contentEl.innerHTML = highlightText(data.fullContent, keywords);
+    _contentState[index] = true;
+
+    // Update button text (don't recreate the element, just change textContent)
+    var expBtn = document.getElementById('expbtn-' + index);
+    if (expBtn) expBtn.textContent = '▼ 收起';
+  } else {
+    // ----- COLLAPSE -----
+    var tc = truncateContent(data.fullContent);
+    contentEl.classList.add('collapsed');
+    contentEl.style.maxHeight = '';
+    contentEl.style.overflow = '';
+    contentEl.innerHTML = highlightText(tc.preview, keywords);
+    _contentState[index] = false;
+
+    var expBtn = document.getElementById('expbtn-' + index);
+    if (expBtn) expBtn.textContent = '▶ 展开全文 (' + data.fullContent.length + '字)';
+  }
+}
+
+// ===== Comment toggle =====
+var _commentsLoaded = {};  // index -> bool
+
+function toggleComments(index) {
+  var wrap = document.getElementById('cmts-' + index);
+  var btn = document.getElementById('cmt-btn-' + index);
+  var data = _postData[index];
+  if (!wrap || !btn || !data) return;
+
+  var isVisible = wrap.style.display === 'block';
+
+  if (isVisible) {
+    // Hide
+    wrap.style.display = 'none';
+    btn.textContent = '▶ 展开 ' + data.commentCount + ' 条评论';
+  } else {
+    // Show
+    wrap.style.display = 'block';
+    btn.textContent = '▼ 收起评论';
+
+    if (!_commentsLoaded[index]) {
+      loadComments(index, data.postId);
+    }
+  }
+}
+
+function loadComments(index, postId) {
+  var wrap = document.getElementById('cmts-' + index);
+  if (!wrap) return;
+
+  wrap.innerHTML = '<div class="loading"><span class="spinner"></span>加载评论...</div>';
+
+  fetch('/api/comments?id=' + encodeURIComponent(postId))
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      var cmts = data.comment_list || [];
+      if (cmts.length === 0) {
+        wrap.innerHTML = '<div style="color:#999;text-align:center;padding:20px;">暂无评论</div>';
+      } else {
+        wrap.innerHTML = renderComments(cmts, currentQuery.split(/\s+/).filter(Boolean));
+      }
+      _commentsLoaded[index] = true;
+    })
+    .catch(function(err) {
+      wrap.innerHTML = '<div style="color:#e94560;text-align:center;padding:20px;">评论加载失败: ' + escapeHtml(err.message) + '</div>';
+    });
+}
+
+function renderComments(cmts, keywords) {
+  var htmlParts = [];
+  for (var i = 0; i < cmts.length; i++) {
+    var c = cmts[i];
+    var num = i + 1;
+    var txt = highlightText(c.detail || '', keywords);
+    var isOp = c.is_publisher == 1;
+    var opTag = isOp ? ' <span class="op-tag">楼主</span>' : '';
+
+    // Render nested replies
+    var replyHtml = '';
+    var replies = c.reply_comment_list || [];
+    if (replies.length > 0) {
+      var replyParts = [];
+      for (var j = 0; j < replies.length; j++) {
+        var rp = replies[j];
+        var rt = highlightText(rp.detail || '', keywords);
+        var replyTo = rp.reply_show_user_name ? ' 回复 ' + escapeHtml(rp.reply_show_user_name) : '';
+        replyParts.push(
+          '<div class="reply">' +
+            '<div class="cmt-meta">' + escapeHtml(rp.show_user_name || '?') + replyTo + '</div>' +
+            '<div class="cmt-text">' + rt + '</div>' +
+          '</div>'
+        );
+      }
+      replyHtml = '<div class="replies">' + replyParts.join('') + '</div>';
+    }
+
+    htmlParts.push(
+      '<div class="cmt">' +
+        '<div class="cmt-meta"><b style="color:#8b0012;">#' + num + '</b> ' +
+        escapeHtml(c.show_user_name || '?') + opTag + '</div>' +
+        '<div class="cmt-text">' + txt + '</div>' +
+        replyHtml +
+      '</div>'
+    );
+  }
+  return htmlParts.join('');
+}
+
+// ===== Search & Pagination =====
+function doSearch() {
+  currentQuery = document.getElementById('q').value.trim();
+  currentPage = 1;
+  fetchResults();
+}
+
+function setSort(sort) {
+  currentSort = sort;
+  currentPage = 1;
+  document.querySelectorAll('.sort-bar button').forEach(b => b.classList.remove('active'));
+  let btnId = 'btn-' + sort;
+  let btn = document.getElementById(btnId);
+  if (btn) btn.classList.add('active');
+  fetchResults();
+}
+
+function goToPage(page) {
+  if (page < 1 || page > totalPages) return;
+  currentPage = page;
+  fetchResults();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function getFilterParams() {
+  var parts = [];
+  var cat = document.getElementById('filter-category').value;
+  if (cat) parts.push('category=' + encodeURIComponent(cat));
+  var date = document.getElementById('filter-date').value;
+  if (date) parts.push('date=' + date);
+  var scope = document.getElementById('filter-scope').value;
+  if (scope && scope !== 'all') parts.push('scope=' + scope);
+  return parts.length ? '&' + parts.join('&') : '';
+}
+
+function fetchResults() {
+  let resultsEl = document.getElementById('results');
+  resultsEl.innerHTML = '<div class="loading"><span class="spinner"></span>加载中...</div>';
+  document.getElementById('pagination').innerHTML = '';
+
+  let url = '/api/search?q=' + encodeURIComponent(currentQuery) +
+    '&sort=' + currentSort +
+    '&page=' + currentPage +
+    '&limit=' + PAGE_SIZE +
+    getFilterParams();
+
+  fetch(url)
+    .then(r => r.json())
+    .then(data => {
+      totalPages = data.total_pages;
+      let keywords = currentQuery.split(/\s+/).filter(Boolean);
+
+      document.getElementById('count-text').textContent = '共 ' + data.total + ' 条结果';
+
+      if (data.total === 0) {
+        resultsEl.innerHTML = '<div class="empty"><div class="icon">&#128269;</div><div class="text">没有找到匹配的帖子</div></div>';
+      } else {
+        _postData = {};
+        _contentState = {};
+        _commentsLoaded = {};
+        resultsEl.innerHTML = data.results.map((p, i) => renderPost(p, i, keywords)).join('');
+      }
+
+      renderPagination(data.total_pages);
+    })
+    .catch(err => {
+      resultsEl.innerHTML = '<div class="empty"><div class="text">加载失败，请重试</div></div>';
+    });
+}
+
+function renderPagination(total) {
+  let pgEl = document.getElementById('pagination');
+  if (total <= 1) { pgEl.innerHTML = ''; return; }
+
+  let html = '';
+  html += '<button ' + (currentPage <= 1 ? 'disabled' : '') + ' onclick="goToPage(' + (currentPage - 1) + ')">&#171; 上一页</button>';
+
+  html += '<span class="page-info">第</span>';
+  html += '<input type="number" class="page-input" id="page-input" value="' + currentPage + '" min="1" max="' + total + '" onkeydown="if(event.key===\'Enter\')goToPage(parseInt(this.value))">';
+  html += '<span class="page-info">/ ' + total + ' 页</span>';
+
+  html += '<button ' + (currentPage >= total ? 'disabled' : '') + ' onclick="goToPage(' + (currentPage + 1) + ')">下一页 &#187;</button>';
+
+  html += ' <span class="total-pages">共 ' + total + ' 页</span>';
+  pgEl.innerHTML = html;
+}
+
+// ===== Init =====
+document.getElementById('q').addEventListener('input', function() {
+  clearTimeout(this._timer);
+  this._timer = setTimeout(doSearch, 250);
+});
+
+// Load category list
+fetch('/api/categories')
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    var sel = document.getElementById('filter-category');
+    (data.categories || []).forEach(function(c) {
+      var opt = document.createElement('option');
+      opt.value = c;
+      opt.textContent = c;
+      sel.appendChild(opt);
+    });
+  })
+  .catch(function() {});
+
+fetchResults();
+</script>
+</body>
+</html>

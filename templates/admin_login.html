@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>管理面板 — RUC小喇叭</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #1a1a2e; color: #eee; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+.login-box { background: #16213e; padding: 40px; border-radius: 12px; width: 360px; max-width: 90vw; box-shadow: 0 4px 20px rgba(0,0,0,.5); }
+.login-box h2 { text-align: center; margin-bottom: 24px; color: #e94560; }
+.login-box input { width: 100%; padding: 12px; margin-bottom: 16px; border: 1px solid #333; border-radius: 8px; background: #0f3460; color: #fff; font-size: 14px; outline: none; }
+.login-box input:focus { border-color: #e94560; }
+.login-box button { width: 100%; padding: 12px; border: none; border-radius: 8px; background: #e94560; color: #fff; font-size: 16px; cursor: pointer; }
+.login-box button:hover { background: #d63850; }
+.login-box .error { color: #e94560; text-align: center; margin-top: 12px; font-size: 0.9em; }
+.login-box .back { text-align: center; margin-top: 16px; }
+.login-box .back a { color: #888; text-decoration: none; font-size: 0.85em; }
+.login-box .back a:hover { color: #ccc; }
+</style>
+</head>
+<body>
+<div class="login-box">
+  <h2>&#128274; 管理面板</h2>
+  <form method="post" action="/admin">
+    <input type="hidden" name="csrf_token" value="__CSRF_TOKEN__">
+    <input type="password" name="password" placeholder="输入管理密码" autofocus>
+    <button type="submit">登 录</button>
+  </form>
+  __ERROR__
+  <div class="back"><a href="/">&#8592; 返回搜索</a></div>
+</div>
+</body>
+</html>

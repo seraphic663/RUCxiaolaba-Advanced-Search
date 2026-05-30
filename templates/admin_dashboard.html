@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>管理面板 — RUC小喇叭</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+.header { background: #16213e; padding: 20px; border-radius: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.header h2 { color: #e94560; }
+.header .nav a { color: #888; text-decoration: none; margin-left: 16px; font-size: 0.9em; }
+.header .nav a:hover { color: #ccc; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.stat-card { background: #16213e; padding: 16px; border-radius: 8px; text-align: center; }
+.stat-card .num { font-size: 2em; color: #e94560; font-weight: bold; }
+.stat-card .label { color: #888; font-size: 0.85em; margin-top: 4px; }
+.search-box { margin-bottom: 20px; }
+.search-box input { width: 100%; padding: 12px; border: 1px solid #333; border-radius: 8px; background: #0f3460; color: #fff; font-size: 14px; outline: none; }
+.search-box input:focus { border-color: #e94560; }
+.user-list { display: grid; gap: 8px; }
+.user-row { background: #16213e; padding: 14px 18px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; transition: background .2s; }
+.user-row:hover { background: #1a2a4a; }
+.user-row .uid { color: #e94560; font-family: monospace; font-size: 0.95em; }
+.user-row .uname { color: #ccc; margin-left: 12px; }
+.user-row .count { color: #888; font-size: 0.85em; }
+.user-row .cats { color: #666; font-size: 0.8em; margin-left: 8px; }
+.user-detail { background: #16213e; border-radius: 8px; margin-top: 4px; padding: 16px; display: none; }
+.user-detail.open { display: block; }
+.post-item { padding: 12px 0; border-bottom: 1px solid #222; }
+.post-item:last-child { border-bottom: none; }
+.post-id { color: #888; font-size: 0.8em; }
+.post-cat { color: #e94560; font-size: 0.85em; }
+.post-time { color: #666; font-size: 0.8em; }
+.post-content { margin-top: 6px; line-height: 1.6; color: #ccc; white-space: pre-wrap; word-break: break-word; }
+.post-meta-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.comment-item { padding: 8px 0 8px 16px; border-left: 2px solid #333; margin: 8px 0; font-size: 0.9em; }
+.cmt-from { color: #e94560; font-size: 0.8em; }
+.cmt-text { color: #aaa; margin-top: 4px; }
+.no-data { text-align: center; color: #555; padding: 40px; }
+
+@media (max-width: 600px) {
+  body { padding: 10px; }
+  .header { flex-direction: column; align-items: flex-start; }
+  .stats { grid-template-columns: repeat(3, 1fr); }
+  .stat-card { padding: 10px 6px; }
+  .stat-card .num { font-size: 1.4em; }
+  .stat-card .label { font-size: 0.7em; }
+  .user-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+}
+</style>
+</head>
+<body>
+<div class="header">
+  <h2>&#128274; 管理面板</h2>
+  <div class="nav">
+    <span style="color:#888;font-size:0.85em;">__CSV_SOURCE__ · __TOTAL__帖 · __UNIQUE_USERS__用户</span>
+    <a href="/">返回搜索</a>
+    <a href="/admin?logout=1">退出</a>
+  </div>
+</div>
+<div class="stats">
+  <div class="stat-card"><div class="num">__UNIQUE_USERS__</div><div class="label">唯一用户 (show_user_id)</div></div>
+  <div class="stat-card"><div class="num">__TOTAL__</div><div class="label">总帖子</div></div>
+  <div class="stat-card"><div class="num">__MULTI__</div><div class="label">发帖>=2的用户</div></div>
+  <div class="stat-card"><div class="num">__TOTAL_COMMENTS__</div><div class="label">总评论</div></div>
+  <div class="stat-card"><div class="num">__UNIQUE_COMMENTERS__</div><div class="label">唯一评论者</div></div>
+  <div class="stat-card"><div class="num">__DANGER__</div><div class="label">数据来源</div></div>
+</div>
+<div class="search-box">
+  <input type="text" id="filter" placeholder="筛选: 输入 show_user_id 或用户名..." oninput="filterUsers()">
+</div>
+<div class="user-list" id="user-list">
+__USER_ROWS__
+</div>
+<script>
+function toggleUser(uid) {
+  let el = document.getElementById('detail-' + uid);
+  el.classList.toggle('open');
+}
+function filterUsers() {
+  let kw = document.getElementById('filter').value.toLowerCase();
+  document.querySelectorAll('.user-row').forEach(row => {
+    let text = (row.getAttribute('data-text') || '').toLowerCase();
+    row.style.display = (text.includes(kw) || !kw) ? '' : 'none';
+  });
+}
+</script>
+</body>
+</html>

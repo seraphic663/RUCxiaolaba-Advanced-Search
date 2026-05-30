@@ -1,0 +1,4 @@
+# Copy to config.txt and replace with your actual session cookie.
+# Find it: open WeChat -> open mini program -> mitmweb panel
+#   -> click any ys.qimiaoyuanfen.com request -> Request -> Cookie -> copy value.
+ys7_ysxy_session=YOUR_SESSION_COOKIE_HERE
