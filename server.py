@@ -81,7 +81,7 @@ def load_posts():
     csv.field_size_limit(10 ** 7)
     seen = set()
     posts = []
-    has_danger = (csv_path == CSV_DANGER)
+    has_danger = (csv_path in (CSV_DANGER, CSV_SCAN))
 
     with open(csv_path, "r", encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -383,17 +383,18 @@ def _safe_post(post):
     }
 
 
-def api_search(query, sort_by, page, limit, category=None, date_from=None, date_to=None, scope="all"):
-    """Search posts with optional filters.
+def _admin_post(post):
+    """Return post with ALL fields for admin API."""
+    p = _safe_post(post)
+    p["show_user_id"] = post.get("show_user_id", "")
+    p["real_user_id"] = post.get("real_user_id", "0")
+    p["comment_list"] = post.get("comment_list", [])
+    return p
 
-    Args:
-        query: keyword string (space-separated AND logic)
-        sort_by: 'time' | 'stars' | 'views' | 'hot'
-        page, limit: pagination
-        category: filter by category_name (e.g. '日常投稿'), None = all
-        date_from, date_to: datetime objects for time range, None = unbounded
-        scope: 'all' (content+comments) | 'content' (content only)
-    """
+
+def api_search(query, sort_by, page, limit, category=None, date_from=None, date_to=None,
+               scope="all", uid=None, uname=None, admin=False):
+    """Search posts with optional filters."""
     posts, _, _, _ = get_cached_data()
 
     # ---- Keyword filter ----
@@ -403,10 +404,23 @@ def api_search(query, sort_by, page, limit, category=None, date_from=None, date_
         results = []
         for p in posts:
             search_text = p.get(search_field, "")
+            # Also search show_user_id and show_user_name when admin mode
+            if admin:
+                search_text += " " + p.get("show_user_id", "")
+                search_text += " " + p.get("user", "")
             if all(kw in search_text for kw in keywords):
                 results.append(p)
     else:
         results = list(posts)
+
+    # ---- UID filter ----
+    if uid:
+        results = [p for p in results if p.get("show_user_id", "") == uid]
+
+    # ---- User name filter ----
+    if uname:
+        uname_lower = uname.lower()
+        results = [p for p in results if uname_lower in p.get("user", "").lower()]
 
     # ---- Category filter ----
     if category:
@@ -447,7 +461,7 @@ def api_search(query, sort_by, page, limit, category=None, date_from=None, date_
         "page": page,
         "page_size": limit,
         "total_pages": total_pages,
-        "results": [_safe_post(p) for p in page_results],
+        "results": [_admin_post(p) if admin else _safe_post(p) for p in page_results],
     }
 
 
@@ -622,9 +636,12 @@ class Handler(BaseHTTPRequestHandler):
 
         # --- Optional filters ---
         category = params.get("category", [""])[0].strip() or None
-        scope = params.get("scope", ["all"])[0]
+        uid = params.get("uid", [""])[0].strip() or None
+        uname = params.get("uname", [""])[0].strip() or None
+        scope = params.get("scope", ["content"])[0]
         if scope not in ("all", "content"):
-            scope = "all"
+            scope = "content"
+        admin = self._is_admin()
 
         # Time range: accept "date" preset or explicit "from"/"to" timestamps
         date_from = date_to = None
@@ -652,8 +669,30 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
         result = api_search(q, sort_by, page, limit,
-                            category=category, date_from=date_from, date_to=date_to, scope=scope)
+                            category=category, date_from=date_from, date_to=date_to,
+                            scope=scope, uid=uid, uname=uname, admin=admin)
         self._serve_json(result)
+
+    # ---- API: feedback ----
+    def _handle_api_feedback(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8", errors="replace")
+        try:
+            data = json.loads(body)
+            name = (data.get("name") or "").strip()[:50]
+            message = (data.get("message") or "").strip()[:2000]
+            if not message:
+                self._serve_json({"ok": False, "error": "message required"}, 400)
+                return
+        except json.JSONDecodeError:
+            self._serve_json({"ok": False, "error": "invalid json"}, 400)
+            return
+
+        feedback_file = os.path.join(DATA_DIR, "feedback.jsonl")
+        with open(feedback_file, "a", encoding="utf-8") as f:
+            json.dump({"name": name, "message": message, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f, ensure_ascii=False)
+            f.write("\n")
+        self._serve_json({"ok": True})
 
     # ---- API: categories ----
     def _handle_api_categories(self):
@@ -675,6 +714,10 @@ class Handler(BaseHTTPRequestHandler):
 
         self._serve_json(result)
 
+    # ---- Healthcheck ----
+    def _handle_healthcheck(self):
+        self._serve_json({"ok": True})
+
     # ---- ROUTING ----
     def do_GET(self):
         _, path = self._parse_query()
@@ -685,6 +728,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_api_comments()
         elif path == "/api/categories":
             self._handle_api_categories()
+        elif path == "/healthz":
+            self._handle_healthcheck()
         elif path == "/admin":
             self._handle_admin_get()
         elif path == "/" or path == "":
@@ -700,6 +745,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/admin":
             self._handle_admin_post()
+        elif path == "/api/feedback":
+            self._handle_api_feedback()
         else:
             self.send_response(404)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -723,7 +770,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 if __name__ == "__main__":
     import socket
 
-    port = 8080
+    port = int(os.environ.get("PORT", 8080))
     HOST = os.environ.get("HOST", "0.0.0.0")
 
     # Pre-load password (triggers generation if needed)

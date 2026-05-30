@@ -1,0 +1,13 @@
+[build]
+  builder = "nixpacks"
+  buildCommand = "pip install -r requirements.txt && chmod +x start.sh"
+
+[deploy]
+  startCommand = "./start.sh"
+  healthcheckPath = "/healthz"
+  healthcheckTimeout = 300
+  restartPolicyType = "ON_FAILURE"
+  numReplicas = 1
+
+[service]
+  port = 8080
