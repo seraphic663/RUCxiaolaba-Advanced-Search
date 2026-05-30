@@ -7,46 +7,51 @@
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
-.header { background: #16213e; padding: 20px; border-radius: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
-.header h2 { color: #e94560; }
-.header .nav a { color: #888; text-decoration: none; margin-left: 16px; font-size: 0.9em; }
+.header { background: #16213e; padding: 16px 24px; border-radius: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.header h2 { color: #e94560; font-size: 1.2em; }
+.header .nav { display: flex; gap: 12px; align-items: center; font-size: 0.85em; }
+.header .nav a { color: #888; text-decoration: none; }
 .header .nav a:hover { color: #ccc; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
-.stat-card { background: #16213e; padding: 16px; border-radius: 8px; text-align: center; }
-.stat-card .num { font-size: 2em; color: #e94560; font-weight: bold; }
-.stat-card .label { color: #888; font-size: 0.85em; margin-top: 4px; }
-.search-box { margin-bottom: 20px; }
-.search-box input { width: 100%; padding: 12px; border: 1px solid #333; border-radius: 8px; background: #0f3460; color: #fff; font-size: 14px; outline: none; }
-.search-box input:focus { border-color: #e94560; }
-.user-list { display: grid; gap: 8px; }
-.user-row { background: #16213e; padding: 14px 18px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; transition: background .2s; }
-.user-row:hover { background: #1a2a4a; }
-.user-row .uid { color: #e94560; font-family: monospace; font-size: 0.95em; }
-.user-row .uname { color: #ccc; margin-left: 12px; }
-.user-row .count { color: #888; font-size: 0.85em; }
-.user-row .cats { color: #666; font-size: 0.8em; margin-left: 8px; }
-.user-detail { background: #16213e; border-radius: 8px; margin-top: 4px; padding: 16px; display: none; }
-.user-detail.open { display: block; }
-.post-item { padding: 12px 0; border-bottom: 1px solid #222; }
-.post-item:last-child { border-bottom: none; }
-.post-id { color: #888; font-size: 0.8em; }
-.post-cat { color: #e94560; font-size: 0.85em; }
-.post-time { color: #666; font-size: 0.8em; }
-.post-content { margin-top: 6px; line-height: 1.6; color: #ccc; white-space: pre-wrap; word-break: break-word; }
-.post-meta-row { display: flex; gap: 12px; flex-wrap: wrap; }
-.comment-item { padding: 8px 0 8px 16px; border-left: 2px solid #333; margin: 8px 0; font-size: 0.9em; }
-.cmt-from { color: #e94560; font-size: 0.8em; }
-.cmt-text { color: #aaa; margin-top: 4px; }
-.no-data { text-align: center; color: #555; padding: 40px; }
-
-@media (max-width: 600px) {
-  body { padding: 10px; }
-  .header { flex-direction: column; align-items: flex-start; }
-  .stats { grid-template-columns: repeat(3, 1fr); }
-  .stat-card { padding: 10px 6px; }
-  .stat-card .num { font-size: 1.4em; }
-  .stat-card .label { font-size: 0.7em; }
-  .user-row { flex-direction: column; align-items: flex-start; gap: 4px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.stat-card { background: #16213e; padding: 12px; border-radius: 8px; text-align: center; }
+.stat-card .num { font-size: 1.6em; color: #e94560; font-weight: bold; }
+.stat-card .label { color: #888; font-size: 0.75em; margin-top: 2px; }
+.filters { background: #16213e; padding: 16px; border-radius: 12px; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.filters input[type=text] { flex: 1; min-width: 200px; padding: 10px 14px; border: 1px solid #333; border-radius: 8px; background: #0f3460; color: #fff; font-size: 14px; outline: none; }
+.filters input:focus { border-color: #e94560; }
+.filters select { padding: 10px; border: 1px solid #333; border-radius: 8px; background: #0f3460; color: #fff; font-size: 13px; outline: none; }
+.filters select:focus { border-color: #e94560; }
+.filters label { font-size: 0.8em; color: #aaa; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+.filters label input[type=checkbox] { accent-color: #e94560; }
+.results { background: #16213e; border-radius: 12px; overflow: hidden; }
+.result-row { padding: 14px 18px; border-bottom: 1px solid #1f2f4a; cursor: pointer; transition: background .15s; }
+.result-row:hover { background: #1a2a4a; }
+.result-row .top { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; font-size: 0.8em; }
+.result-row .top .uid { color: #e94560; font-family: monospace; font-weight: bold; }
+.result-row .top .meta { color: #666; }
+.result-row .text { line-height: 1.6; color: #ccc; white-space: pre-wrap; word-break: break-word; font-size: 0.9em; }
+.result-row .stats-row { color: #777; font-size: 0.78em; margin-top: 6px; }
+.comments-panel { display: none; border-left: 2px solid #333; margin: 10px 0 0 0; padding-left: 14px; }
+.comments-panel.open { display: block; }
+.cmt { padding: 6px 0; border-bottom: 1px solid #1a1a2e; font-size: 0.85em; }
+.cmt:last-child { border-bottom: none; }
+.cmt .cmt-uid { color: #e94560; font-family: monospace; font-size: 0.85em; }
+.cmt .cmt-name { color: #aaa; font-size: 0.85em; }
+.cmt .cmt-text { color: #bbb; margin-top: 2px; }
+.cmt .reply-to { color: #666; font-size: 0.8em; margin-left: 4px; }
+.cmt .nested { margin-left: 16px; border-left: 1px solid #222; padding-left: 10px; margin-top: 4px; }
+.pagination { display: flex; justify-content: center; gap: 6px; padding: 16px; flex-wrap: wrap; }
+.pagination button { padding: 8px 14px; border: 1px solid #333; border-radius: 6px; background: #0f3460; color: #ccc; cursor: pointer; font-size: 0.85em; }
+.pagination button:hover { background: #1a3a6a; }
+.pagination button.active { background: #e94560; color: #fff; border-color: #e94560; }
+.pagination button:disabled { opacity: 0.3; cursor: default; }
+mark { background: #e9456080; color: #fff; padding: 0 2px; border-radius: 2px; }
+.no-results { text-align: center; color: #555; padding: 40px; }
+.loading { text-align: center; color: #666; padding: 40px; }
+@media (max-width: 700px) {
+  body { padding: 8px; }
+  .filters { flex-direction: column; }
+  .filters input[type=text] { width: 100%; }
 }
 </style>
 </head>
@@ -54,37 +59,154 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #1
 <div class="header">
   <h2>&#128274; 管理面板</h2>
   <div class="nav">
-    <span style="color:#888;font-size:0.85em;">__CSV_SOURCE__ · __TOTAL__帖 · __UNIQUE_USERS__用户</span>
+    <span style="color:#888;font-size:0.8em;" id="db-info">__CSV_SOURCE__ · __TOTAL__帖</span>
     <a href="/">返回搜索</a>
     <a href="/admin?logout=1">退出</a>
   </div>
 </div>
-<div class="stats">
-  <div class="stat-card"><div class="num">__UNIQUE_USERS__</div><div class="label">唯一用户 (show_user_id)</div></div>
-  <div class="stat-card"><div class="num">__TOTAL__</div><div class="label">总帖子</div></div>
-  <div class="stat-card"><div class="num">__MULTI__</div><div class="label">发帖>=2的用户</div></div>
-  <div class="stat-card"><div class="num">__TOTAL_COMMENTS__</div><div class="label">总评论</div></div>
-  <div class="stat-card"><div class="num">__UNIQUE_COMMENTERS__</div><div class="label">唯一评论者</div></div>
-  <div class="stat-card"><div class="num">__DANGER__</div><div class="label">数据来源</div></div>
+
+<div class="filters">
+  <input type="text" id="q" placeholder="搜索关键词（空格 AND）..." autofocus>
+  <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="views">按浏览</option><option value="hot">按热度</option></select>
+  <select id="date"><option value="">全部时间</option><option value="1d">今天</option><option value="3d">3天</option><option value="7d">7天</option><option value="30d">30天</option></select>
+  <label><input type="checkbox" id="sc-body" checked> 正文</label>
+  <label><input type="checkbox" id="sc-cmt"> 评论</label>
+  <label><input type="checkbox" id="sc-uid"> ID</label>
+  <label><input type="checkbox" id="sc-name"> 昵称</label>
+  <button onclick="doSearch(1)" style="padding:10px 20px;border:none;border-radius:8px;background:#e94560;color:#fff;cursor:pointer;font-size:14px;">搜索</button>
 </div>
-<div class="search-box">
-  <input type="text" id="filter" placeholder="筛选: 输入 show_user_id 或用户名..." oninput="filterUsers()">
-</div>
-<div class="user-list" id="user-list">
-__USER_ROWS__
-</div>
+
+<div id="results"><div class="loading">输入关键词后点击搜索</div></div>
+<div class="pagination" id="pager"></div>
+
 <script>
-function toggleUser(uid) {
-  let el = document.getElementById('detail-' + uid);
-  el.classList.toggle('open');
+var currentPage = 1;
+var currentKW = [];
+
+function doSearch(page) {
+  currentPage = page || 1;
+  var q = document.getElementById('q').value.trim();
+  currentKW = q ? q.split(/\s+/).filter(Boolean) : [];
+  var sort = document.getElementById('sort').value;
+  var date = document.getElementById('date').value;
+
+  var params = ['q=' + encodeURIComponent(q), 'sort=' + sort, 'page=' + currentPage, 'limit=50'];
+  if (date) params.push('date=' + date);
+
+  // Build scope
+  var scopes = [];
+  if (document.getElementById('sc-body').checked) scopes.push('body');
+  if (document.getElementById('sc-cmt').checked) scopes.push('cmt');
+  if (document.getElementById('sc-uid').checked) scopes.push('uid');
+  if (document.getElementById('sc-name').checked) scopes.push('name');
+  if (scopes.length > 0) params.push('scope=all');
+
+  document.getElementById('results').innerHTML = '<div class="loading">搜索中...</div>';
+
+  fetch('/api/search?' + params.join('&'))
+    .then(r => r.json())
+    .then(data => {
+      currentPage = data.page;
+      renderResults(data);
+      renderPager(data);
+    })
+    .catch(e => {
+      document.getElementById('results').innerHTML = '<div class="no-results">搜索出错: ' + e + '</div>';
+    });
 }
-function filterUsers() {
-  let kw = document.getElementById('filter').value.toLowerCase();
-  document.querySelectorAll('.user-row').forEach(row => {
-    let text = (row.getAttribute('data-text') || '').toLowerCase();
-    row.style.display = (text.includes(kw) || !kw) ? '' : 'none';
+
+function highlight(text) {
+  var t = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  currentKW.forEach(k => {
+    var re = new RegExp('(' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    t = t.replace(re, '<mark>$1</mark>');
   });
+  return t;
 }
+
+function renderResults(data) {
+  if (!data.results || data.results.length === 0) {
+    document.getElementById('results').innerHTML = '<div class="no-results">无结果</div>';
+    return;
+  }
+  var html = '';
+  data.results.forEach(function(p, idx) {
+    var uid = p.show_user_id || '?';
+    var ruid = p.real_user_id || '0';
+    var idTag = uid;
+    if (ruid !== '0' && ruid !== uid) idTag += ' <span style="color:#ff0">real:' + ruid + '</span>';
+    else if (ruid !== '0') idTag += ' <span style="color:#0f0">★非匿名</span>';
+    html += '<div class="result-row" onclick="toggleCmts(' + idx + ')">';
+    html += '<div class="top"><span class="uid">ID:' + idTag + '</span><span class="uname" style="color:#aaa">' + (p.user||'?') + '</span><span class="meta">' + (p.category||'?') + ' &middot; #' + p.id + ' &middot; ' + (p.time||'?').slice(0,16) + '</span></div>';
+    html += '<div class="text">' + highlight(p.content||'') + '</div>';
+    html += '<div class="stats-row">❤' + (p.stars||0) + ' 💬' + (p.comments||0) + ' 👁' + (p.views||0) + ' <span class="toggle-cmts" style="color:#e94560;cursor:pointer;">▶ 展开评论</span></div>';
+    html += '<div class="comments-panel" id="cmts-' + idx + '"></div>';
+    html += '</div>';
+  });
+  document.getElementById('results').innerHTML = html;
+  document.getElementById('results')._data = data;
+}
+
+function renderComments(panel, comments) {
+  if (!comments || comments.length === 0) return '无评论';
+  var h = '';
+  comments.forEach(function(c) {
+    h += '<div class="cmt">';
+    h += '<span class="cmt-uid">' + (c.show_user_id||'?') + '</span> ';
+    h += '<span class="cmt-name">' + (c.show_user_name||'?') + '</span>';
+    if (c.is_publisher == 1) h += ' <span style="color:#e94560">楼主</span>';
+    if (c.reply_show_user_id) h += '<span class="reply-to">→ ' + (c.reply_show_user_name||c.reply_show_user_id||'?') + '</span>';
+    h += '<div class="cmt-text">' + highlight(c.detail||'') + '</div>';
+    if (c.reply_comment_list && c.reply_comment_list.length > 0) {
+      h += '<div class="nested">';
+      c.reply_comment_list.forEach(function(nr) {
+        h += '<div class="cmt">';
+        h += '<span class="cmt-uid">' + (nr.show_user_id||'?') + '</span> ';
+        h += '<span class="cmt-name">' + (nr.show_user_name||'?') + '</span>';
+        if (nr.reply_show_user_id) h += '<span class="reply-to">→ ' + (nr.reply_show_user_name||nr.reply_show_user_id||'?') + '</span>';
+        h += '<div class="cmt-text">' + highlight(nr.detail||'') + '</div>';
+        h += '</div>';
+      });
+      h += '</div>';
+    }
+    h += '</div>';
+  });
+  return h;
+}
+
+function toggleCmts(idx) {
+  var panel = document.getElementById('cmts-' + idx);
+  if (panel.classList.contains('open')) {
+    panel.classList.remove('open');
+    return;
+  }
+  var data = document.getElementById('results')._data;
+  if (!data) return;
+  var p = data.results[idx];
+  panel.innerHTML = renderComments(panel, p.comment_list || []);
+  panel.classList.add('open');
+}
+
+function renderPager(data) {
+  var h = '';
+  if (data.total_pages <= 1) { document.getElementById('pager').innerHTML = ''; return; }
+  h += '<button ' + (data.page <= 1 ? 'disabled' : '') + ' onclick="doSearch(1)">首页</button>';
+  h += '<button ' + (data.page <= 1 ? 'disabled' : '') + ' onclick="doSearch(' + (data.page-1) + ')">上一页</button>';
+  var start = Math.max(1, data.page - 3);
+  var end = Math.min(data.total_pages, data.page + 3);
+  for (var i = start; i <= end; i++) {
+    h += '<button class="' + (i === data.page ? 'active' : '') + '" onclick="doSearch(' + i + ')">' + i + '</button>';
+  }
+  h += '<button ' + (data.page >= data.total_pages ? 'disabled' : '') + ' onclick="doSearch(' + (data.page+1) + ')">下一页</button>';
+  h += '<button ' + (data.page >= data.total_pages ? 'disabled' : '') + ' onclick="doSearch(' + data.total_pages + ')">末页</button>';
+  h += '<span style="color:#888;font-size:0.8em;margin-left:8px;">共 ' + data.total + ' 条 / ' + data.total_pages + ' 页</span>';
+  document.getElementById('pager').innerHTML = h;
+}
+
+// Enter key triggers search
+document.getElementById('q').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') doSearch(1);
+});
 </script>
 </body>
 </html>
