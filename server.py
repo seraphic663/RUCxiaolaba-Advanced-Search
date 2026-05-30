@@ -31,6 +31,7 @@ CSV_SCAN = os.path.join(DATA_DIR, "posts_scan.csv")
 CSV_DANGER = os.path.join(DATA_DIR, "posts_danger.csv")
 CSV_LEGACY = os.path.join(DATA_DIR, "posts_full.csv")
 PASSWORD_FILE = os.path.join(DATA_DIR, "admin_password.txt")
+CHECKIN_FILE = os.path.join(DATA_DIR, "checkin_count.json")
 
 SESSION_TTL = 86400   # 24 hours
 CSRF_TTL = 3600       # 1 hour
@@ -39,6 +40,7 @@ COMMENT_LIMIT = 500   # max comments to return per post
 # ==================== THREAD-SAFE STATE ====================
 
 _state_lock = threading.Lock()
+_checkin_lock = threading.Lock()
 _admin_sessions = {}   # token -> expiry (unix timestamp)
 _csrf_tokens = {}      # token -> expiry (unix timestamp)
 
@@ -68,6 +70,37 @@ def get_password():
     print(f"[!]  已保存至: {PASSWORD_FILE}")
     print(f"[!] ========================================\n")
     return pwd
+
+
+# ==================== CHECK-IN COUNT ====================
+
+def _read_checkin_count_unlocked():
+    if not os.path.exists(CHECKIN_FILE):
+        return 0
+    try:
+        with open(CHECKIN_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return max(0, int(data.get("count", 0)))
+    except Exception:
+        return 0
+
+
+def get_checkin_count():
+    with _checkin_lock:
+        return _read_checkin_count_unlocked()
+
+
+def increment_checkin_count():
+    with _checkin_lock:
+        count = _read_checkin_count_unlocked() + 1
+        os.makedirs(DATA_DIR, exist_ok=True)
+        payload = {
+            "count": count,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(CHECKIN_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        return count
 
 
 # ==================== DATA LOADING & CACHING ====================
@@ -718,6 +751,13 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_healthcheck(self):
         self._serve_json({"ok": True})
 
+    # ---- API: check-in ----
+    def _handle_api_checkin_get(self):
+        self._serve_json({"count": get_checkin_count()})
+
+    def _handle_api_checkin_post(self):
+        self._serve_json({"count": increment_checkin_count()})
+
     # ---- ROUTING ----
     def do_GET(self):
         _, path = self._parse_query()
@@ -728,6 +768,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_api_comments()
         elif path == "/api/categories":
             self._handle_api_categories()
+        elif path == "/api/checkin":
+            self._handle_api_checkin_get()
         elif path == "/healthz":
             self._handle_healthcheck()
         elif path == "/admin":
@@ -745,6 +787,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/admin":
             self._handle_admin_post()
+        elif path == "/api/checkin":
+            self._handle_api_checkin_post()
         elif path == "/api/feedback":
             self._handle_api_feedback()
         else:

@@ -19,6 +19,13 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .header .feedback-btn:hover { background: rgba(255,255,255,0.25); }
 @media (max-width: 600px) { .header .feedback-btn { position: static; display: block; margin: 6px auto; transform: none; } }
 
+/* Check-in */
+.checkin-strip { max-width: 760px; margin: 14px auto 0; padding: 0 16px; display: flex; justify-content: center; align-items: center; gap: 10px; flex-wrap: wrap; }
+.checkin-btn { border: 1px solid #8b0012; background: #fff; color: #8b0012; border-radius: 999px; padding: 8px 18px; font-size: 0.92em; font-weight: 600; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.06); transition: all .2s; }
+.checkin-btn:hover:not(:disabled) { background: #8b0012; color: #fff; transform: translateY(-1px); }
+.checkin-btn:disabled { cursor: default; opacity: 0.72; }
+.checkin-count { color: #777; font-size: 0.86em; }
+
 /* Search */
 .search-wrap { max-width: 760px; margin: 16px auto; padding: 0 16px; }
 .search-wrap input { width: 100%; padding: 12px 16px; font-size: 16px; border: 2px solid #ddd; border-radius: 12px; outline: none; transition: border-color .2s; }
@@ -142,6 +149,11 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
   <p>共 __TOTAL__ 条帖子 &nbsp;·&nbsp; 时间跨度 __EARLIEST_TIME__ ~ __LATEST_TIME__ &nbsp;·&nbsp; 数据更新于 __CRAWL_TIME__</p>
   <button class="feedback-btn" onclick="openFeedback()">&#128172; 反馈</button>
   <a class="admin-link" href="/admin" title="管理面板">&#128274; 管理</a>
+</div>
+
+<div class="checkin-strip">
+  <button class="checkin-btn" id="checkin-btn" onclick="checkIn()">到此一游</button>
+  <span class="checkin-count" id="checkin-count">已有 -- 人来过</span>
 </div>
 
 <div class="search-wrap">
@@ -510,6 +522,41 @@ fetch('/api/categories')
   .catch(function() {});
 
 fetchResults();
+
+function updateCheckinView(count) {
+  var countEl = document.getElementById('checkin-count');
+  var btn = document.getElementById('checkin-btn');
+  countEl.textContent = '已有 ' + (count || 0) + ' 人来过';
+  if (localStorage.getItem('ruc_xlb_checked_in') === '1') {
+    btn.textContent = '已到此一游';
+    btn.disabled = true;
+  }
+}
+
+function loadCheckinCount() {
+  fetch('/api/checkin')
+    .then(r => r.json())
+    .then(data => updateCheckinView(data.count || 0))
+    .catch(function() {});
+}
+
+function checkIn() {
+  var btn = document.getElementById('checkin-btn');
+  if (localStorage.getItem('ruc_xlb_checked_in') === '1') return;
+  btn.disabled = true;
+  fetch('/api/checkin', {method: 'POST'})
+    .then(r => r.json())
+    .then(function(data) {
+      localStorage.setItem('ruc_xlb_checked_in', '1');
+      updateCheckinView(data.count || 0);
+    })
+    .catch(function() {
+      btn.disabled = false;
+      alert('提交失败，请重试');
+    });
+}
+
+loadCheckinCount();
 
 function openFeedback() {
   document.getElementById('feedback-modal').classList.add('open');
