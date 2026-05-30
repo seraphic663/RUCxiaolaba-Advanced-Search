@@ -1,6 +1,7 @@
 """
-RUC小喇叭 完整信息爬虫 — 采集show_user_id等持久化标识
-Usage: python spider_danger.py [max_pages] [start_page]
+RUC小喇叭 全量爬虫 — 爬取 lists 端点全部历史帖子，含 show_user_id 等持久化标识
+特性: 随机延迟、断点续爬、自动检测末尾
+Usage: python spider_danger.py
 """
 import requests
 import csv
@@ -8,6 +9,7 @@ import json
 import time
 import os
 import sys
+import random
 import urllib3
 
 urllib3.disable_warnings()
@@ -15,6 +17,9 @@ urllib3.disable_warnings()
 BASE = "https://ys.qimiaoyuanfen.com"
 CID = 4
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+CHECKPOINT_FILE = os.path.join(DATA_DIR, ".crawl_checkpoint.json")
+LIST_CSV = os.path.join(DATA_DIR, "posts_danger_list.csv")
+DETAIL_CSV = os.path.join(DATA_DIR, "posts_danger.csv")
 
 HEADERS = {
     "User-Agent": (
@@ -38,12 +43,25 @@ def load_cookie():
 
 
 def load_existing_ids(path):
+    csv.field_size_limit(10 ** 7)
     ids = set()
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 ids.add(row.get("id", ""))
     return ids
+
+
+def load_checkpoint():
+    if os.path.exists(CHECKPOINT_FILE):
+        with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"list_page": 0, "detail_done": [], "total_new": 0, "detail_total": 0}
+
+
+def save_checkpoint(cp):
+    with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+        json.dump(cp, f)
 
 
 def api(session, path, params=None):
@@ -59,7 +77,8 @@ def api(session, path, params=None):
         return None, str(e)
 
 
-def crawl(max_pages=50, start_page=1, since=None):
+def crawl():
+    cp = load_checkpoint()
     cookie = load_cookie()
     s = requests.Session()
     s.headers.update(HEADERS)
@@ -67,42 +86,60 @@ def crawl(max_pages=50, start_page=1, since=None):
     s.verify = False
     os.makedirs(DATA_DIR, exist_ok=True)
 
-    # ----- Step 1: crawl post list -----
-    list_path = os.path.join(DATA_DIR, "posts_danger_list.csv")
-    existing = load_existing_ids(list_path)
-    new_posts = []
+    # ====== Step 1: crawl /article/article/lists ======
+    existing_list = load_existing_ids(LIST_CSV)
+    start_page = cp["list_page"] + 1
 
-    print("[1/2] Crawling post list (with show_user_id)...")
-    for page in range(start_page, start_page + max_pages):
-        print(f"  page {page}...", end=" ", flush=True)
-        data, err = api(s, "/article/article/lists2", {"community_id": CID, "page": page})
+    print(f"[1/3] Crawling /article/article/lists from page {start_page}...")
+    if cp["list_page"] > 0:
+        print(f"      Resuming from checkpoint (page {cp['list_page']} done, {cp['total_new']} new so far)")
+
+    end_reached = False
+    consecutive_empty = 0
+    max_page = start_page + 500  # safety limit
+
+    for page in range(start_page, max_page):
+        delay = random.uniform(0.5, 1.5)
+        time.sleep(delay)
+
+        data, err = api(s, "/article/article/lists", {"community_id": CID, "page": page})
         if err:
-            print(f"ERR: {err}")
+            print(f"  page {page}: ERR={err}")
             if err == "expired":
-                sys.exit("[!] Cookie expired. Update data/config.txt")
-            break
+                print("[!] Cookie expired.")
+                save_checkpoint(cp)
+                sys.exit(1)
+            consecutive_empty += 1
+            if consecutive_empty >= 3:
+                print(f"  3 consecutive errors, stopping.")
+                save_checkpoint(cp)
+                break
+            continue
+
         articles = data.get("list", [])
         if not articles:
-            print("no more")
-            break
+            print(f"  page {page}: empty (end reached)")
+            end_reached = True
+            consecutive_empty += 1
+            if consecutive_empty >= 3:
+                break
+            continue
 
-        added = 0
-        oldest_on_page = None
-        with open(list_path, "a", newline="", encoding="utf-8") as f:
+            added = 0
+        first_time = articles[0].get("create_time", "?")[:16]
+        last_time = articles[-1].get("create_time", "?")[:16]
+
+        with open(LIST_CSV, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            if page == start_page and (not os.path.exists(list_path) or os.path.getsize(list_path) == 0):
+            if page == 1 and (not os.path.exists(LIST_CSV) or os.path.getsize(LIST_CSV) == 0):
                 writer.writerow(["id", "content", "category_name", "user_name",
                                  "show_user_id", "show_user_head", "real_user_id",
                                  "create_time", "comment_count"])
             for a in articles:
-                ctime = a.get("create_time", "")
-                if since and ctime < since:
-                    oldest_on_page = ctime if (oldest_on_page is None or ctime < oldest_on_page) else oldest_on_page
-                    continue
                 aid = str(a.get("id", ""))
-                if aid in existing:
+                if aid in existing_list:
                     continue
-                existing.add(aid)
+                existing_list.add(aid)
                 content = f"{(a.get('title') or '')} {(a.get('detail') or '')}".strip()
                 writer.writerow([
                     aid, content,
@@ -111,36 +148,56 @@ def crawl(max_pages=50, start_page=1, since=None):
                     a.get("show_user_id", ""),
                     a.get("show_user_head", ""),
                     a.get("real_user_id", 0),
-                    ctime,
+                    a.get("create_time", ""),
                     a.get("comment_count", 0),
                 ])
-                new_posts.append(a)
                 added += 1
 
-        skipped = len(articles) - added
-        print(f"{len(articles)} fetched, {added} new" + (f", {skipped} before cutoff" if skipped else ""))
-        if since and added == 0 and skipped > 0:
-            print(f"  All posts on page before {since}, stopping.")
+        cp["list_page"] = page
+        cp["total_new"] += added
+        save_checkpoint(cp)
+
+        if added == 0:
+            consecutive_empty += 1
+        else:
+            consecutive_empty = 0
+
+        marker = f" [no-new {consecutive_empty}/3]" if added == 0 else ""
+        print(f"  page {page}: {len(articles)} posts, {added} new, {first_time} ~ {last_time}{marker}")
+
+        if consecutive_empty >= 3:
+            print(f"  List crawl done (3 consecutive pages with 0 new).")
             break
-        time.sleep(0.4)
 
-    print(f"  Total new: {len(new_posts)}")
+    print(f"  List crawl done. {cp['total_new']} new posts found across {cp['list_page']} pages.")
 
-    # ----- Step 2: fetch each post detail -----
-    detail_path = os.path.join(DATA_DIR, "posts_danger.csv")
-    existing_full = load_existing_ids(detail_path)
-    posts_to_fetch = [p for p in new_posts if str(p.get("id", "")) not in existing_full]
+    # ====== Step 2: find all posts needing details ======
+    all_list_ids = load_existing_ids(LIST_CSV)
+    existing_detail_ids = load_existing_ids(DETAIL_CSV)
+    need_detail = [aid for aid in all_list_ids if aid not in existing_detail_ids]
+    done_set = set(cp.get("detail_done", []))
+    to_fetch = [aid for aid in need_detail if aid not in done_set]
 
-    if not posts_to_fetch:
-        print("[2/2] All already have details.")
+    if not to_fetch:
+        print("[2/2] All posts already have details. Done.")
+        if os.path.exists(CHECKPOINT_FILE):
+            os.remove(CHECKPOINT_FILE)
         return
 
-    print(f"[2/2] Fetching detail for {len(posts_to_fetch)} posts...")
-    file_exists = os.path.exists(detail_path)
+    print(f"[2/2] Fetching details: {len(need_detail)} total needed, {len(done_set)} already done, {len(to_fetch)} remaining")
 
-    with open(detail_path, "a", newline="", encoding="utf-8") as f:
+    if len(to_fetch) < len(new_ids):
+        print(f"      Resuming: {len(new_ids) - len(to_fetch)} already done, {len(to_fetch)} remaining")
+
+    detail_exists = os.path.exists(DETAIL_CSV)
+    existing_detail_ids = load_existing_ids(DETAIL_CSV)
+
+    fetched_count = len(done_set)
+    last_checkpoint = time.time()
+
+    with open(DETAIL_CSV, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        if not file_exists:
+        if not detail_exists:
             writer.writerow([
                 "id", "content", "category_name", "user_name",
                 "show_user_id", "show_user_head", "real_user_id",
@@ -149,13 +206,20 @@ def crawl(max_pages=50, start_page=1, since=None):
                 "comments_json"
             ])
 
-        for i, post in enumerate(posts_to_fetch):
-            aid = str(post.get("id", ""))
-            print(f"  [{i+1}/{len(posts_to_fetch)}] #{aid}...", end=" ", flush=True)
+        for i, aid in enumerate(to_fetch):
+            # Random delay
+            delay = random.uniform(1.0, 2.5)
+            time.sleep(delay)
 
             data, err = api(s, "/article/article/info", {"community_id": CID, "id": aid})
             if err:
-                print(f"ERR: {err}")
+                print(f"  [{i+1}/{len(to_fetch)}] #{aid}: ERR={err}")
+                if err == "expired":
+                    print("[!] Cookie expired. Saving progress...")
+                    cp["detail_done"] = list(done_set)
+                    cp["detail_total"] = fetched_count
+                    save_checkpoint(cp)
+                    sys.exit(1)
                 continue
 
             comments = data.get("comment_list", [])
@@ -176,17 +240,32 @@ def crawl(max_pages=50, start_page=1, since=None):
                 data.get("hot", 0),
                 json.dumps(comments, ensure_ascii=False),
             ])
-            print(f"OK ({len(comments)} comments, uid={data.get('show_user_id','?')})")
-            time.sleep(1)
 
-    print(f"\nDone -> {detail_path}")
+            done_set.add(aid)
+            fetched_count += 1
+
+            # Checkpoint every 50 fetches or every 60 seconds
+            now = time.time()
+            if (i + 1) % 50 == 0 or (now - last_checkpoint) > 60:
+                cp["detail_done"] = list(done_set)
+                cp["detail_total"] = fetched_count
+                save_checkpoint(cp)
+                last_checkpoint = now
+
+            progress = (i + 1) / len(to_fetch) * 100
+            eta = (len(to_fetch) - i - 1) * delay / 60
+            print(f"  [{i+1}/{len(to_fetch)} {progress:.0f}% ETA {eta:.0f}m] #{aid}: {len(comments)}c uid={data.get('show_user_id','?')}")
+
+    cp["detail_done"] = list(done_set)
+    cp["detail_total"] = fetched_count
+    save_checkpoint(cp)
+
+    # ====== Done ======
+    print(f"\nDone! {fetched_count} details fetched -> {DETAIL_CSV}")
+    # Clean checkpoint on success
+    if os.path.exists(CHECKPOINT_FILE):
+        os.remove(CHECKPOINT_FILE)
 
 
 if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser()
-    ap.add_argument("max_pages", nargs="?", type=int, default=50, help="max pages to crawl")
-    ap.add_argument("start_page", nargs="?", type=int, default=1, help="start page")
-    ap.add_argument("--since", type=str, default=None, help="only posts after this time, e.g. '2026-05-27 00:00:00'")
-    args = ap.parse_args()
-    crawl(max_pages=args.max_pages, start_page=args.start_page, since=args.since)
+    crawl()

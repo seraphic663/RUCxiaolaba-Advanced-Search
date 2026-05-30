@@ -1,6 +1,21 @@
-data/
-__pycache__/
-*.pyc
+# Local config and crawl data
 .env
-captured_requests.jsonl
+data/*
 !data/config.example.txt
+captured_requests*.jsonl
+
+# Runtime logs
+*.log
+*_log.txt
+*_err.txt
+
+# Python and test cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local tool state and upstream comparison clones
+.claude/
+upstream_test_*/
