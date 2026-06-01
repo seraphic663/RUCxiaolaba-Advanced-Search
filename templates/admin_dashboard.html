@@ -6,52 +6,59 @@
 <title>管理面板 — RUC小喇叭</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
-.header { background: #16213e; padding: 16px 24px; border-radius: 12px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-.header h2 { color: #e94560; font-size: 1.2em; }
-.header .nav { display: flex; gap: 12px; align-items: center; font-size: 0.85em; }
-.header .nav a { color: #888; text-decoration: none; }
-.header .nav a:hover { color: #ccc; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 16px; }
-.stat-card { background: #16213e; padding: 12px; border-radius: 8px; text-align: center; }
-.stat-card .num { font-size: 1.6em; color: #e94560; font-weight: bold; }
-.stat-card .label { color: #888; font-size: 0.75em; margin-top: 2px; }
-.filters { background: #16213e; padding: 16px; border-radius: 12px; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.filters input[type=text] { flex: 1; min-width: 200px; padding: 10px 14px; border: 1px solid #333; border-radius: 8px; background: #0f3460; color: #fff; font-size: 14px; outline: none; }
-.filters input:focus { border-color: #e94560; }
-.filters select { padding: 10px; border: 1px solid #333; border-radius: 8px; background: #0f3460; color: #fff; font-size: 13px; outline: none; }
-.filters select:focus { border-color: #e94560; }
-.filters label { font-size: 0.8em; color: #aaa; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
-.filters label input[type=checkbox] { accent-color: #e94560; }
-.results { background: #16213e; border-radius: 12px; overflow: hidden; }
-.result-row { padding: 14px 18px; border-bottom: 1px solid #1f2f4a; cursor: pointer; transition: background .15s; }
-.result-row:hover { background: #1a2a4a; }
+body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f5f5f5; color: #222; min-height: 100vh; }
+.header { background: #8b0012; color: #fff; padding: 18px 24px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+.header h2 { color: #fff; font-size: 1.25em; }
+.header .nav { display: flex; gap: 14px; align-items: center; font-size: 0.86em; flex-wrap: wrap; }
+.header .nav a { color: rgba(255,255,255,.78); text-decoration: none; }
+.header .nav a:hover { color: #fff; }
+.stats { max-width: 1040px; margin: 0 auto 14px; padding: 0 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.stat-card { background: #fff; padding: 12px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.06); border: 1px solid #eee; }
+.stat-card .num { font-size: 1.55em; color: #8b0012; font-weight: bold; }
+.stat-card .label { color: #777; font-size: 0.75em; margin-top: 2px; }
+.filters { max-width: 1040px; margin: 0 auto 14px; padding: 14px 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; background: #fff; border: 1px solid #eee; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.filters input[type=text] { flex: 1; min-width: 220px; padding: 10px 14px; border: 2px solid #ddd; border-radius: 10px; background: #fff; color: #222; font-size: 14px; outline: none; }
+.filters input:focus { border-color: #8b0012; }
+.filters select { padding: 9px 10px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #333; font-size: 13px; outline: none; }
+.filters select:focus { border-color: #8b0012; }
+.filters label { font-size: 0.82em; color: #666; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+.filters label input[type=checkbox] { accent-color: #8b0012; }
+.filters button { padding: 10px 20px; border: none; border-radius: 8px; background: #8b0012; color: #fff; cursor: pointer; font-size: 14px; }
+.filters button:hover { background: #6d000e; }
+#results { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+.results { border-radius: 8px; overflow: hidden; }
+.result-row { background: #fff; padding: 14px 18px; margin-bottom: 10px; border: 1px solid #eee; border-radius: 8px; cursor: pointer; transition: box-shadow .15s, border-color .15s; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.result-row:hover { border-color: #e6b8bf; box-shadow: 0 2px 8px rgba(0,0,0,.1); }
 .result-row .top { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; font-size: 0.8em; }
-.result-row .top .uid { color: #e94560; font-family: monospace; font-weight: bold; }
-.result-row .top .meta { color: #666; }
-.result-row .text { line-height: 1.6; color: #ccc; white-space: pre-wrap; word-break: break-word; font-size: 0.9em; }
-.result-row .stats-row { color: #777; font-size: 0.78em; margin-top: 6px; }
-.comments-panel { display: none; border-left: 2px solid #333; margin: 10px 0 0 0; padding-left: 14px; }
+.result-row .top .uid { color: #8b0012; font-family: monospace; font-weight: bold; }
+.result-row .top .meta { color: #999; }
+.result-row .text { line-height: 1.7; color: #222; white-space: pre-wrap; word-break: break-word; font-size: 0.92em; }
+.result-row .stats-row { color: #888; font-size: 0.8em; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0f0f0; }
+.identity-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 0.82em; font-weight: 600; }
+.identity-pill.anonymous { color: #777; background: #f2f2f2; }
+.identity-pill.real { color: #2e7d32; background: #eaf6ed; }
+.comments-panel { display: none; border-left: 3px solid #f0f0f0; margin: 10px 0 0 0; padding-left: 14px; }
 .comments-panel.open { display: block; }
-.cmt { padding: 6px 0; border-bottom: 1px solid #1a1a2e; font-size: 0.85em; }
+.cmt { padding: 7px 0; border-bottom: 1px solid #f5f5f5; font-size: 0.86em; }
 .cmt:last-child { border-bottom: none; }
-.cmt .cmt-uid { color: #e94560; font-family: monospace; font-size: 0.85em; }
-.cmt .cmt-name { color: #aaa; font-size: 0.85em; }
-.cmt .cmt-text { color: #bbb; margin-top: 2px; }
-.cmt .reply-to { color: #666; font-size: 0.8em; margin-left: 4px; }
-.cmt .nested { margin-left: 16px; border-left: 1px solid #222; padding-left: 10px; margin-top: 4px; }
-.pagination { display: flex; justify-content: center; gap: 6px; padding: 16px; flex-wrap: wrap; }
-.pagination button { padding: 8px 14px; border: 1px solid #333; border-radius: 6px; background: #0f3460; color: #ccc; cursor: pointer; font-size: 0.85em; }
-.pagination button:hover { background: #1a3a6a; }
-.pagination button.active { background: #e94560; color: #fff; border-color: #e94560; }
+.cmt .cmt-uid { color: #8b0012; font-family: monospace; font-size: 0.85em; }
+.cmt .cmt-name { color: #777; font-size: 0.85em; }
+.cmt .cmt-text { color: #444; margin-top: 2px; line-height: 1.6; }
+.cmt .reply-to { color: #999; font-size: 0.8em; margin-left: 4px; }
+.cmt .nested { margin-left: 16px; border-left: 2px solid #eee; padding-left: 10px; margin-top: 4px; }
+.pagination { max-width: 1040px; margin: 0 auto; display: flex; justify-content: center; gap: 6px; padding: 16px; flex-wrap: wrap; }
+.pagination button { padding: 8px 14px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #333; cursor: pointer; font-size: 0.85em; }
+.pagination button:hover { border-color: #8b0012; color: #8b0012; }
+.pagination button.active { background: #8b0012; color: #fff; border-color: #8b0012; }
 .pagination button:disabled { opacity: 0.3; cursor: default; }
-mark { background: #e9456080; color: #fff; padding: 0 2px; border-radius: 2px; }
-.no-results { text-align: center; color: #555; padding: 40px; }
-.loading { text-align: center; color: #666; padding: 40px; }
+mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
+.no-results { text-align: center; color: #999; padding: 40px; background: #fff; border-radius: 8px; border: 1px solid #eee; }
+.loading { text-align: center; color: #999; padding: 40px; background: #fff; border-radius: 8px; border: 1px solid #eee; }
 @media (max-width: 700px) {
-  body { padding: 8px; }
+  .header { padding: 14px 12px; }
   .filters { flex-direction: column; }
   .filters input[type=text] { width: 100%; }
+  .filters select, .filters button { width: 100%; }
 }
 </style>
 </head>
@@ -59,7 +66,7 @@ mark { background: #e9456080; color: #fff; padding: 0 2px; border-radius: 2px; }
 <div class="header">
   <h2>&#128274; 管理面板</h2>
   <div class="nav">
-    <span style="color:#888;font-size:0.8em;" id="db-info">__CSV_SOURCE__ · __TOTAL__帖</span>
+    <span style="color:rgba(255,255,255,.72);font-size:0.8em;" id="db-info">__CSV_SOURCE__ · __TOTAL__帖</span>
     <a href="/">返回搜索</a>
     <a href="/admin?logout=1">退出</a>
   </div>
@@ -69,11 +76,12 @@ mark { background: #e9456080; color: #fff; padding: 0 2px; border-radius: 2px; }
   <input type="text" id="q" placeholder="搜索关键词（空格 AND）..." autofocus>
   <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="views">按浏览</option><option value="hot">按热度</option></select>
   <select id="date"><option value="">全部时间</option><option value="1d">今天</option><option value="3d">3天</option><option value="7d">7天</option><option value="30d">30天</option></select>
+  <select id="identity"><option value="">匿名/实名不限</option><option value="anonymous">仅看匿名帖</option><option value="real">仅看实名帖</option></select>
   <label><input type="checkbox" id="sc-body" checked> 正文</label>
   <label><input type="checkbox" id="sc-cmt"> 评论</label>
   <label><input type="checkbox" id="sc-uid"> ID</label>
   <label><input type="checkbox" id="sc-name"> 昵称</label>
-  <button onclick="doSearch(1)" style="padding:10px 20px;border:none;border-radius:8px;background:#e94560;color:#fff;cursor:pointer;font-size:14px;">搜索</button>
+  <button onclick="doSearch(1)">搜索</button>
 </div>
 
 <div id="results"><div class="loading">输入关键词后点击搜索</div></div>
@@ -89,9 +97,11 @@ function doSearch(page) {
   currentKW = q ? q.split(/\s+/).filter(Boolean) : [];
   var sort = document.getElementById('sort').value;
   var date = document.getElementById('date').value;
+  var identity = document.getElementById('identity').value;
 
   var params = ['q=' + encodeURIComponent(q), 'sort=' + sort, 'page=' + currentPage, 'limit=50'];
   if (date) params.push('date=' + date);
+  if (identity) params.push('identity=' + identity);
 
   // Build scope
   var scopes = [];
@@ -99,7 +109,9 @@ function doSearch(page) {
   if (document.getElementById('sc-cmt').checked) scopes.push('cmt');
   if (document.getElementById('sc-uid').checked) scopes.push('uid');
   if (document.getElementById('sc-name').checked) scopes.push('name');
-  if (scopes.length > 0) params.push('scope=all');
+  if (scopes.length > 0) params.push('admin_fields=' + scopes.join(','));
+  if (scopes.indexOf('cmt') >= 0) params.push('scope=all');
+  else params.push('scope=content');
 
   document.getElementById('results').innerHTML = '<div class="loading">搜索中...</div>';
 
@@ -134,12 +146,12 @@ function renderResults(data) {
     var uid = p.show_user_id || '?';
     var ruid = p.real_user_id || '0';
     var idTag = uid;
-    if (ruid !== '0' && ruid !== uid) idTag += ' <span style="color:#ff0">real:' + ruid + '</span>';
-    else if (ruid !== '0') idTag += ' <span style="color:#0f0">★非匿名</span>';
+    var postIdentity = (ruid === '0' || !ruid) ? '<span class="identity-pill anonymous">帖子匿名</span>' : '<span class="identity-pill real">帖子实名</span>';
+    if (ruid !== '0' && ruid !== uid) idTag += ' <span style="color:#8b0012">real:' + ruid + '</span>';
     html += '<div class="result-row" onclick="toggleCmts(' + idx + ')">';
-    html += '<div class="top"><span class="uid">ID:' + idTag + '</span><span class="uname" style="color:#aaa">' + (p.user||'?') + '</span><span class="meta">' + (p.category||'?') + ' &middot; #' + p.id + ' &middot; ' + (p.time||'?').slice(0,16) + '</span></div>';
+    html += '<div class="top"><span class="uid">ID:' + idTag + postIdentity + '</span><span class="uname" style="color:#777">' + (p.user||'?') + '</span><span class="meta">' + (p.category||'?') + ' &middot; #' + p.id + ' &middot; ' + (p.time||'?').slice(0,16) + '</span></div>';
     html += '<div class="text">' + highlight(p.content||'') + '</div>';
-    html += '<div class="stats-row">❤' + (p.stars||0) + ' 💬' + (p.comments||0) + ' 👁' + (p.views||0) + ' <span class="toggle-cmts" style="color:#e94560;cursor:pointer;">▶ 展开评论</span></div>';
+    html += '<div class="stats-row">❤' + (p.stars||0) + ' 💬' + (p.comments||0) + ' 👁' + (p.views||0) + ' <span class="toggle-cmts" style="color:#8b0012;cursor:pointer;">▶ 展开评论</span></div>';
     html += '<div class="comments-panel" id="cmts-' + idx + '"></div>';
     html += '</div>';
   });
@@ -153,8 +165,9 @@ function renderComments(panel, comments) {
   comments.forEach(function(c) {
     h += '<div class="cmt">';
     h += '<span class="cmt-uid">' + (c.show_user_id||'?') + '</span> ';
+    h += identityPill(c.real_user_id, '回复', c.hasOwnProperty('real_user_id'));
     h += '<span class="cmt-name">' + (c.show_user_name||'?') + '</span>';
-    if (c.is_publisher == 1) h += ' <span style="color:#e94560">楼主</span>';
+    if (c.is_publisher == 1) h += ' <span style="color:#8b0012">楼主</span>';
     if (c.reply_show_user_id) h += '<span class="reply-to">→ ' + (c.reply_show_user_name||c.reply_show_user_id||'?') + '</span>';
     h += '<div class="cmt-text">' + highlight(c.detail||'') + '</div>';
     if (c.reply_comment_list && c.reply_comment_list.length > 0) {
@@ -162,6 +175,7 @@ function renderComments(panel, comments) {
       c.reply_comment_list.forEach(function(nr) {
         h += '<div class="cmt">';
         h += '<span class="cmt-uid">' + (nr.show_user_id||'?') + '</span> ';
+        h += identityPill(nr.real_user_id, '回复', nr.hasOwnProperty('real_user_id'));
         h += '<span class="cmt-name">' + (nr.show_user_name||'?') + '</span>';
         if (nr.reply_show_user_id) h += '<span class="reply-to">→ ' + (nr.reply_show_user_name||nr.reply_show_user_id||'?') + '</span>';
         h += '<div class="cmt-text">' + highlight(nr.detail||'') + '</div>';
@@ -172,6 +186,13 @@ function renderComments(panel, comments) {
     h += '</div>';
   });
   return h;
+}
+
+function identityPill(realUserId, label, known) {
+  if (!known) return '<span class="identity-pill anonymous">' + label + '匿名未知</span> ';
+  var ruid = String(realUserId || '0');
+  if (ruid === '0') return '<span class="identity-pill anonymous">' + label + '匿名</span> ';
+  return '<span class="identity-pill real">' + label + '实名</span> ';
 }
 
 function toggleCmts(idx) {

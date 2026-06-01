@@ -30,7 +30,7 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 # Phase 1
 CHECKPOINT_FILE = os.path.join(DATA_DIR, ".scan_checkpoint.json")
 SCAN_OUTPUT = os.path.join(DATA_DIR, "posts_scan.csv")
-SCAN_END_ID = 4000000
+SCAN_END_ID = 3300000  # extended: cover 2022-11 ~ 2025-12
 NUM_WORKERS = 10
 
 # Phase 2+3 concurrent_unchanged threshold
@@ -125,15 +125,23 @@ def fetch_detail(session, post_id):
 # ==================== DATA I/O ====================
 
 def load_existing_ids(csv_path):
-    """Return set of post IDs already in a CSV file."""
+    """Return set of post IDs already in a CSV file. Only reads id column for speed."""
     ids = set()
     if os.path.exists(csv_path):
         csv.field_size_limit(10 ** 7)
-        with open(csv_path, "r", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                aid = row.get("id", "")
-                if aid:
-                    ids.add(aid)
+        with open(csv_path, "r", encoding="utf-8", errors="replace") as f:
+            reader = csv.reader(f)
+            header = next(reader, [])
+            # Find 'id' column index
+            try:
+                id_idx = header.index("id")
+            except ValueError:
+                return ids
+            for row in reader:
+                if len(row) > id_idx:
+                    aid = row[id_idx].strip()
+                    if aid and aid.isdigit():
+                        ids.add(aid)
     return ids
 
 
@@ -144,28 +152,34 @@ def load_all_posts(*csv_paths):
     for path in csv_paths:
         if not os.path.exists(path):
             continue
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             for row in csv.DictReader(f):
                 aid = row.get("id", "")
                 if not aid or aid in posts:
-                    # Keep existing (first loaded wins — put detail CSV first)
                     continue
-                posts[aid] = {
-                    "id": aid,
-                    "content": row.get("content", ""),
-                    "category_name": row.get("category_name", ""),
-                    "user_name": row.get("user_name", ""),
-                    "show_user_id": row.get("show_user_id", ""),
-                    "show_user_head": row.get("show_user_head", ""),
-                    "real_user_id": row.get("real_user_id", "0"),
-                    "create_time": row.get("create_time", ""),
-                    "comment_count": int(row.get("comment_count", 0)),
-                    "star_count": int(row.get("star_count", 0)),
-                    "trace_count": int(row.get("trace_count", 0)),
-                    "views": int(row.get("views", 0)),
-                    "hot": int(row.get("hot", 0)),
-                    "comments_json": row.get("comments_json", "[]"),
-                }
+                # Validate: id must be numeric (skip garbled rows)
+                if not aid.isdigit():
+                    continue
+                try:
+                    post = {
+                        "id": aid,
+                        "content": row.get("content", ""),
+                        "category_name": row.get("category_name", ""),
+                        "user_name": row.get("user_name", ""),
+                        "show_user_id": row.get("show_user_id", ""),
+                        "show_user_head": row.get("show_user_head", ""),
+                        "real_user_id": row.get("real_user_id", "0"),
+                        "create_time": row.get("create_time", ""),
+                        "comment_count": int(row.get("comment_count", 0) or 0),
+                        "star_count": int(row.get("star_count", 0) or 0),
+                        "trace_count": int(row.get("trace_count", 0) or 0),
+                        "views": int(row.get("views", 0) or 0),
+                        "hot": int(row.get("hot", 0) or 0),
+                        "comments_json": row.get("comments_json", "[]"),
+                    }
+                except (ValueError, TypeError):
+                    continue  # skip garbled rows
+                posts[aid] = post
     return posts
 
 
@@ -208,6 +222,15 @@ def phase1_scan():
     if start_id <= end_id:
         print(f"[Phase 1] 已完成 (last_id={start_id} <= {end_id})")
         return
+    if not os.path.exists(CHECKPOINT_FILE):
+        # Checkpoint was cleaned on previous successful completion
+        existing = load_existing_ids(SCAN_OUTPUT)
+        if existing:
+            min_id = min(int(aid) for aid in existing)
+            # Allow 5000 buffer: if we're within ~30s of the end, consider it done
+            if min_id <= SCAN_END_ID + 5000:
+                print(f"[Phase 1] 已完成 (min_id={min_id} close to {SCAN_END_ID})")
+                return
 
     total = start_id - end_id
     est_hours = total / 30 / 3600  # ~30 IDs/s
@@ -268,8 +291,16 @@ def phase1_scan():
                     stop_flag.set()
                     break
 
-            except Exception:
-                pass
+            except Exception as e:
+                if "1000" in str(e) or "expired" in str(e).lower():
+                    print(f"\n[!] Cookie expired. Stop.", flush=True)
+                    stop_flag.set()
+                    break
+                # Log first few errors then continue silently
+                with lock:
+                    progress["err"] = progress.get("err", 0) + 1
+                    if progress["err"] <= 3:
+                        print(f"  [w{worker_id}] err #{tid}: {str(e)[:80]}", flush=True)
 
             with lock:
                 progress["done"] += 1
@@ -503,8 +534,21 @@ def main():
     # ═══════ Merge all data ═══════
     print("[merge] 合并数据...")
     danger_csv = os.path.join(DATA_DIR, "posts_danger.csv")
-    posts = load_all_posts(danger_csv, SCAN_OUTPUT)
-    print(f"[merge] 总计 {len(posts)} 条唯一帖子")
+    if os.path.exists(FINAL_OUTPUT):
+        # Base: previous final output (preserves Phase 3 comment updates)
+        posts = load_all_posts(FINAL_OUTPUT)
+        # Supplement: scan CSV (catches Phase 1 extension data, new IDs only)
+        scan_posts = load_all_posts(SCAN_OUTPUT)
+        added = 0
+        for k, v in scan_posts.items():
+            if k not in posts:
+                posts[k] = v
+                added += 1
+        print(f"[merge] 基准: posts_final.csv ({len(posts) - added} 帖) + posts_scan.csv (+{added} 新帖) = {len(posts)} 帖")
+    else:
+        # First run: merge from raw sources
+        posts = load_all_posts(danger_csv, SCAN_OUTPUT)
+        print(f"[merge] 基准: posts_danger.csv + posts_scan.csv = {len(posts)} 帖")
     print()
 
     # ═══════ Phase 2: 补扫高 ID ═══════
