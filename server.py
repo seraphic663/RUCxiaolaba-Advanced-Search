@@ -14,8 +14,10 @@ import json
 import csv
 import os
 import secrets
+import sqlite3
 import time
 import threading
+import html as _html
 import string as _string
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -27,6 +29,8 @@ from urllib.parse import urlparse, parse_qs
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+DEMO_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo", "runtime", "posts.demo.db")
+CSV_FINAL = os.path.join(DATA_DIR, "posts_final.csv")
 CSV_SCAN = os.path.join(DATA_DIR, "posts_scan.csv")
 CSV_DANGER = os.path.join(DATA_DIR, "posts_danger.csv")
 CSV_LEGACY = os.path.join(DATA_DIR, "posts_full.csv")
@@ -103,23 +107,40 @@ def increment_checkin_count():
         return count
 
 
+def _safe_int(value, default=0):
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
+
+
 # ==================== DATA LOADING & CACHING ====================
+
+def choose_csv_path():
+    """Return the production CSV to serve, preferring the unified final output."""
+    for path in (CSV_FINAL, CSV_SCAN, CSV_DANGER, CSV_LEGACY):
+        if os.path.exists(path):
+            return path
+    return None
 
 def load_posts():
     """Read CSV, deduplicate, parse comments, build index. Returns (posts, crawl_time, has_danger, csv_path)."""
-    csv_path = CSV_SCAN if os.path.exists(CSV_SCAN) else (CSV_DANGER if os.path.exists(CSV_DANGER) else CSV_LEGACY)
-    if not os.path.exists(csv_path):
+    csv_path = choose_csv_path()
+    if not csv_path:
         return [], None, None, None
 
     csv.field_size_limit(10 ** 7)
     seen = set()
     posts = []
-    has_danger = (csv_path in (CSV_DANGER, CSV_SCAN))
+    has_danger = (csv_path in (CSV_FINAL, CSV_SCAN, CSV_DANGER))
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    skipped = 0
+
+    with open(csv_path, "r", encoding="utf-8", errors="replace", newline="") as f:
         for row in csv.DictReader(f):
             aid = row.get("id", "")
-            if not aid or aid in seen:
+            if not aid or not aid.isdigit() or aid in seen or row.get(None):
+                skipped += 1
                 continue
             seen.add(aid)
 
@@ -136,11 +157,11 @@ def load_posts():
                 "category": row.get("category_name", ""),
                 "user": row.get("user_name", ""),
                 "time": row.get("create_time", ""),
-                "comments": int(row.get("comment_count", 0)),
-                "stars": int(row.get("star_count", 0)),
-                "trace": int(row.get("trace_count", 0)),
-                "views": int(row.get("views", 0)),
-                "hot": int(row.get("hot", 0)),
+                "comments": _safe_int(row.get("comment_count", 0)),
+                "stars": _safe_int(row.get("star_count", 0)),
+                "trace": _safe_int(row.get("trace_count", 0)),
+                "views": _safe_int(row.get("views", 0)),
+                "hot": _safe_int(row.get("hot", 0)),
                 "comment_list": comment_list,
             }
 
@@ -170,15 +191,17 @@ def load_posts():
 
             posts.append(post)
 
-    posts.sort(key=lambda x: int(x["id"]), reverse=True)
+    posts.sort(key=lambda x: _safe_int(x["id"]), reverse=True)
+    if skipped:
+        print(f"[warn] skipped {skipped} malformed CSV row(s) from {os.path.basename(csv_path)}")
     crawl_time = datetime.fromtimestamp(os.path.getmtime(csv_path)).strftime("%Y-%m-%d %H:%M")
     return posts, crawl_time, has_danger, csv_path
 
 
 def refresh_cache():
     """Reload data if CSV has changed (or first load). Thread-safe."""
-    csv_path = CSV_SCAN if os.path.exists(CSV_SCAN) else (CSV_DANGER if os.path.exists(CSV_DANGER) else CSV_LEGACY)
-    if not os.path.exists(csv_path):
+    csv_path = choose_csv_path()
+    if not csv_path:
         with _state_lock:
             _cache["posts"] = []
             _cache["post_index"] = {}
@@ -398,6 +421,163 @@ def render_template(name, **kwargs):
     return html
 
 
+# ==================== DEMO ARCHITECTURE PAGE ====================
+
+DEMO_PAGE_SIZE = 50
+
+
+def _demo_like_query(query):
+    keywords = [kw.lower() for kw in query.split() if kw.strip()]
+    if not keywords:
+        return "", []
+    clauses = []
+    args = []
+    for kw in keywords:
+        pattern = f"%{kw}%"
+        clauses.append("(lower(content) like ? or lower(category_name) like ? or lower(user_name) like ? or id like ?)")
+        args.extend([pattern, pattern, pattern, pattern])
+    return " where " + " and ".join(clauses), args
+
+
+def load_demo_posts(query="", sort_by="time", page=1, limit=DEMO_PAGE_SIZE):
+    """Read searchable posts from the architecture-switch demo SQLite database."""
+    if not os.path.exists(DEMO_DB):
+        return [], 0, False
+    try:
+        page = max(1, int(page or 1))
+        limit = max(1, min(int(limit or DEMO_PAGE_SIZE), 200))
+    except (TypeError, ValueError):
+        page, limit = 1, DEMO_PAGE_SIZE
+
+    order_by = "cast(id as integer) desc"
+    if sort_by == "stars":
+        order_by = "star_count desc, cast(id as integer) desc"
+    elif sort_by == "views":
+        order_by = "views desc, cast(id as integer) desc"
+    elif sort_by == "hot":
+        order_by = "hot desc, cast(id as integer) desc"
+
+    where_sql, where_args = _demo_like_query(query)
+    offset = (page - 1) * limit
+
+    try:
+        conn = sqlite3.connect(DEMO_DB)
+        conn.row_factory = sqlite3.Row
+        with conn:
+            total = conn.execute(f"select count(*) from posts{where_sql}", where_args).fetchone()[0]
+            rows = conn.execute(
+                f"""
+                select id, content, category_name, user_name, create_time,
+                       comment_count, star_count, trace_count, views, hot, comments_json, updated_at
+                from posts
+                {where_sql}
+                order by {order_by}
+                limit ? offset ?
+                """,
+                where_args + [limit, offset],
+            ).fetchall()
+        return [dict(r) for r in rows], total, True
+    except sqlite3.Error as exc:
+        return [{"id": "ERR", "content": f"SQLite error: {exc}"}], 1, True
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def build_demo_comment_rows(comments):
+    if not comments:
+        return ""
+    parts = []
+    for idx, c in enumerate(comments[:80], 1):
+        name = _html.escape(str(c.get("show_user_name", "?") or "?"))
+        detail = _html.escape(str(c.get("detail", "") or ""))
+        op_tag = ' <span class="op-tag">&#27004;&#20027;</span>' if str(c.get("is_publisher", "")) == "1" else ""
+        reply_parts = []
+        for nr in (c.get("reply_comment_list") or [])[:40]:
+            nr_name = _html.escape(str(nr.get("show_user_name", "?") or "?"))
+            nr_detail = _html.escape(str(nr.get("detail", "") or ""))
+            reply_to = nr.get("reply_show_user_name") or ""
+            reply_to_html = f' <span class="reply-to">&#22238;&#22797; {_html.escape(str(reply_to))}</span>' if reply_to else ""
+            reply_parts.append(
+                '<div class="reply">'
+                f'<div class="cmt-meta">{nr_name}{reply_to_html}</div>'
+                f'<div class="cmt-text">{nr_detail}</div>'
+                '</div>'
+            )
+        replies = '<div class="replies">' + "".join(reply_parts) + '</div>' if reply_parts else ""
+        parts.append(
+            '<div class="cmt">'
+            f'<div class="cmt-meta"><b>#{idx}</b> {name}{op_tag}</div>'
+            f'<div class="cmt-text">{detail}</div>'
+            f'{replies}'
+            '</div>'
+        )
+    return "".join(parts)
+
+
+def build_demo_rows(posts, query=""):
+    if not posts:
+        return '<div class="empty"><div class="icon">&#128269;</div><div class="text">&#27809;&#26377;&#25214;&#21040;&#21305;&#37197;&#30340; demo &#24086;&#23376;</div></div>'
+
+    rows = []
+    for p in posts:
+        pid = _html.escape(str(p.get("id", "")))
+        category = _html.escape(str(p.get("category_name", "")) or "?")
+        user = _html.escape(str(p.get("user_name", "")) or "?")
+        created = _html.escape(str(p.get("create_time", ""))[:16])
+        updated = _html.escape(str(p.get("updated_at", ""))[:16])
+        content = _html.escape(str(p.get("content", "")))
+        comments_count = _safe_int(p.get("comment_count", 0))
+        comments = _html.escape(str(comments_count))
+        stars = _html.escape(str(p.get("star_count", 0)))
+        trace = _html.escape(str(p.get("trace_count", 0)))
+        views = _html.escape(str(p.get("views", 0)))
+        hot = _html.escape(str(p.get("hot", 0)))
+        try:
+            comment_list = json.loads(p.get("comments_json") or "[]")
+        except Exception:
+            comment_list = []
+        comment_html = build_demo_comment_rows(comment_list)
+        comment_toggle = ""
+        comment_panel = ""
+        if comments_count > 0 or comment_list:
+            comment_toggle = f'<span class="comment-toggle-inline" data-count="{comments}" onclick="toggleComments(\'demo-cmts-{pid}\', this)">&#9654; &#23637;&#24320; {comments} &#26465;&#35780;&#35770;</span>'
+            comment_panel = f'<div class="comments-wrap" id="demo-cmts-{pid}" style="display:none">{comment_html or "<div class=\"no-comments\">&#35813;&#24086;&#23376;&#30340;&#35780;&#35770; JSON &#20026;&#31354;</div>"}</div>'
+        else:
+            comment_toggle = '<span></span>'
+        rows.append(
+            '<article class="post">'
+            '<div class="post-header">'
+            '<div class="left">'
+            f'<span class="post-cat">{category}</span>'
+            f'<span class="post-user">{user}</span>'
+            f'<span class="post-id">#{pid}</span>'
+            '</div>'
+            f'<span class="post-time-right">{created}</span>'
+            '</div>'
+            f'<div class="post-content">{content}</div>'
+            '<div class="post-bottom-row">'
+            f'{comment_toggle}'
+            '<span class="post-stats-inline">'
+            f'<span>&#10084; {stars}</span>'
+            f'<span>&#128172; {comments}</span>'
+            f'<span>&#128099; {trace}</span>'
+            f'<span>&#128065; {views}</span>'
+            f'<span>hot {hot}</span>'
+            '</span>'
+            '</div>'
+            f'{comment_panel}'
+            f'<div class="demo-updated">DB updated {updated}</div>'
+            '</article>'
+        )
+    return "\n".join(rows)
+
+def demo_sort_class(current, target):
+    return "active" if current == target else ""
+
+
 # ==================== API HANDLERS ====================
 
 def _safe_post(post):
@@ -421,12 +601,42 @@ def _admin_post(post):
     p = _safe_post(post)
     p["show_user_id"] = post.get("show_user_id", "")
     p["real_user_id"] = post.get("real_user_id", "0")
+    p["is_anonymous"] = str(post.get("real_user_id", "0") or "0") == "0"
     p["comment_list"] = post.get("comment_list", [])
     return p
 
 
+def _admin_search_text(post, fields):
+    parts = []
+    if "body" in fields:
+        parts.append(post.get("_search_content", ""))
+    if "cmt" in fields:
+        parts.append(post.get("_search_all", ""))
+    if "uid" in fields:
+        parts.append(post.get("show_user_id", ""))
+        parts.append(post.get("real_user_id", ""))
+        for c in post.get("comment_list", []):
+            parts.append(str(c.get("show_user_id", "") or ""))
+            parts.append(str(c.get("real_user_id", "") or ""))
+            parts.append(str(c.get("reply_show_user_id", "") or ""))
+            for nr in c.get("reply_comment_list", []) or []:
+                parts.append(str(nr.get("show_user_id", "") or ""))
+                parts.append(str(nr.get("real_user_id", "") or ""))
+                parts.append(str(nr.get("reply_show_user_id", "") or ""))
+    if "name" in fields:
+        parts.append(post.get("user", ""))
+        for c in post.get("comment_list", []):
+            parts.append(str(c.get("show_user_name", "") or ""))
+            parts.append(str(c.get("reply_show_user_name", "") or ""))
+            for nr in c.get("reply_comment_list", []) or []:
+                parts.append(str(nr.get("show_user_name", "") or ""))
+                parts.append(str(nr.get("reply_show_user_name", "") or ""))
+    return " ".join(parts).lower()
+
+
 def api_search(query, sort_by, page, limit, category=None, date_from=None, date_to=None,
-               scope="all", uid=None, uname=None, admin=False):
+               scope="all", uid=None, uname=None, admin=False, identity=None,
+               admin_fields=None):
     """Search posts with optional filters."""
     posts, _, _, _ = get_cached_data()
 
@@ -435,12 +645,12 @@ def api_search(query, sort_by, page, limit, category=None, date_from=None, date_
         keywords = query.lower().split()
         search_field = "_search_content" if scope == "content" else "_search_all"
         results = []
+        fields = admin_fields or {"body", "cmt", "uid", "name"}
         for p in posts:
-            search_text = p.get(search_field, "")
-            # Also search show_user_id and show_user_name when admin mode
             if admin:
-                search_text += " " + p.get("show_user_id", "")
-                search_text += " " + p.get("user", "")
+                search_text = _admin_search_text(p, fields)
+            else:
+                search_text = p.get(search_field, "")
             if all(kw in search_text for kw in keywords):
                 results.append(p)
     else:
@@ -449,6 +659,13 @@ def api_search(query, sort_by, page, limit, category=None, date_from=None, date_
     # ---- UID filter ----
     if uid:
         results = [p for p in results if p.get("show_user_id", "") == uid]
+
+    # ---- Identity filter (admin only) ----
+    if admin and identity in ("anonymous", "real"):
+        if identity == "anonymous":
+            results = [p for p in results if str(p.get("real_user_id", "0") or "0") == "0"]
+        elif identity == "real":
+            results = [p for p in results if str(p.get("real_user_id", "0") or "0") != "0"]
 
     # ---- User name filter ----
     if uname:
@@ -583,6 +800,36 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._serve_html(html)
 
+    def _handle_demo(self):
+        params, _ = self._parse_query()
+        query = params.get("q", [""])[0].strip()
+        sort_by = params.get("sort", ["time"])[0]
+        if sort_by not in ("time", "stars", "views", "hot"):
+            sort_by = "time"
+        try:
+            page = int(params.get("page", ["1"])[0])
+        except ValueError:
+            page = 1
+
+        posts, total, db_exists = load_demo_posts(query=query, sort_by=sort_by, page=page)
+        rows = build_demo_rows(posts, query=query) if db_exists else '<div class="empty">?? demo ?????? <code>python3 demo/architecture_switch_demo.py import-csv --store sqlite --csv-path data/posts_final.csv --limit 100</code></div>'
+        total_pages = max(1, (total + DEMO_PAGE_SIZE - 1) // DEMO_PAGE_SIZE)
+        html = render_template(
+            "demo.html",
+            DB_PATH=DEMO_DB,
+            TOTAL=total if db_exists else 0,
+            QUERY=_html.escape(query, quote=True),
+            SORT=sort_by,
+            SORT_TIME=demo_sort_class(sort_by, "time"),
+            SORT_STARS=demo_sort_class(sort_by, "stars"),
+            SORT_VIEWS=demo_sort_class(sort_by, "views"),
+            SORT_HOT=demo_sort_class(sort_by, "hot"),
+            PAGE=page,
+            TOTAL_PAGES=total_pages,
+            ROWS=rows,
+        )
+        self._serve_html(html)
+
     # ---- Admin GET ----
     def _handle_admin_get(self):
         params, _ = self._parse_query()
@@ -675,6 +922,21 @@ class Handler(BaseHTTPRequestHandler):
         if scope not in ("all", "content"):
             scope = "content"
         admin = self._is_admin()
+        admin_fields = None
+        if admin:
+            raw_fields = params.get("admin_fields", [""])[0].strip()
+            allowed_fields = {"body", "cmt", "uid", "name"}
+            if raw_fields:
+                admin_fields = {f for f in raw_fields.split(",") if f in allowed_fields}
+            else:
+                admin_fields = {"body", "cmt", "uid", "name"}
+            if not admin_fields:
+                admin_fields = allowed_fields
+        identity = params.get("identity", [""])[0].strip()
+        if identity not in ("", "anonymous", "real"):
+            identity = ""
+        if not admin:
+            identity = ""
 
         # Time range: accept "date" preset or explicit "from"/"to" timestamps
         date_from = date_to = None
@@ -703,7 +965,9 @@ class Handler(BaseHTTPRequestHandler):
 
         result = api_search(q, sort_by, page, limit,
                             category=category, date_from=date_from, date_to=date_to,
-                            scope=scope, uid=uid, uname=uname, admin=admin)
+                            scope=scope, uid=uid, uname=uname, admin=admin,
+                            identity=identity or None,
+                            admin_fields=admin_fields)
         self._serve_json(result)
 
     # ---- API: feedback ----
@@ -774,6 +1038,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_healthcheck()
         elif path == "/admin":
             self._handle_admin_get()
+        elif path == "/demo":
+            self._handle_demo()
         elif path == "/" or path == "":
             self._handle_main()
         else:
