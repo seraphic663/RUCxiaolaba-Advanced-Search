@@ -8,6 +8,7 @@ param(
 
     [string]$OutDir = "data\railway_sync",
 
+    [switch]$Archive,
     [switch]$IncludeLogs,
     [int]$LogLines = 500
 )
@@ -49,32 +50,36 @@ function Invoke-RailwayLogs($LocalPath) {
 
 Require-Command "railway"
 
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$syncDir = Join-Path $OutDir $timestamp
-New-Item -ItemType Directory -Force -Path $syncDir | Out-Null
-
-$feedbackPath = Join-Path $syncDir "feedback.jsonl"
-$checkinPath = Join-Path $syncDir "checkin_count.json"
-
-Invoke-RailwayVolumeDownload "/feedback.jsonl" $feedbackPath ""
-Invoke-RailwayVolumeDownload "/checkin_count.json" $checkinPath '{"count":0}'
-
 $latestFeedback = Join-Path $OutDir "feedback.latest.jsonl"
 $latestCheckin = Join-Path $OutDir "checkin_count.latest.json"
-Copy-Item -LiteralPath $feedbackPath -Destination $latestFeedback -Force
-Copy-Item -LiteralPath $checkinPath -Destination $latestCheckin -Force
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+Invoke-RailwayVolumeDownload "/feedback.jsonl" $latestFeedback ""
+Invoke-RailwayVolumeDownload "/checkin_count.json" $latestCheckin '{"count":0}'
 
 if ($IncludeLogs) {
-    $logPath = Join-Path $syncDir "railway_logs.txt"
+    $logPath = Join-Path $OutDir "railway_logs.latest.txt"
     Invoke-RailwayLogs $logPath
-    Copy-Item -LiteralPath $logPath -Destination (Join-Path $OutDir "railway_logs.latest.txt") -Force
+}
+
+if ($Archive) {
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $syncDir = Join-Path $OutDir $timestamp
+    New-Item -ItemType Directory -Force -Path $syncDir | Out-Null
+    Copy-Item -LiteralPath $latestFeedback -Destination (Join-Path $syncDir "feedback.jsonl") -Force
+    Copy-Item -LiteralPath $latestCheckin -Destination (Join-Path $syncDir "checkin_count.json") -Force
+    if ($IncludeLogs) {
+        Copy-Item -LiteralPath (Join-Path $OutDir "railway_logs.latest.txt") -Destination (Join-Path $syncDir "railway_logs.txt") -Force
+    }
 }
 
 Write-Host ""
 Write-Host "Done."
-Write-Host "Archive: $syncDir"
 Write-Host "Latest feedback: $latestFeedback"
 Write-Host "Latest check-in: $latestCheckin"
 if ($IncludeLogs) {
     Write-Host "Latest logs: $(Join-Path $OutDir 'railway_logs.latest.txt')"
+}
+if ($Archive) {
+    Write-Host "Archive: $syncDir"
 }

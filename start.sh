@@ -7,7 +7,7 @@ DB_PATH="${SQLITE_DB:-/app/data/posts.db}"
 
 if [ ! -f "$DB_PATH" ]; then
   echo "[boot] SQLite DB not found: $DB_PATH"
-  echo "[boot] Upload data/posts.slim.db to the Railway volume as /app/data/posts.db first."
+  echo "[boot] Upload data/posts.db to the Railway volume as /app/data/posts.db first."
   exit 1
 fi
 

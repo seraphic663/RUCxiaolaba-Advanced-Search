@@ -21,17 +21,17 @@ If your Railway volume is not named `data`, replace it:
 .\scripts\sync_railway_runtime.ps1 -Volume <your-volume-name>
 ```
 
-The script writes timestamped archives under:
-
-```text
-data\railway_sync\YYYYMMDD-HHMMSS\
-```
-
-It also writes latest copies:
+The script overwrites latest copies:
 
 ```text
 data\railway_sync\feedback.latest.jsonl
 data\railway_sync\checkin_count.latest.json
+```
+
+If you need a timestamped archive for a one-off snapshot, add `-Archive`:
+
+```powershell
+.\scripts\sync_railway_runtime.ps1 -Volume data -Archive
 ```
 
 Optionally also fetch the latest Railway logs:
