@@ -2,19 +2,18 @@
 """DB-first crawler entrypoint.
 
 This is the migration-safe crawler path: it writes normalized posts/comments
-directly into SQLite through storage.sqlite_store. Legacy CSV crawlers remain in
-place for rollback/reference.
+directly into SQLite through storage.sqlite_store.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import random
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import requests
@@ -32,6 +31,7 @@ BASE = "https://ys.qimiaoyuanfen.com"
 CID = 4
 DATA_DIR = ROOT / "data"
 DEFAULT_DB = DATA_DIR / "posts.db"
+DEFAULT_LOCK_TIMEOUT = 180
 
 HEADERS = {
     "User-Agent": (
@@ -110,59 +110,29 @@ def fetch_detail(session: requests.Session, post_id: str) -> tuple[dict, list[di
     return normalize_detail(str(post_id), data)
 
 
-def csv_row_to_post(row: dict) -> tuple[dict, list[dict]] | None:
-    post_id = str(row.get("id") or "")
-    if not post_id or not post_id.isdigit():
-        return None
+@contextmanager
+def db_write_lock(db_path: str | Path, timeout: int = DEFAULT_LOCK_TIMEOUT):
+    lock_path = Path(str(db_path) + ".crawler.lock")
+    deadline = time.time() + timeout
+    fd = None
+    while True:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii", errors="ignore"))
+            break
+        except FileExistsError:
+            if time.time() >= deadline:
+                raise TimeoutError(f"crawler lock timeout: {lock_path}")
+            time.sleep(2)
     try:
-        comments = json.loads(row.get("comments_json") or "[]")
-    except Exception:
-        comments = []
-    if not isinstance(comments, list):
-        comments = []
-    post = {
-        "id": post_id,
-        "content": row.get("content", ""),
-        "category_name": row.get("category_name", ""),
-        "user_name": row.get("user_name", ""),
-        "show_user_id": row.get("show_user_id", ""),
-        "show_user_head": row.get("show_user_head", ""),
-        "real_user_id": row.get("real_user_id", "0"),
-        "create_time": row.get("create_time", ""),
-        "comment_count": safe_int(row.get("comment_count")),
-        "star_count": safe_int(row.get("star_count")),
-        "trace_count": safe_int(row.get("trace_count")),
-        "views": safe_int(row.get("views")),
-        "hot": safe_int(row.get("hot")),
-    }
-    return post, comments
-
-
-def command_mock_csv(args: argparse.Namespace) -> int:
-    csv.field_size_limit(10 ** 9)
-    written = 0
-    skipped = 0
-    with SQLitePostStore(args.db_path) as store:
-        if args.init_schema:
-            store.init_schema()
-        with Path(args.csv_path).open("r", encoding="utf-8", errors="replace", newline="") as f:
-            for row in csv.DictReader(f):
-                parsed = csv_row_to_post(row)
-                if parsed is None:
-                    skipped += 1
-                    continue
-                post, comments = parsed
-                store.upsert_post(post, comments, commit=False)
-                written += 1
-                if written % args.batch_size == 0:
-                    store.conn.commit()
-                    print(f"[mock-csv] written={written:,}", flush=True)
-                if args.limit and written >= args.limit:
-                    break
-        store.set_state("crawler_db_mock_csv", json.dumps({"csv": args.csv_path, "written": written, "skipped": skipped}, ensure_ascii=False), commit=False)
-        store.conn.commit()
-    print(f"[mock-csv] done written={written:,} skipped={skipped:,} db={args.db_path}")
-    return 0
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def command_detail_fill(args: argparse.Namespace) -> int:
@@ -177,29 +147,30 @@ def command_detail_fill(args: argparse.Namespace) -> int:
 
     written = 0
     misses = 0
-    with SQLitePostStore(args.db_path) as store:
-        if args.init_schema:
-            store.init_schema()
-        for idx, post_id in enumerate(ids, 1):
-            time.sleep(random.uniform(args.min_delay, args.max_delay))
-            parsed = fetch_detail(session, post_id)
-            if parsed is None:
-                misses += 1
-                print(f"[detail-fill] miss #{post_id}", flush=True)
-                continue
-            post, comments = parsed
-            if args.dry_run:
-                print(f"[detail-fill] dry #{post_id} c={post['comment_count']} {post['content'][:50]}", flush=True)
-            else:
-                store.upsert_post(post, comments, commit=False)
-                written += 1
-                if written % args.batch_size == 0:
-                    store.conn.commit()
-            if idx % 20 == 0:
-                print(f"[detail-fill] progress {idx}/{len(ids)} written={written} miss={misses}", flush=True)
-        if not args.dry_run:
-            store.set_state("crawler_db_detail_fill", json.dumps({"ids": ids, "written": written, "misses": misses}, ensure_ascii=False), commit=False)
-            store.conn.commit()
+    with db_write_lock(args.db_path, args.lock_timeout):
+        with SQLitePostStore(args.db_path) as store:
+            if args.init_schema:
+                store.init_schema()
+            for idx, post_id in enumerate(ids, 1):
+                time.sleep(random.uniform(args.min_delay, args.max_delay))
+                parsed = fetch_detail(session, post_id)
+                if parsed is None:
+                    misses += 1
+                    print(f"[detail-fill] miss #{post_id}", flush=True)
+                    continue
+                post, comments = parsed
+                if args.dry_run:
+                    print(f"[detail-fill] dry #{post_id} c={post['comment_count']} {post['content'][:50]}", flush=True)
+                else:
+                    store.upsert_post(post, comments, commit=False)
+                    written += 1
+                    if written % args.batch_size == 0:
+                        store.conn.commit()
+                if idx % 20 == 0:
+                    print(f"[detail-fill] progress {idx}/{len(ids)} written={written} miss={misses}", flush=True)
+            if not args.dry_run:
+                store.set_state("crawler_db_detail_fill", json.dumps({"ids": ids, "written": written, "misses": misses}, ensure_ascii=False), commit=False)
+                store.conn.commit()
     print(f"[detail-fill] done written={written} misses={misses} dry_run={args.dry_run}")
     return 0
 
@@ -211,86 +182,128 @@ def command_incremental(args: argparse.Namespace) -> int:
     consecutive_unchanged = 0
     limit_reached = False
 
-    with SQLitePostStore(args.db_path) as store:
-        if args.init_schema:
-            store.init_schema()
-        for page in range(1, args.pages + 1):
-            if limit_reached:
-                break
-            time.sleep(random.uniform(args.min_delay, args.max_delay))
-            data, err = api_get(session, f"/article/article/{args.endpoint}", {"community_id": CID, "page": page})
-            if err:
-                print(f"[incremental] page={page} err={err}", flush=True)
-                if err == "cookie_expired":
+    with db_write_lock(args.db_path, args.lock_timeout):
+        with SQLitePostStore(args.db_path) as store:
+            if args.init_schema:
+                store.init_schema()
+            end_page = args.start_page + args.pages
+            for page in range(args.start_page, end_page):
+                if limit_reached:
                     break
-                continue
-            articles = data.get("list", []) if data else []
-            if not articles:
-                print(f"[incremental] page={page} empty stop", flush=True)
-                break
-            stats["pages"] += 1
-            page_new = 0
-            page_updated = 0
-            for article in articles:
-                post_id = str(article.get("id") or "")
-                if not post_id:
+                time.sleep(random.uniform(args.min_delay, args.max_delay))
+                data, err = api_get(session, f"/article/article/{args.endpoint}", {"community_id": CID, "page": page})
+                if err:
+                    print(f"[incremental] page={page} err={err}", flush=True)
+                    if err == "cookie_expired":
+                        break
                     continue
-                stats["seen"] += 1
-                new_cc = safe_int(article.get("comment_count", article.get("count_comment", 0)))
-                existing = store.get_post_counts(post_id)
-                needs_detail = existing is None or existing[0] != new_cc
-                if not needs_detail:
-                    stats["unchanged"] += 1
-                    consecutive_unchanged += 1
-                    continue
-                if args.max_details and stats["details"] >= args.max_details:
-                    limit_reached = True
+                articles = data.get("list", []) if data else []
+                if not articles:
+                    print(f"[incremental] page={page} empty stop", flush=True)
                     break
-                parsed = fetch_detail(session, post_id)
-                if parsed is None:
-                    stats["misses"] += 1
-                    continue
-                post, comments = parsed
-                stats["details"] += 1
-                if args.dry_run:
-                    action = "new" if existing is None else "update"
-                    print(f"[incremental] dry {action} #{post_id} c={post['comment_count']} {post['content'][:50]}", flush=True)
-                else:
-                    store.upsert_post(post, comments, commit=False)
-                if existing is None:
-                    stats["new"] += 1
-                    page_new += 1
-                else:
-                    stats["updated"] += 1
-                    page_updated += 1
-                consecutive_unchanged = 0
+                stats["pages"] += 1
+                page_new = 0
+                page_updated = 0
+                for article in articles:
+                    post_id = str(article.get("id") or "")
+                    if not post_id:
+                        continue
+                    stats["seen"] += 1
+                    new_cc = safe_int(article.get("comment_count", article.get("count_comment", 0)))
+                    existing = store.get_post_counts(post_id)
+                    needs_detail = existing is None or existing[0] != new_cc
+                    if not needs_detail:
+                        stats["unchanged"] += 1
+                        consecutive_unchanged += 1
+                        continue
+                    if args.max_details and stats["details"] >= args.max_details:
+                        limit_reached = True
+                        break
+                    parsed = fetch_detail(session, post_id)
+                    if parsed is None:
+                        stats["misses"] += 1
+                        continue
+                    post, comments = parsed
+                    stats["details"] += 1
+                    if args.dry_run:
+                        action = "new" if existing is None else "update"
+                        print(f"[incremental] dry {action} #{post_id} c={post['comment_count']} {post['content'][:50]}", flush=True)
+                    else:
+                        store.upsert_post(post, comments, commit=False)
+                    if existing is None:
+                        stats["new"] += 1
+                        page_new += 1
+                    else:
+                        stats["updated"] += 1
+                        page_updated += 1
+                    consecutive_unchanged = 0
+                if not args.dry_run:
+                    store.conn.commit()
+                print(f"[{args.command}:{args.endpoint}] page={page} articles={len(articles)} new={page_new} updated={page_updated} unchanged_run={consecutive_unchanged}", flush=True)
+                if consecutive_unchanged >= args.stop_unchanged and stats["pages"] >= args.min_pages:
+                    print(f"[incremental] stop unchanged_run={consecutive_unchanged}", flush=True)
+                    break
             if not args.dry_run:
-                store.conn.commit()
-            print(f"[incremental:{args.endpoint}] page={page} articles={len(articles)} new={page_new} updated={page_updated} unchanged_run={consecutive_unchanged}", flush=True)
-            if consecutive_unchanged >= args.stop_unchanged and page >= args.min_pages:
-                print(f"[incremental] stop unchanged_run={consecutive_unchanged}", flush=True)
-                break
-        if not args.dry_run:
-            store.set_state("crawler_db_incremental", json.dumps(stats, ensure_ascii=False), commit=True)
+                store.set_state("crawler_db_incremental", json.dumps(stats, ensure_ascii=False), commit=True)
     print("[incremental] done", json.dumps(stats, ensure_ascii=False), "dry_run=", args.dry_run)
     return 0
+
+
+def command_new(args: argparse.Namespace) -> int:
+    args.endpoint = "lists"
+    return command_incremental(args)
+
+
+def command_refresh(args: argparse.Namespace) -> int:
+    args.endpoint = "lists2"
+    return command_incremental(args)
+
+
+def command_backfill(args: argparse.Namespace) -> int:
+    if args.start_page < 2 and not args.force_start_page:
+        args.start_page = 2
+    return command_incremental(args)
 
 
 def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db-path", default=str(DEFAULT_DB))
     parser.add_argument("--init-schema", action="store_true")
     parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--lock-timeout", type=int, default=DEFAULT_LOCK_TIMEOUT)
+
+
+def add_scan_options(parser: argparse.ArgumentParser, *, endpoint: str | None = None,
+                     pages: int = 500, min_pages: int = 20, stop_unchanged: int = 300) -> None:
+    add_common(parser)
+    parser.add_argument("--config", default=str(DATA_DIR / "config.txt"))
+    if endpoint is None:
+        parser.add_argument("--endpoint", choices=("lists", "lists2"), default="lists2")
+    parser.add_argument("--start-page", type=int, default=1)
+    parser.add_argument("--pages", type=int, default=pages)
+    parser.add_argument("--min-pages", type=int, default=min_pages)
+    parser.add_argument("--stop-unchanged", type=int, default=stop_unchanged)
+    parser.add_argument("--max-details", type=int, default=0, help="stop after fetching this many detail records; 0 means unlimited")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--min-delay", type=float, default=0.3)
+    parser.add_argument("--max-delay", type=float, default=0.8)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="DB-first crawler entrypoint")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    mock = sub.add_parser("mock-csv", help="write sample rows from CSV into DB for local tests")
-    add_common(mock)
-    mock.add_argument("--csv-path", default=str(DATA_DIR / "posts_final.csv"))
-    mock.add_argument("--limit", type=int, default=100)
-    mock.set_defaults(func=command_mock_csv)
+    new = sub.add_parser("new", help="scan newest post stream and upsert missing/changed posts")
+    add_scan_options(new, endpoint="lists", pages=500, min_pages=20, stop_unchanged=300)
+    new.set_defaults(func=command_new, endpoint="lists")
+
+    refresh = sub.add_parser("refresh", help="scan active/comment stream and refresh changed posts")
+    add_scan_options(refresh, endpoint="lists2", pages=500, min_pages=20, stop_unchanged=300)
+    refresh.set_defaults(func=command_refresh, endpoint="lists2")
+
+    backfill = sub.add_parser("backfill", help="scan older pages to fill historical gaps")
+    add_scan_options(backfill, endpoint=None, pages=500, min_pages=20, stop_unchanged=600)
+    backfill.add_argument("--force-start-page", action="store_true", help="allow start page 1 for explicit rechecks")
+    backfill.set_defaults(func=command_backfill)
 
     detail = sub.add_parser("detail-fill", help="fetch detail for explicit ids and upsert DB")
     add_common(detail)
@@ -301,17 +314,8 @@ def main() -> int:
     detail.add_argument("--max-delay", type=float, default=2.0)
     detail.set_defaults(func=command_detail_fill)
 
-    inc = sub.add_parser("incremental", help="scan recent lists2 pages and upsert changed posts")
-    add_common(inc)
-    inc.add_argument("--config", default=str(DATA_DIR / "config.txt"))
-    inc.add_argument("--endpoint", choices=("lists", "lists2"), default="lists2", help="lists for newest posts; lists2 for activity/comment refresh")
-    inc.add_argument("--pages", type=int, default=3)
-    inc.add_argument("--min-pages", type=int, default=3)
-    inc.add_argument("--stop-unchanged", type=int, default=10)
-    inc.add_argument("--max-details", type=int, default=0, help="stop after fetching this many detail records; 0 means unlimited")
-    inc.add_argument("--dry-run", action="store_true")
-    inc.add_argument("--min-delay", type=float, default=0.3)
-    inc.add_argument("--max-delay", type=float, default=0.8)
+    inc = sub.add_parser("incremental", help="compatibility alias: scan selected endpoint")
+    add_scan_options(inc, endpoint=None, pages=500, min_pages=20, stop_unchanged=300)
     inc.set_defaults(func=command_incremental)
 
     args = parser.parse_args()

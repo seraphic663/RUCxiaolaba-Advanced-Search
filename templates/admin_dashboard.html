@@ -16,14 +16,17 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .stat-card { background: #fff; padding: 12px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.06); border: 1px solid #eee; }
 .stat-card .num { font-size: 1.55em; color: #8b0012; font-weight: bold; }
 .stat-card .label { color: #777; font-size: 0.75em; margin-top: 2px; }
-.filters { max-width: 1040px; margin: 0 auto 14px; padding: 14px 16px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center; background: #fff; border: 1px solid #eee; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-.filters input[type=text] { flex: 1; min-width: 220px; padding: 10px 14px; border: 2px solid #ddd; border-radius: 10px; background: #fff; color: #222; font-size: 14px; outline: none; }
+.filters { max-width: 1040px; margin: 0 auto 12px; padding: 10px 16px; background: #fff; border: 1px solid #eee; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.filter-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.filter-row + .filter-row { margin-top: 8px; }
+.filter-row.primary { flex-wrap: nowrap; }
+.filters input[type=text] { flex: 1; min-width: 220px; padding: 9px 13px; border: 2px solid #ddd; border-radius: 10px; background: #fff; color: #222; font-size: 14px; outline: none; }
 .filters input:focus { border-color: #8b0012; }
-.filters select { padding: 9px 10px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #333; font-size: 13px; outline: none; }
+.filters select { padding: 7px 9px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #333; font-size: 13px; outline: none; }
 .filters select:focus { border-color: #8b0012; }
 .filters label { font-size: 0.82em; color: #666; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
 .filters label input[type=checkbox] { accent-color: #8b0012; }
-.filters button { padding: 10px 20px; border: none; border-radius: 8px; background: #8b0012; color: #fff; cursor: pointer; font-size: 14px; }
+.filters button { padding: 9px 20px; border: none; border-radius: 8px; background: #8b0012; color: #fff; cursor: pointer; font-size: 14px; white-space: nowrap; }
 .filters button:hover { background: #6d000e; }
 #results { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
 .results { border-radius: 8px; overflow: hidden; }
@@ -33,7 +36,9 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .result-row .top .uid { color: #8b0012; font-family: monospace; font-weight: bold; }
 .result-row .top .meta { color: #999; }
 .result-row .text { line-height: 1.7; color: #222; white-space: pre-wrap; word-break: break-word; font-size: 0.92em; }
-.result-row .stats-row { color: #888; font-size: 0.8em; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0f0f0; }
+.result-row .stats-row { color: #888; font-size: 0.8em; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0f0f0; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.toggle-cmts { color: #8b0012; cursor: pointer; user-select: none; margin-left: auto; }
+.toggle-cmts:hover { text-decoration: underline; }
 .identity-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 0.82em; font-weight: 600; }
 .identity-pill.anonymous { color: #777; background: #f2f2f2; }
 .identity-pill.real { color: #2e7d32; background: #eaf6ed; }
@@ -56,9 +61,10 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 .loading { text-align: center; color: #999; padding: 40px; background: #fff; border-radius: 8px; border: 1px solid #eee; }
 @media (max-width: 700px) {
   .header { padding: 14px 12px; }
-  .filters { flex-direction: column; }
+  .filter-row.primary { flex-wrap: wrap; }
   .filters input[type=text] { width: 100%; }
   .filters select, .filters button { width: 100%; }
+  .toggle-cmts { margin-left: 0; }
 }
 </style>
 </head>
@@ -73,15 +79,19 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 </div>
 
 <div class="filters">
-  <input type="text" id="q" placeholder="搜索关键词（空格 AND）..." autofocus>
-  <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="views">按浏览</option><option value="hot">按热度</option></select>
-  <select id="date"><option value="">全部时间</option><option value="1d">今天</option><option value="3d">3天</option><option value="7d">7天</option><option value="30d">30天</option></select>
-  <select id="identity"><option value="">匿名/实名不限</option><option value="anonymous">仅看匿名帖</option><option value="real">仅看实名帖</option></select>
-  <label><input type="checkbox" id="sc-body" checked> 正文</label>
-  <label><input type="checkbox" id="sc-cmt"> 评论</label>
-  <label><input type="checkbox" id="sc-uid"> ID</label>
-  <label><input type="checkbox" id="sc-name"> 昵称</label>
-  <button onclick="doSearch(1)">搜索</button>
+  <div class="filter-row primary">
+    <input type="text" id="q" placeholder="搜索关键词（空格 AND）..." autofocus>
+    <button onclick="doSearch(1)">搜索</button>
+  </div>
+  <div class="filter-row">
+    <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="views">按浏览</option><option value="hot">按热度</option></select>
+    <select id="date"><option value="">全部时间</option><option value="1d">今天</option><option value="3d">3天</option><option value="7d">7天</option><option value="30d">30天</option></select>
+    <select id="identity"><option value="">匿名/实名</option><option value="anonymous">仅看匿名帖</option><option value="real">仅看实名帖</option></select>
+    <label><input type="checkbox" id="sc-body" checked> 正文</label>
+    <label><input type="checkbox" id="sc-cmt"> 评论</label>
+    <label><input type="checkbox" id="sc-uid"> ID</label>
+    <label><input type="checkbox" id="sc-name"> 昵称</label>
+  </div>
 </div>
 
 <div id="results"><div class="loading">输入关键词后点击搜索</div></div>
@@ -90,6 +100,7 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 <script>
 var currentPage = 1;
 var currentKW = [];
+var commentsLoaded = {};
 
 function doSearch(page) {
   currentPage = page || 1;
@@ -119,6 +130,7 @@ function doSearch(page) {
     .then(r => r.json())
     .then(data => {
       currentPage = data.page;
+      commentsLoaded = {};
       renderResults(data);
       renderPager(data);
     })
@@ -148,10 +160,10 @@ function renderResults(data) {
     var idTag = uid;
     var postIdentity = (ruid === '0' || !ruid) ? '<span class="identity-pill anonymous">帖子匿名</span>' : '<span class="identity-pill real">帖子实名</span>';
     if (ruid !== '0' && ruid !== uid) idTag += ' <span style="color:#8b0012">real:' + ruid + '</span>';
-    html += '<div class="result-row" onclick="toggleCmts(' + idx + ')">';
+    html += '<div class="result-row">';
     html += '<div class="top"><span class="uid">ID:' + idTag + postIdentity + '</span><span class="uname" style="color:#777">' + (p.user||'?') + '</span><span class="meta">' + (p.category||'?') + ' &middot; #' + p.id + ' &middot; ' + (p.time||'?').slice(0,16) + '</span></div>';
     html += '<div class="text">' + highlight(p.content||'') + '</div>';
-    html += '<div class="stats-row">❤' + (p.stars||0) + ' 💬' + (p.comments||0) + ' 👁' + (p.views||0) + ' <span class="toggle-cmts" style="color:#8b0012;cursor:pointer;">▶ 展开评论</span></div>';
+    html += '<div class="stats-row"><span>❤ ' + (p.stars||0) + '</span><span>💬 ' + (p.comments||0) + '</span><span>蹲蹲 ' + (p.trace||0) + '</span><span>👁 ' + (p.views||0) + '</span><span class="toggle-cmts" id="cmt-btn-' + idx + '" onclick="toggleCmts(' + idx + ')">▶ 展开评论</span></div>';
     html += '<div class="comments-panel" id="cmts-' + idx + '"></div>';
     html += '</div>';
   });
@@ -197,15 +209,31 @@ function identityPill(realUserId, label, known) {
 
 function toggleCmts(idx) {
   var panel = document.getElementById('cmts-' + idx);
+  var btn = document.getElementById('cmt-btn-' + idx);
   if (panel.classList.contains('open')) {
     panel.classList.remove('open');
+    if (btn) btn.textContent = '▶ 展开评论';
     return;
   }
   var data = document.getElementById('results')._data;
   if (!data) return;
   var p = data.results[idx];
-  panel.innerHTML = renderComments(panel, p.comment_list || []);
   panel.classList.add('open');
+  if (btn) btn.textContent = '▼ 收起评论';
+  if (commentsLoaded[idx]) return;
+  panel.innerHTML = '<div class="loading">加载评论...</div>';
+  fetch('/api/comments?id=' + encodeURIComponent(p.id))
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(payload) {
+      panel.innerHTML = renderComments(panel, payload.comment_list || []);
+      commentsLoaded[idx] = true;
+    })
+    .catch(function(err) {
+      panel.innerHTML = '<div class="no-results">评论加载失败: ' + highlight(err.message || String(err)) + '</div>';
+    });
 }
 
 function renderPager(data) {
