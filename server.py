@@ -30,6 +30,48 @@ from urllib.parse import urlparse, parse_qs
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 DEMO_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo", "runtime", "posts.demo.db")
+
+
+def _sqlite_candidate_info(path):
+    if not os.path.exists(path):
+        return None
+    try:
+        conn = sqlite3.connect(path)
+        row = conn.execute(
+            "select count(*), max(nullif(create_time, '')) from posts"
+        ).fetchone()
+        conn.close()
+        return {
+            "path": path,
+            "count": int(row[0] or 0),
+            "latest": row[1] or "",
+            "mtime": os.path.getmtime(path),
+        }
+    except sqlite3.Error:
+        return {
+            "path": path,
+            "count": 0,
+            "latest": "",
+            "mtime": os.path.getmtime(path),
+        }
+
+
+def choose_sqlite_db(explicit_path=None):
+    if explicit_path:
+        return explicit_path
+    env_path = os.environ.get("SQLITE_DB")
+    if env_path:
+        return env_path
+    candidates = [os.path.join(DATA_DIR, "posts.db")]
+    infos = [info for info in (_sqlite_candidate_info(p) for p in candidates) if info]
+    if not infos:
+        return candidates[0]
+    infos.sort(key=lambda x: (x["latest"], x["mtime"]), reverse=True)
+    return infos[0]["path"]
+
+
+SQLITE_DB = choose_sqlite_db()
+DATA_BACKEND = os.environ.get("DATA_BACKEND", "sqlite").lower()
 CSV_FINAL = os.path.join(DATA_DIR, "posts_final.csv")
 CSV_SCAN = os.path.join(DATA_DIR, "posts_scan.csv")
 CSV_DANGER = os.path.join(DATA_DIR, "posts_danger.csv")
@@ -115,6 +157,10 @@ def _safe_int(value, default=0):
 
 
 # ==================== DATA LOADING & CACHING ====================
+
+def use_sqlite_backend():
+    return DATA_BACKEND == "sqlite"
+
 
 def choose_csv_path():
     """Return the production CSV to serve, preferring the unified final output."""
@@ -419,6 +465,216 @@ def render_template(name, **kwargs):
     for key, value in kwargs.items():
         html = html.replace(f"__{key}__", str(value))
     return html
+
+
+
+# ==================== SQLITE BACKEND ====================
+
+def sqlite_connect():
+    conn = sqlite3.connect(SQLITE_DB)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def sqlite_public_post(row):
+    return {
+        "id": row["id"],
+        "content": row["content"],
+        "category": row["category_name"],
+        "user": row["user_name"],
+        "time": row["create_time"],
+        "comments": _safe_int(row["comment_count"]),
+        "stars": _safe_int(row["star_count"]),
+        "trace": _safe_int(row["trace_count"]),
+        "views": _safe_int(row["views"]),
+        "hot": _safe_int(row["hot"]),
+    }
+
+
+def sqlite_overview():
+    if not os.path.exists(SQLITE_DB):
+        return {"total": 0, "earliest": "?", "latest": "?", "crawl_time": "?"}
+    with sqlite_connect() as conn:
+        row = conn.execute(
+            """
+            select count(*) as total,
+                   min(nullif(create_time, '')) as earliest,
+                   max(nullif(create_time, '')) as latest
+            from posts
+            """
+        ).fetchone()
+    crawl_time = datetime.fromtimestamp(os.path.getmtime(SQLITE_DB)).strftime("%Y-%m-%d %H:%M")
+    return {
+        "total": row["total"] if row else 0,
+        "earliest": row["earliest"] or "?",
+        "latest": row["latest"] or "?",
+        "crawl_time": crawl_time,
+    }
+
+
+def sqlite_has_search_index():
+    if not os.path.exists(SQLITE_DB):
+        return False
+    with sqlite_connect() as conn:
+        row = conn.execute("select 1 from sqlite_master where name = 'search_index' and type = 'table'").fetchone()
+    return row is not None
+
+
+def sqlite_fts_query(keywords):
+    # SQLite trigram FTS does not match 1-2 character CJK queries. Keep LIKE fallback for those.
+    if not keywords or any(len(kw) < 3 for kw in keywords):
+        return None
+    quoted = []
+    for kw in keywords:
+        safe = kw.replace('"', '""')
+        quoted.append(f'"{safe}"')
+    return " AND ".join(quoted)
+
+
+def sqlite_search_where(query, category=None, date_from=None, date_to=None, scope="content", uid=None, uname=None, admin=False, use_fts=False):
+    clauses = []
+    args = []
+    keywords = (query or "").lower().split()
+    fts_query = sqlite_fts_query(keywords) if scope == "all" and use_fts else None
+    if fts_query:
+        clauses.append("p.id in (select post_id from search_index where body match ?)")
+        args.append(fts_query)
+    else:
+        for kw in keywords:
+            like = f"%{kw}%"
+            if scope == "all":
+                clauses.append(
+                    "p.id in ("
+                    "select id from posts where lower(content) like ? or id like ? "
+                    "union select post_id from comments where lower(detail) like ?"
+                    ")"
+                )
+                args.extend([like, like, like])
+            else:
+                clauses.append("(lower(p.content) like ? or p.id like ?)")
+                args.extend([like, like])
+    if category:
+        clauses.append("p.category_name = ?")
+        args.append(category)
+    if date_from:
+        clauses.append("p.create_time >= ?")
+        args.append(date_from.strftime("%Y-%m-%d %H:%M:%S"))
+    if date_to:
+        clauses.append("p.create_time <= ?")
+        args.append(date_to.strftime("%Y-%m-%d %H:%M:%S"))
+    if admin and uid:
+        clauses.append("p.show_user_id = ?")
+        args.append(uid)
+    if admin and uname:
+        clauses.append("lower(p.user_name) like ?")
+        args.append(f"%{uname.lower()}%")
+    return (" where " + " and ".join(clauses)) if clauses else "", args
+
+
+def api_search_sqlite(query, sort_by, page, limit, category=None, date_from=None, date_to=None,
+                      scope="content", uid=None, uname=None, admin=False):
+    if not os.path.exists(SQLITE_DB):
+        return {"total": 0, "page": 1, "page_size": limit, "total_pages": 1, "results": []}
+
+    order_map = {
+        "time": "p.create_time desc, p.id desc",
+        "stars": "p.star_count desc, cast(p.id as integer) desc",
+        "views": "p.views desc, cast(p.id as integer) desc",
+        "hot": "p.hot desc, cast(p.id as integer) desc",
+    }
+    order_by = order_map.get(sort_by, order_map["time"])
+    use_fts = scope == "all" and bool(query) and sqlite_has_search_index()
+    where_sql, args = sqlite_search_where(query, category, date_from, date_to, scope, uid, uname, admin, use_fts=use_fts)
+
+    with sqlite_connect() as conn:
+        total = conn.execute(f"select count(*) from posts p{where_sql}", args).fetchone()[0]
+        total_pages = max(1, (total + limit - 1) // limit)
+        page = max(1, min(page, total_pages))
+        offset = (page - 1) * limit
+        rows = conn.execute(
+            f"""
+            select p.id, p.content, p.category_name, p.user_name, p.create_time,
+                   p.comment_count, p.star_count, p.trace_count, p.views, p.hot,
+                   p.show_user_id, p.real_user_id
+            from posts p
+            {where_sql}
+            order by {order_by}
+            limit ? offset ?
+            """,
+            args + [limit, offset],
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        item = sqlite_public_post(row)
+        if admin:
+            item["show_user_id"] = row["show_user_id"]
+            item["real_user_id"] = row["real_user_id"]
+        results.append(item)
+    return {"total": total, "page": page, "page_size": limit, "total_pages": total_pages, "results": results}
+
+
+def api_categories_sqlite():
+    if not os.path.exists(SQLITE_DB):
+        return {"categories": []}
+    with sqlite_connect() as conn:
+        rows = conn.execute(
+            """
+            select category_name
+            from posts
+            where category_name != ''
+            group by category_name
+            having count(*) >= 5
+            order by category_name
+            """
+        ).fetchall()
+    return {"categories": [r["category_name"] for r in rows]}
+
+
+def public_comment_from_row(row):
+    return {
+        "detail": row["detail"],
+        "show_user_name": row["show_user_name"],
+        "create_time": row["create_time"],
+        "is_publisher": row["is_publisher"],
+        "reply_show_user_name": row["reply_show_user_name"],
+        "reply_comment_list": [],
+    }
+
+
+def api_comments_sqlite(post_id):
+    if not os.path.exists(SQLITE_DB):
+        return None
+    with sqlite_connect() as conn:
+        post = conn.execute("select comment_count from posts where id = ?", (post_id,)).fetchone()
+        if post is None:
+            return None
+        rows = conn.execute(
+            """
+            select comment_id, parent_comment_id, detail, show_user_name, create_time,
+                   is_publisher, reply_show_user_name
+            from comments
+            where post_id = ?
+            order by create_time, row_key
+            limit ?
+            """,
+            (post_id, COMMENT_LIMIT * 3),
+        ).fetchall()
+
+    top = []
+    by_id = {}
+    for row in rows:
+        item = public_comment_from_row(row)
+        if row["parent_comment_id"]:
+            parent = by_id.get(row["parent_comment_id"])
+            if parent is not None:
+                parent["reply_comment_list"].append(item)
+            else:
+                top.append(item)
+        else:
+            top.append(item)
+            by_id[row["comment_id"]] = item
+    return {"post_id": post_id, "comment_count": post["comment_count"], "comment_list": top[:COMMENT_LIMIT]}
 
 
 # ==================== DEMO ARCHITECTURE PAGE ====================
@@ -784,6 +1040,18 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- Main page ----
     def _handle_main(self):
+        if use_sqlite_backend():
+            overview = sqlite_overview()
+            html = render_template(
+                "main.html",
+                TOTAL=overview["total"],
+                CRAWL_TIME=overview["crawl_time"] or "?",
+                EARLIEST_TIME=overview["earliest"],
+                LATEST_TIME=overview["latest"],
+            )
+            self._serve_html(html)
+            return
+
         posts, crawl_time, has_danger, csv_path = get_cached_data()
         if posts:
             latest_time = max((p["time"] for p in posts), default="?")
@@ -963,11 +1231,16 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 pass
 
-        result = api_search(q, sort_by, page, limit,
-                            category=category, date_from=date_from, date_to=date_to,
-                            scope=scope, uid=uid, uname=uname, admin=admin,
-                            identity=identity or None,
-                            admin_fields=admin_fields)
+        if use_sqlite_backend():
+            result = api_search_sqlite(q, sort_by, page, limit,
+                                       category=category, date_from=date_from, date_to=date_to,
+                                       scope=scope, uid=uid, uname=uname, admin=admin)
+        else:
+            result = api_search(q, sort_by, page, limit,
+                                category=category, date_from=date_from, date_to=date_to,
+                                scope=scope, uid=uid, uname=uname, admin=admin,
+                                identity=identity or None,
+                                admin_fields=admin_fields)
         self._serve_json(result)
 
     # ---- API: feedback ----
@@ -993,7 +1266,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- API: categories ----
     def _handle_api_categories(self):
-        self._serve_json(api_categories())
+        self._serve_json(api_categories_sqlite() if use_sqlite_backend() else api_categories())
 
     # ---- API: comments ----
     def _handle_api_comments(self):
@@ -1004,7 +1277,7 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_json({"error": "Missing post id"}, code=400)
             return
 
-        result = api_comments(post_id)
+        result = api_comments_sqlite(post_id) if use_sqlite_backend() else api_comments(post_id)
         if result is None:
             self._serve_json({"error": "Post not found"}, code=404)
             return
@@ -1078,25 +1351,51 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 # ==================== MAIN ====================
 
 if __name__ == "__main__":
+    import argparse
     import socket
 
-    port = int(os.environ.get("PORT", 8080))
-    HOST = os.environ.get("HOST", "0.0.0.0")
+    parser = argparse.ArgumentParser(description="Run RUC Xiaolaba search server")
+    backend = parser.add_mutually_exclusive_group()
+    backend.add_argument("--db", action="store_true", help="use SQLite backend; default")
+    backend.add_argument("--csv", action="store_true", help="use legacy CSV backend and preload CSV into memory")
+    parser.add_argument("--sqlite-db", default=None, help="SQLite DB path; implies --db")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8080)))
+    parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
+    args = parser.parse_args()
+
+    if args.csv:
+        DATA_BACKEND = "csv"
+    else:
+        DATA_BACKEND = "sqlite"
+    SQLITE_DB = choose_sqlite_db(args.sqlite_db)
+    if args.sqlite_db:
+        DATA_BACKEND = "sqlite"
+
+    port = args.port
+    HOST = args.host
 
     # Pre-load password (triggers generation if needed)
     pwd = get_password()
 
-    # Pre-load data cache
-    print("[init] Loading data...")
-    refresh_cache()
-    posts, crawl_time, has_danger, csv_path = get_cached_data()
-    print(f"[init] {len(posts)} posts loaded from {os.path.basename(csv_path) if csv_path else 'N/A'}")
+    # Pre-load only the active backend. SQLite mode must not read the multi-GB CSV.
+    if use_sqlite_backend():
+        overview = sqlite_overview()
+        print(
+            f"[init] SQLite backend: {overview['total']} posts from {os.path.abspath(SQLITE_DB)} "
+            f"(latest={overview['latest']})"
+        )
+    else:
+        print("[init] Loading data...")
+        refresh_cache()
+        posts, crawl_time, has_danger, csv_path = get_cached_data()
+        print(f"[init] {len(posts)} posts loaded from {os.path.basename(csv_path) if csv_path else 'N/A'}")
 
     local_ip = socket.gethostbyname(socket.gethostname())
     print(f"\n  RUC小喇叭 搜索服务已启动")
     print(f"  本地:    http://127.0.0.1:{port}")
     print(f"  局域网:  http://{local_ip}:{port}")
     print(f"  Admin:   http://127.0.0.1:{port}/admin")
+    print(f"  Backend: {DATA_BACKEND}" + (f" ({SQLITE_DB})" if use_sqlite_backend() else ""))
     if not os.path.exists(PASSWORD_FILE) or os.path.getsize(PASSWORD_FILE) < 8:
         print(f"  管理员密码: {pwd}")
     print()
