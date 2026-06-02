@@ -1,38 +1,31 @@
-#!/bin/bash
-# Railway start script: download data with Python stdlib, then start server.
+﻿#!/bin/bash
+# Railway start script: DB-only mode. The SQLite DB must already exist on the
+# mounted volume, usually /app/data/posts.db.
 set -e
 
-DATA_URL="${DATA_URL:-https://github.com/seraphic663/RUCxiaolaba-Advanced-Search/releases/download/data-1/posts_scan.csv.gz}"
+DB_PATH="${SQLITE_DB:-/app/data/posts.db}"
 
-if [ ! -f data/posts_scan.csv ]; then
-  echo "[boot] Downloading data..."
-  mkdir -p data
-  python - <<'PY'
-import gzip
-import os
-import sys
-import urllib.request
-
-url = os.environ.get("DATA_URL", "https://github.com/seraphic663/RUCxiaolaba-Advanced-Search/releases/download/data-1/posts_scan.csv.gz")
-tmp_path = "data/posts_scan.csv.gz"
-out_path = "data/posts_scan.csv"
-
-try:
-    with urllib.request.urlopen(url, timeout=120) as response:
-        with open(tmp_path, "wb") as f:
-            f.write(response.read())
-    with gzip.open(tmp_path, "rb") as src, open(out_path, "wb") as dst:
-        dst.write(src.read())
-finally:
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-
-if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-    sys.exit("[boot] Data download produced an empty file")
-PY
-  echo "[boot] Data loaded ($(wc -c < data/posts_scan.csv) bytes)"
-else
-  echo "[boot] Using existing data"
+if [ ! -f "$DB_PATH" ]; then
+  echo "[boot] SQLite DB not found: $DB_PATH"
+  echo "[boot] Upload data/posts.slim.db to the Railway volume as /app/data/posts.db first."
+  exit 1
 fi
 
-exec python -u server.py
+python - <<'PY'
+import os
+import sqlite3
+import sys
+
+path = os.environ.get("SQLITE_DB", "/app/data/posts.db")
+try:
+    conn = sqlite3.connect(path)
+    row = conn.execute("select count(*), max(nullif(create_time, '')) from posts").fetchone()
+    conn.close()
+except Exception as exc:
+    sys.exit(f"[boot] Invalid SQLite DB {path}: {exc}")
+
+print(f"[boot] Using SQLite DB: {path}")
+print(f"[boot] posts={row[0]:,} latest={row[1]}")
+PY
+
+exec python -u server.py --db --sqlite-db "$DB_PATH"

@@ -764,3 +764,323 @@ http://127.0.0.1:8099/demo
 ```
 
 不要直接删除旧 CSV 架构。当前项目数据量、脚本数量和线上发布方式都说明，最稳妥的方式是“双轨运行、逐步替换、保留回滚”。
+
+## 11. 2026-06-01 试迁移记录
+
+本次已经做了一个可回滚的试迁移，不改变默认启动方式。默认仍是 CSV：
+
+```powershell
+python server.py
+```
+
+SQLite 试运行需要显式打开：
+
+```powershell
+$env:DATA_BACKEND = "sqlite"
+$env:SQLITE_DB = "data\posts.db"
+python server.py
+```
+
+### 11.1 已生成的数据层
+
+从 `data/posts_final.csv` 导入到 `data/posts.db`：
+
+```powershell
+python scripts\import_posts_to_sqlite.py --csv-path data\posts_final.csv --db-path data\posts.db --batch-size 5000
+```
+
+当前结果：
+
+| 项 | 结果 |
+|---|---:|
+| posts | 543,601 |
+| comments | 2,247,566 |
+| skipped_rows | 0 |
+| bad_comment_json | 1 |
+| 非空时间范围 | 2023-04-19 15:25:11 ~ 2026-06-01 21:25:09 |
+| DB 大小，含搜索索引 | 约 6.28GB |
+
+评论采用两种形态保存：
+
+1. `posts.comments_json` 保留原始嵌套 JSON，方便回放和兼容。
+2. `comments` 表扁平保存评论和回复，方便按帖子读取评论区。
+
+这会让 SQLite 比 CSV 更大。正式迁移时可以二选一：如果需要最小体积，去掉 `comments_json`；如果需要兼容和审计，保留双写。
+
+### 11.2 已生成的搜索索引
+
+新增 FTS5 trigram 搜索索引：
+
+```powershell
+python scripts\rebuild_sqlite_search_index.py --db-path data\posts.db --batch-size 20000
+```
+
+索引表为 `search_index`，包含帖子正文和评论正文。3 字及以上中文关键词可以走 FTS，例如：
+
+| 查询 | 结果量 | 本地耗时 |
+|---|---:|---:|
+| 毕业照 | 584 | 约 0.03 ~ 0.36s |
+| 打印店 | 738 | 约 0.05s |
+| 免费拍 | 24 | 约 0.01s |
+
+限制：SQLite trigram FTS 不匹配 1-2 字中文查询，例如 `毕业`。当前后端对这类短词回退到 `LIKE`，本地测试约 12 秒。正式迁移前需要决定短词策略：
+
+1. UI 限制全文搜索至少 3 个字符，短词只搜正文或提示缩小关键词。
+2. 增加二字 gram 倒排表，换取更大 DB 和更复杂增量维护。
+3. 引入外部搜索引擎，例如 Meilisearch / Tantivy / SQLite 自定义 tokenizer。
+
+### 11.3 服务端试切换
+
+`server.py` 已增加可选 SQLite 后端：
+
+- `DATA_BACKEND=csv`：旧逻辑，启动时加载 CSV，默认。
+- `DATA_BACKEND=sqlite`：新逻辑，启动时只读取 DB 概览，不预加载 2.4GB CSV。
+
+已接入接口：
+
+| 路由 | SQLite 状态 |
+|---|---|
+| `/` | 读取 DB 概览渲染主页 |
+| `/api/search` | 读取 `posts`，支持分类、日期、排序、admin 基础字段 |
+| `/api/categories` | 从 DB 聚合分类 |
+| `/api/comments?id=...` | 从 `comments` 表还原评论区 |
+| `/demo` | 仍读取 demo DB，不受主库切换影响 |
+
+本地接口测试结果：
+
+| 接口 | 结果 |
+|---|---:|
+| `/` | 200，约 0.7s |
+| `/api/categories` | 200，约 0.17s |
+| `/api/search?limit=3` | 200，约 0.32s |
+| `/api/search?sort=hot&limit=3` | 200，约 0.04s |
+| `/api/search?q=毕业照&scope=all&limit=3` | 200，584 条，约 0.36s |
+| `/api/comments?id=5014356` | 200，约 0.003s |
+
+### 11.4 不能直接正式切换的点
+
+本次只是试迁移，尚不建议直接替换生产主链路：
+
+1. 短中文关键词全文搜索仍慢，必须先确定产品策略或索引策略。
+2. admin 搜索里的 `identity`、`admin_fields` 已保留基础兼容，但还没有逐项对齐旧 CSV 逻辑。
+3. SQLite DB 当前保留 `comments_json` 和扁平 `comments`，体积较大，需要决定正式存储策略。
+4. 增量爬虫还没有直接写 DB；现在是 CSV -> DB 的离线导入。
+5. 还没有做 CSV 与 DB 的抽样一致性测试，例如同一批 post_id 的正文、计数、评论区逐字段对比。
+
+### 11.5 下一步建议
+
+建议下一阶段只做“双轨灰度”，不要删除 CSV：
+
+1. 保留 `posts_final.csv` 作为回滚源。
+2. 每次更新 CSV 后自动运行 `import_posts_to_sqlite.py` 和 `rebuild_sqlite_search_index.py`。
+3. 本地和 Railway 都先用 `DATA_BACKEND=sqlite` 压测。
+4. 补齐 admin 高级搜索一致性测试。
+5. 决定短词搜索方案后，再把默认后端从 CSV 改为 SQLite。
+
+## 12. DB-first route progress: 2026-06-02
+
+本轮开始把路线从 `CSV -> DB -> 网站` 推进到 `爬虫 -> DB -> 网站`，但仍保持旧链路可回滚。
+
+### 12.1 无损瘦身 DB
+
+新增脚本：
+
+```powershell
+python scripts\build_slim_sqlite.py --source data\posts.db --target data\posts.slim.db --batch-size 20000
+```
+
+策略：
+
+- 删除 `posts.comments_json`
+- 保留 `comments.raw_json`
+- 保留 `comments` 结构化字段
+- 保留 `search_index`
+- 保留 `show_user_head`
+
+结果：
+
+| DB | 大小 | posts | comments | search_index |
+|---|---:|---:|---:|---:|
+| `data/posts.db` | 约 6.29GB | 543,601 | 2,247,566 | 2,791,127 |
+| `data/posts.slim.db` | 约 3.98GB | 543,601 | 2,247,566 | 2,791,127 |
+
+`posts.slim.db` 低于 Railway 5GB Volume 限制，适合作为当前线上候选 DB。
+
+### 12.2 DB writer 雏形
+
+新增：
+
+```text
+storage/sqlite_store.py
+scripts/test_sqlite_store.py
+```
+
+`SQLitePostStore` 支持：
+
+- `init_schema()` 初始化 slim schema
+- `upsert_post(post, comments)` 写入/更新帖子和评论
+- `replace_comments(post_id, comments)` 刷新某帖评论
+- `refresh_search_index(post_id)` 更新全文搜索索引
+- `set_state(key, value)` 记录爬虫状态
+- `latest_post_id()` 获取最新帖子 ID
+
+这一步是未来让爬虫直接写 DB 的基础。当前旧爬虫还没有全部接入它。
+
+### 12.3 旧爬虫归档
+
+新增归档目录：
+
+```text
+legacy/20260602-pre-db-first/
+```
+
+已复制旧 CSV-first 脚本、日志和抓包文件副本。原根目录文件保留不动。大体积数据只写入 `data-inventory.json` 清单，不重复复制。
+
+### 12.4 当前推荐 Railway 配置
+
+优先上传瘦身库：
+
+```text
+/app/data/posts.db  <- 使用本地 data/posts.slim.db 改名上传
+```
+
+环境变量：
+
+```text
+DATA_BACKEND=sqlite
+SQLITE_DB=/app/data/posts.db
+```
+
+不要把 `data/posts_final.csv` 和完整 `data/posts.db` 同时放入 5GB Volume。
+
+## 13. DB-first crawler entrypoint: 2026-06-02
+
+新增 `crawler_db.py`，作为不破坏旧 CSV 爬虫的 DB-first 入口。
+
+当前支持三种模式：
+
+```powershell
+# 本地测试：从 CSV 抽样写入临时 DB，不访问网络
+python crawler_db.py mock-csv --db-path temp\crawler_db_mock.db --init-schema --csv-path data\posts_final.csv --limit 200
+
+# 线上详情补齐：按帖子 ID 请求详情并 upsert DB
+python crawler_db.py detail-fill --db-path data\posts.slim.db --ids 5014356
+
+# 线上增量：扫 lists2 页，发现新帖或 comment_count 变化后抓详情写 DB
+python crawler_db.py incremental --db-path data\posts.slim.db --pages 3
+```
+
+`detail-fill` 和 `incremental` 均支持 `--dry-run`，用于只请求接口、不写库。
+
+### 13.1 已验证短链路
+
+本地临时库验证：
+
+```powershell
+python crawler_db.py mock-csv --db-path temp\crawler_db_mock.db --init-schema --csv-path data\posts_final.csv --limit 200 --batch-size 50
+python crawler_db.py detail-fill --db-path temp\crawler_db_mock.db --ids 5014356 --min-delay 0 --max-delay 0
+```
+
+结果：
+
+| 检查项 | 结果 |
+|---|---:|
+| mock posts | 200 |
+| mock comments | 342 |
+| live detail-fill | 写入 1 帖 |
+| server `/api/search?q=冰淇淋&scope=all` | 返回 #5014356 |
+| server `/api/comments?id=5014356` | 返回 1 条评论 |
+
+这证明最小 DB-first 链路已跑通：
+
+```text
+线上 detail API
+  -> crawler_db.py
+  -> SQLitePostStore.upsert_post()
+  -> posts / comments / search_index
+  -> server.py SQLite backend
+  -> /api/search + /api/comments
+```
+
+### 13.2 仍保留的旧链路
+
+旧脚本 `update_full.py`、`scan_full.py`、`crawl_detail.py` 等没有删除，也没有改成默认调用 DB。归档副本位于：
+
+```text
+legacy/20260602-pre-db-first/
+```
+
+下一步应逐步把 `update_full.py` 的 Phase 2/3 迁到 `crawler_db.py`：
+
+1. `incremental` 作为日常更新入口。
+2. `detail-fill` 作为补详情入口。
+3. `mock-csv` 仅作为本地测试入口。
+4. CSV 导出从主链路退出，变成备份命令。
+
+### 13.3 小范围真实增量写入验证
+
+在 `data/posts.slim.db` 上执行了限量真实写入：
+
+```powershell
+python crawler_db.py incremental --db-path data\posts.slim.db --pages 1 --min-pages 1 --stop-unchanged 10 --max-details 2 --min-delay 0 --max-delay 0
+```
+
+写入前后：
+
+| 项 | 写入前 | 写入后 |
+|---|---:|---:|
+| posts | 543,601 | 543,603 |
+| latest | #5014356 / 2026-06-01 21:25:09 | #5018419 / 2026-06-02 11:30:00 |
+| details fetched | - | 2 |
+
+写入后没有残留 `posts.slim.db-wal` / `posts.slim.db-shm`，单个 `posts.slim.db` 文件可作为上传 Railway Volume 的候选文件。
+
+服务端回归：
+
+| 接口 | 结果 |
+|---|---|
+| `/api/search?limit=3` | 返回 #5018419、#5018053、#5014356 |
+| `/api/comments?id=5018419` | 返回 2 条评论 |
+| `/api/search?q=绩点排名&scope=all&limit=5` | 返回 #5018419，约 1.0s |
+
+`crawler_db.py incremental` 已加 `--max-details`，用于首次真实写入时限制详情请求数，避免一次更新过大。
+
+## 14. Server backend CLI
+
+`server.py` 默认已经切到 SQLite 后端，优先使用：
+
+```text
+data/posts.slim.db
+```
+
+如果不存在，再回退到：
+
+```text
+data/posts.db
+```
+
+本地启动推荐：
+
+```powershell
+python server.py
+```
+
+等价于：
+
+```powershell
+python server.py --db
+```
+
+指定 DB：
+
+```powershell
+python server.py --db --sqlite-db data\posts.slim.db
+```
+
+临时回到旧 CSV 模式：
+
+```powershell
+python server.py --csv
+```
+
+注意：`--csv` 会重新加载 2.4GB `posts_final.csv` 到内存，看到 `[init] Loading data...` 时说明正在走旧链路，启动慢是预期现象。
