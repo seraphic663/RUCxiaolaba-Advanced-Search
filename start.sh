@@ -1,4 +1,4 @@
-﻿#!/bin/bash
+#!/bin/bash
 # Railway start script: DB-only mode. The SQLite DB must already exist on the
 # mounted volume, usually /app/data/posts.db.
 set -e
