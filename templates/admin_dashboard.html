@@ -16,17 +16,17 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .stat-card { background: #fff; padding: 12px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.06); border: 1px solid #eee; }
 .stat-card .num { font-size: 1.55em; color: #8b0012; font-weight: bold; }
 .stat-card .label { color: #777; font-size: 0.75em; margin-top: 2px; }
-.filters { max-width: 1040px; margin: 0 auto 12px; padding: 10px 16px; background: #fff; border: 1px solid #eee; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.filters { max-width: 1040px; margin: 0 auto 10px; padding: 8px 16px; background: #fff; border: 1px solid #eee; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
 .filter-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.filter-row + .filter-row { margin-top: 8px; }
+.filter-row + .filter-row { margin-top: 6px; }
 .filter-row.primary { flex-wrap: nowrap; }
-.filters input[type=text] { flex: 1; min-width: 220px; padding: 9px 13px; border: 2px solid #ddd; border-radius: 10px; background: #fff; color: #222; font-size: 14px; outline: none; }
+.filters input[type=text] { flex: 1; min-width: 220px; max-width: 760px; padding: 7px 11px; border: 2px solid #ddd; border-radius: 8px; background: #fff; color: #222; font-size: 13px; outline: none; }
 .filters input:focus { border-color: #8b0012; }
-.filters select { padding: 7px 9px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #333; font-size: 13px; outline: none; }
+.filters select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #333; font-size: 12px; outline: none; height: 30px; }
 .filters select:focus { border-color: #8b0012; }
-.filters label { font-size: 0.82em; color: #666; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+.filters label { font-size: 12px; color: #666; display: flex; align-items: center; gap: 3px; cursor: pointer; user-select: none; line-height: 30px; }
 .filters label input[type=checkbox] { accent-color: #8b0012; }
-.filters button { padding: 9px 20px; border: none; border-radius: 8px; background: #8b0012; color: #fff; cursor: pointer; font-size: 14px; white-space: nowrap; }
+.filters button { padding: 7px 18px; border: none; border-radius: 8px; background: #8b0012; color: #fff; cursor: pointer; font-size: 13px; white-space: nowrap; height: 34px; }
 .filters button:hover { background: #6d000e; }
 #results { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
 .results { border-radius: 8px; overflow: hidden; }
@@ -36,8 +36,9 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .result-row .top .uid { color: #8b0012; font-family: monospace; font-weight: bold; }
 .result-row .top .meta { color: #999; }
 .result-row .text { line-height: 1.7; color: #222; white-space: pre-wrap; word-break: break-word; font-size: 0.92em; }
-.result-row .stats-row { color: #888; font-size: 0.8em; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0f0f0; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-.toggle-cmts { color: #8b0012; cursor: pointer; user-select: none; margin-left: auto; }
+.result-row .stats-row { color: #888; font-size: 0.8em; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0f0f0; display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.post-stats-inline { display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.toggle-cmts { color: #8b0012; cursor: pointer; user-select: none; white-space: nowrap; }
 .toggle-cmts:hover { text-decoration: underline; }
 .identity-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 0.82em; font-weight: 600; }
 .identity-pill.anonymous { color: #777; background: #f2f2f2; }
@@ -62,9 +63,10 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 @media (max-width: 700px) {
   .header { padding: 14px 12px; }
   .filter-row.primary { flex-wrap: wrap; }
-  .filters input[type=text] { width: 100%; }
+  .filters input[type=text] { width: 100%; max-width: none; }
   .filters select, .filters button { width: 100%; }
-  .toggle-cmts { margin-left: 0; }
+  .result-row .stats-row { align-items: flex-start; }
+  .post-stats-inline { justify-content: flex-start; }
 }
 </style>
 </head>
@@ -84,7 +86,7 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
     <button onclick="doSearch(1)">搜索</button>
   </div>
   <div class="filter-row">
-    <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="views">按浏览</option><option value="hot">按热度</option></select>
+    <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="comments">按评论</option><option value="score">综合</option></select>
     <select id="date"><option value="">全部时间</option><option value="1d">今天</option><option value="3d">3天</option><option value="7d">7天</option><option value="30d">30天</option></select>
     <select id="identity"><option value="">匿名/实名</option><option value="anonymous">仅看匿名帖</option><option value="real">仅看实名帖</option></select>
     <label><input type="checkbox" id="sc-body" checked> 正文</label>
@@ -163,7 +165,8 @@ function renderResults(data) {
     html += '<div class="result-row">';
     html += '<div class="top"><span class="uid">ID:' + idTag + postIdentity + '</span><span class="uname" style="color:#777">' + (p.user||'?') + '</span><span class="meta">' + (p.category||'?') + ' &middot; #' + p.id + ' &middot; ' + (p.time||'?').slice(0,16) + '</span></div>';
     html += '<div class="text">' + highlight(p.content||'') + '</div>';
-    html += '<div class="stats-row"><span>❤ ' + (p.stars||0) + '</span><span>💬 ' + (p.comments||0) + '</span><span>蹲蹲 ' + (p.trace||0) + '</span><span>👁 ' + (p.views||0) + '</span><span class="toggle-cmts" id="cmt-btn-' + idx + '" onclick="toggleCmts(' + idx + ')">▶ 展开评论</span></div>';
+    var cmtToggle = (p.comments > 0) ? '<span class="toggle-cmts" id="cmt-btn-' + idx + '" onclick="toggleCmts(' + idx + ')">▶ 展开 ' + p.comments + ' 条评论</span>' : '<span></span>';
+    html += '<div class="stats-row">' + cmtToggle + '<span class="post-stats-inline"><span>❤ ' + (p.stars||0) + '</span><span>💬 ' + (p.comments||0) + '</span></span></div>';
     html += '<div class="comments-panel" id="cmts-' + idx + '"></div>';
     html += '</div>';
   });

@@ -28,6 +28,21 @@ def comment_time(item: dict) -> str:
     return str(item.get("create_time") or item.get("show_create_time") or item.get("update_time") or "")
 
 
+def slim_raw(item: dict) -> str:
+    """Keep only reply_comment_list from the full API comment object.
+
+    The 14 structured columns already capture every meaningful field
+    (detail, user IDs, timestamps, etc.).  reply_comment_list is the
+    only nested structure that cannot be fully reconstructed from the
+    flat comments table alone.
+    """
+    slim: dict = {}
+    rcl = item.get("reply_comment_list")
+    if rcl:
+        slim["reply_comment_list"] = rcl
+    return json.dumps(slim, ensure_ascii=False, separators=(",", ":"))
+
+
 def comment_row(post_id: str, parent_id: str, comment_id: str, item: dict, updated_at: str, row_key: str) -> tuple:
     return (
         row_key,
@@ -42,7 +57,7 @@ def comment_row(post_id: str, parent_id: str, comment_id: str, item: dict, updat
         str(item.get("reply_show_user_id") or ""),
         safe_int(item.get("is_publisher")),
         comment_time(item),
-        json.dumps(item, ensure_ascii=False, separators=(",", ":")),
+        slim_raw(item),
         updated_at,
     )
 
@@ -72,6 +87,9 @@ class SQLitePostStore:
         self.conn.execute("pragma journal_mode=wal")
         self.conn.execute("pragma synchronous=normal")
         self.conn.execute("pragma foreign_keys=off")
+        self.conn.execute("pragma mmap_size=0")
+        self.conn.execute("pragma cache_size=-2000")
+        self.conn.execute("pragma temp_store=file")
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
         self._has_search_index = self._table_exists("search_index")
 
@@ -127,7 +145,7 @@ class SQLitePostStore:
                 reply_show_user_id text not null,
                 is_publisher integer not null,
                 create_time text not null,
-                raw_json text not null,
+                reply_comment_list text not null,
                 updated_at text not null
             );
 

@@ -142,6 +142,27 @@ backfill: 每天或每周低频
 
 三个 Cron 不要设在同一分钟。脚本已有锁，但错峰更稳。
 
+参考 Cron 表达式：
+
+```text
+new:      */20 * * * *
+refresh:  10,40 * * * *
+backfill: 30 19 * * *
+```
+
+Railway Cron 使用 UTC。`30 19 * * *` 大约对应北京时间次日 03:30。
+
+每个 Cron 服务需要：
+
+```text
+同一个 GitHub Repo
+同一个 Volume，挂载 /app/data
+Start Command 填对应 crawler_db.py 命令
+Cron Schedule 填对应 crontab
+```
+
+更详细步骤见 `docs/Railway部署与运维.md`。
+
 ## 运行时备份
 
 小文件备份，适合高频：

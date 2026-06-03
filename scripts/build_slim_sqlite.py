@@ -1,13 +1,15 @@
 ﻿#!/usr/bin/env python3
-"""Build a lossless slim SQLite DB from a full posts.db.
+"""Build a slim SQLite DB from a full or slim posts.db.
 
-The slim DB removes posts.comments_json, but keeps comments.raw_json so original
-comment API fields remain available without storing the same comments twice.
+The slim DB removes posts.comments_json and keeps only comments.reply_comment_list
+from the old comments.raw_json payload. This preserves current search/comment
+features, but not every original API field.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 import time
@@ -22,8 +24,10 @@ POST_COLUMNS = [
 COMMENT_COLUMNS = [
     "row_key", "comment_id", "post_id", "parent_comment_id", "detail",
     "show_user_name", "show_user_id", "real_user_id", "reply_show_user_name",
-    "reply_show_user_id", "is_publisher", "create_time", "raw_json", "updated_at",
+    "reply_show_user_id", "is_publisher", "create_time", "reply_comment_list", "updated_at",
 ]
+
+COMMENT_BASE_COLUMNS = [c for c in COMMENT_COLUMNS if c != "reply_comment_list"]
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -68,7 +72,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             reply_show_user_id text not null,
             is_publisher integer not null,
             create_time text not null,
-            raw_json text not null,
+            reply_comment_list text not null,
             updated_at text not null
         );
 
@@ -139,6 +143,53 @@ def create_search_index(conn: sqlite3.Connection, batch_size: int) -> tuple[int,
     return post_rows, comment_rows
 
 
+def table_columns(conn: sqlite3.Connection, schema: str, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"pragma {schema}.table_info({table})")}
+
+
+def slim_reply_comment_list(data_str: str) -> str:
+    try:
+        obj = json.loads(data_str or "{}")
+    except json.JSONDecodeError:
+        return "{}"
+    rcl = obj.get("reply_comment_list") if isinstance(obj, dict) else None
+    if not rcl:
+        return "{}"
+    return json.dumps({"reply_comment_list": rcl}, ensure_ascii=False, separators=(",", ":"))
+
+
+def copy_comments(conn: sqlite3.Connection, batch_size: int) -> None:
+    src_cols = table_columns(conn, "src", "comments")
+    target_cols = ",".join(COMMENT_COLUMNS)
+    if "reply_comment_list" in src_cols:
+        print("[slim] copying comments with reply_comment_list...", flush=True)
+        conn.execute(f"insert into comments({target_cols}) select {target_cols} from src.comments")
+        return
+    if "raw_json" not in src_cols:
+        raise RuntimeError("src.comments must contain either reply_comment_list or raw_json")
+
+    print("[slim] copying comments from raw_json -> reply_comment_list...", flush=True)
+    select_cols = ",".join(COMMENT_BASE_COLUMNS + ["raw_json"])
+    placeholders = ",".join("?" for _ in COMMENT_COLUMNS)
+    insert_sql = f"insert into comments({target_cols}) values ({placeholders})"
+    cur = conn.execute(f"select {select_cols} from src.comments")
+    copied = 0
+    while True:
+        rows = cur.fetchmany(batch_size)
+        if not rows:
+            break
+        out = []
+        for row in rows:
+            base = list(row[:-1])
+            base.insert(COMMENT_COLUMNS.index("reply_comment_list"), slim_reply_comment_list(row[-1]))
+            out.append(base)
+        conn.executemany(insert_sql, out)
+        conn.commit()
+        copied += len(out)
+        if copied % (batch_size * 20) == 0:
+            print(f"[slim] copied comments={copied:,}", flush=True)
+
+
 def build_slim(source: Path, target: Path, batch_size: int) -> dict:
     if not source.exists():
         raise FileNotFoundError(source)
@@ -153,13 +204,12 @@ def build_slim(source: Path, target: Path, batch_size: int) -> dict:
         init_schema(conn)
         conn.execute("attach database ? as src", (str(source),))
         post_cols = ",".join(POST_COLUMNS)
-        comment_cols = ",".join(COMMENT_COLUMNS)
         print("[slim] copying posts without comments_json...", flush=True)
         conn.execute(f"insert into posts({post_cols}) select {post_cols} from src.posts")
-        print("[slim] copying comments with raw_json...", flush=True)
-        conn.execute(f"insert into comments({comment_cols}) select {comment_cols} from src.comments")
+        copy_comments(conn, batch_size)
         print("[slim] copying crawl_state...", flush=True)
-        conn.execute("insert into crawl_state select * from src.crawl_state")
+        if "crawl_state" in {row[0] for row in conn.execute("select name from src.sqlite_master where type='table'")}:
+            conn.execute("insert into crawl_state select * from src.crawl_state")
         conn.execute(
             "insert or replace into crawl_state values (?,?,datetime('now','localtime'))",
             ("slim_source", str(source)),
@@ -199,7 +249,7 @@ def verify(path: Path, query: str) -> None:
         print("posts=", conn.execute("select count(*) from posts").fetchone()[0])
         print("comments=", conn.execute("select count(*) from comments").fetchone()[0])
         print("has_comments_json=", bool(conn.execute("select 1 from pragma_table_info('posts') where name='comments_json'").fetchone()))
-        print("has_raw_json=", bool(conn.execute("select 1 from pragma_table_info('comments') where name='raw_json'").fetchone()))
+        print("has_reply_comment_list=", bool(conn.execute("select 1 from pragma_table_info('comments') where name='reply_comment_list'").fetchone()))
         if query:
             total = conn.execute(
                 "select count(distinct post_id) from search_index where body match ?",
@@ -211,7 +261,7 @@ def verify(path: Path, query: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build lossless slim DB from full SQLite DB")
+    parser = argparse.ArgumentParser(description="Build slim DB from full or slim SQLite DB")
     parser.add_argument("--source", default="data/posts.db")
     parser.add_argument("--target", default="data/posts.slim.db")
     parser.add_argument("--batch-size", type=int, default=20000)
