@@ -1,0 +1,11 @@
+data/
+temp/
+tmp/
+__pycache__/
+.pytest_cache/
+*.db
+*.db-shm
+*.db-wal
+*.csv
+*.jsonl
+*.log

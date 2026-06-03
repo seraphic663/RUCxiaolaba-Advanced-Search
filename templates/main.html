@@ -163,8 +163,8 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 <div class="sort-bar">
   <button id="btn-time" class="active" onclick="setSort('time')">按时间</button>
   <button id="btn-stars" onclick="setSort('stars')">按点赞</button>
-  <button id="btn-views" onclick="setSort('views')">按浏览</button>
-  <button id="btn-hot" onclick="setSort('hot')">按热度</button>
+  <button id="btn-comments" onclick="setSort('comments')">按评论</button>
+  <button id="btn-score" onclick="setSort('score')">综合</button>
   <span class="count-text" id="count-text"></span>
 </div>
 
@@ -278,8 +278,6 @@ function renderPost(post, index, keywords) {
   bottomRowHtml += '<span class="post-stats-inline">' +
       '<span>&#10084; ' + (post.stars||0) + '</span>' +
       '<span>&#128172; ' + (post.comments||0) + '</span>' +
-      '<span>&#128099; ' + (post.trace||0) + '</span>' +
-      '<span>&#128065; ' + (post.views||0) + '</span>' +
     '</span>' +
   '</div>';
 

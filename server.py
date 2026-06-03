@@ -215,6 +215,10 @@ def render_template(name, **kwargs):
 def sqlite_connect():
     conn = sqlite3.connect(SQLITE_DB)
     conn.row_factory = sqlite3.Row
+    conn.execute("pragma query_only=on")
+    conn.execute("pragma mmap_size=0")
+    conn.execute("pragma cache_size=-2000")
+    conn.execute("pragma temp_store=file")
     return conn
 
 
@@ -449,8 +453,12 @@ def api_search_sqlite(query, sort_by, page, limit, category=None, date_from=None
     order_map = {
         "time": "p.create_time desc, p.id desc",
         "stars": "p.star_count desc, cast(p.id as integer) desc",
-        "views": "p.views desc, cast(p.id as integer) desc",
-        "hot": "p.hot desc, cast(p.id as integer) desc",
+        "comments": "p.comment_count desc, cast(p.id as integer) desc",
+        "score": (
+            "(p.star_count * 3 + p.comment_count * 5 + "
+            "max(0, 30 - ((strftime('%s','now') - strftime('%s', p.create_time)) / 86400.0))) desc, "
+            "p.create_time desc, cast(p.id as integer) desc"
+        ),
     }
     order_by = order_map.get(sort_by, order_map["time"])
     use_fts = scope == "all" and bool(query) and sqlite_has_search_index()
@@ -675,7 +683,7 @@ class Handler(BaseHTTPRequestHandler):
         params, _ = self._parse_query()
         q = params.get("q", [""])[0].strip()
         sort_by = params.get("sort", ["time"])[0]
-        if sort_by not in ("time", "stars", "views", "hot"):
+        if sort_by not in ("time", "stars", "comments", "score"):
             sort_by = "time"
         try:
             page = int(params.get("page", ["1"])[0])
@@ -835,7 +843,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         # Cleaner log format: [timestamp] method path status
-        print(f"[{self.address_string()}] {args[0]} {args[1]} {args[2]}")
+        parts = " ".join(str(a) for a in args[:3]) if args else ""
+        print(f"[{self.address_string()}] {parts}")
 
 
 # ==================== THREADING SERVER ====================

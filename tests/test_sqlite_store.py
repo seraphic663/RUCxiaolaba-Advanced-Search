@@ -70,8 +70,8 @@ def main() -> int:
         assert con.execute("select count(*) from posts").fetchone()[0] == 1
         assert con.execute("select count(*) from comments").fetchone()[0] == 2
         assert con.execute("select comment_count from posts where id='9001'").fetchone()[0] == 9
-        raw = con.execute("select raw_json from comments where comment_id='c1'").fetchone()[0]
-        assert json.loads(raw)["show_user_head"].endswith("comment-head.jpg")
+        row = con.execute("select reply_comment_list from comments where comment_id='c1'").fetchone()[0]
+        assert json.loads(row)["reply_comment_list"][0]["detail"] == "私信你了"
         assert not con.execute("select 1 from pragma_table_info('posts') where name='comments_json'").fetchone()
         total = con.execute(
             "select count(distinct post_id) from search_index where body match ?",
