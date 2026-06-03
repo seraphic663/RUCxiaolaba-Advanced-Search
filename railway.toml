@@ -3,7 +3,9 @@
   buildCommand = "pip install -r requirements.txt && chmod +x start.sh"
 
 [deploy]
-  startCommand = "sleep infinity"
+  startCommand = "bash start.sh"
+  healthcheckPath = "/healthz"
+  healthcheckTimeout = 300
   restartPolicyType = "ON_FAILURE"
   numReplicas = 1
 
