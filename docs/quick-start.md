@@ -123,9 +123,10 @@ python -u server.py --db --sqlite-db "$DB_PATH"
 设置 `CRAWLER_ENABLED=1` 后，`start.sh` 会启动同服务后台调度器：
 
 ```text
-new       每 30 分钟
-refresh   每 60 分钟
+new       每 4 小时
+refresh   每 4 小时，与 new 错开 2 小时
 backfill  每 24 小时
+phase1    每 7 天，重扫最近 8 个自然日
 ```
 
 任务直接更新 `/app/data/posts.db`，不需要重新上传 DB。

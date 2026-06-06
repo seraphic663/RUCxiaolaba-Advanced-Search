@@ -11,9 +11,10 @@ CRAWLER_ENABLED=1
 It updates `/app/data/posts.db` sequentially:
 
 ```text
-new       every 30 minutes
-refresh   every 60 minutes
+new       every 4 hours
+refresh   every 4 hours, offset by 2 hours
 backfill  every 24 hours
+phase1    every 7 days, rescanning the latest 8 calendar days
 ```
 
 The scheduler requires `/app/data/config.txt`.
