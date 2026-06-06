@@ -28,4 +28,11 @@ print(f"[boot] Using SQLite DB: {path}")
 print(f"[boot] posts={row[0]:,} latest={row[1]}")
 PY
 
+if [ "${CRAWLER_ENABLED:-0}" = "1" ]; then
+  echo "[boot] Starting crawler scheduler"
+  python -u scripts/railway_scheduler.py &
+else
+  echo "[boot] Crawler scheduler disabled"
+fi
+
 exec python -u server.py --db --sqlite-db "$DB_PATH"

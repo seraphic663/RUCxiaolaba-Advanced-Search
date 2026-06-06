@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create timestamped backups for runtime data on the mounted data directory.
+"""Create timestamped backups for crawler configuration and SQLite data.
 
 Default mode backs up only small mutable site files. Use --include-db only when
 there is enough free volume space for a full SQLite copy.
@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 
-SMALL_FILES = ("feedback.jsonl", "checkin_count.json", "admin_password.txt", "config.txt")
+SMALL_FILES = ("config.txt",)
 
 
 def copy_if_exists(source: Path, target: Path) -> None:

@@ -87,15 +87,14 @@ Size: 5GB
 ```text
 /app/data/posts.db
 /app/data/config.txt          # 线上爬虫需要 cookie
-/app/data/feedback.jsonl
-/app/data/checkin_count.json
-/app/data/admin_password.txt
 ```
 
 环境变量：
 
 ```text
 SQLITE_DB=/app/data/posts.db
+ADMIN_PASSWORD=<固定强密码>
+CRAWLER_ENABLED=1
 ```
 
 启动命令由 `railway.toml` 指向：
@@ -110,56 +109,17 @@ bash start.sh
 python -u server.py --db --sqlite-db "$DB_PATH"
 ```
 
-## Railway 定时爬取
+## Railway 自动爬取
 
-建议建独立 Cron 服务，共用同一个 Volume `/app/data`。不要把定时爬虫塞进 Web 服务。
-
-新帖 Cron：
-
-```bash
-python crawler_db.py new --db-path /app/data/posts.db --pages 500 --min-pages 20 --stop-unchanged 300
-```
-
-新回复/活跃帖 Cron：
-
-```bash
-python crawler_db.py refresh --db-path /app/data/posts.db --pages 500 --min-pages 20 --stop-unchanged 300
-```
-
-历史补全 Cron，低频运行：
-
-```bash
-python crawler_db.py backfill --endpoint lists --db-path /app/data/posts.db --start-page 200 --pages 500 --min-pages 20 --stop-unchanged 600
-```
-
-建议频率：
+设置 `CRAWLER_ENABLED=1` 后，`start.sh` 会启动同服务后台调度器：
 
 ```text
-new:      每 15-30 分钟
-refresh:  每 30-60 分钟
-backfill: 每天或每周低频
+new       每 30 分钟
+refresh   每 60 分钟
+backfill  每 24 小时
 ```
 
-三个 Cron 不要设在同一分钟。脚本已有锁，但错峰更稳。
-
-参考 Cron 表达式：
-
-```text
-new:      */20 * * * *
-refresh:  10,40 * * * *
-backfill: 30 19 * * *
-```
-
-Railway Cron 使用 UTC。`30 19 * * *` 大约对应北京时间次日 03:30。
-
-每个 Cron 服务需要：
-
-```text
-同一个 GitHub Repo
-同一个 Volume，挂载 /app/data
-Start Command 填对应 crawler_db.py 命令
-Cron Schedule 填对应 crontab
-```
+任务直接更新 `/app/data/posts.db`，不需要重新上传 DB。
 
 更详细步骤见 `docs/Railway部署与运维.md`。
 
@@ -171,14 +131,7 @@ Cron Schedule 填对应 crontab
 python scripts/backup_runtime.py --data-dir /app/data --keep 72
 ```
 
-会备份：
-
-```text
-feedback.jsonl
-checkin_count.json
-admin_password.txt
-config.txt
-```
+默认只备份 `config.txt`。
 
 完整 DB 备份需要额外空间，5GB Volume 下不建议频繁使用：
 
@@ -187,12 +140,6 @@ python scripts/backup_runtime.py --data-dir /app/data --include-db --keep 2
 ```
 
 更推荐把 DB 备份放到 Railway Bucket / S3 / R2，而不是长期堆在 Volume。
-
-本地拉取反馈和人数：
-
-```powershell
-.\scripts\sync_railway_runtime.ps1 -Volume rucxiaolaba-advanced-search-volume
-```
 
 ## 常见 QA
 

@@ -1,72 +1,27 @@
-# Local Ops Scripts
+# Operations Scripts
 
-## Sync Railway Runtime Data
+## Railway scheduler
 
-Before using the script:
-
-1. Install Railway CLI.
-2. Run `railway login`.
-3. Run `railway link` in this repository.
-4. Make sure the Railway service has a Volume mounted at `/app/data`.
-
-Sync feedback and check-in files:
-
-```powershell
-.\scripts\sync_railway_runtime.ps1 -Volume data
-```
-
-If your Railway volume is not named `data`, replace it:
-
-```powershell
-.\scripts\sync_railway_runtime.ps1 -Volume <your-volume-name>
-```
-
-The script overwrites latest copies:
+The Web service starts `railway_scheduler.py` when:
 
 ```text
-data\railway_sync\feedback.latest.jsonl
-data\railway_sync\checkin_count.latest.json
+CRAWLER_ENABLED=1
 ```
 
-If you need a timestamped archive for a one-off snapshot, add `-Archive`:
+It updates `/app/data/posts.db` sequentially:
 
-```powershell
-.\scripts\sync_railway_runtime.ps1 -Volume data -Archive
+```text
+new       every 30 minutes
+refresh   every 60 minutes
+backfill  every 24 hours
 ```
 
-Optionally also fetch the latest Railway logs:
+The scheduler requires `/app/data/config.txt`.
 
-```powershell
-.\scripts\sync_railway_runtime.ps1 -Volume data -IncludeLogs -LogLines 500
+## Backup
+
+```bash
+python scripts/backup_runtime.py --data-dir /app/data
 ```
 
-Logs are not synced by default because ordinary request/runtime logs are noisy
-and Railway already retains them. Pull them only when debugging or before making
-a release/debug snapshot.
-
-## Schedule Hourly Sync
-
-Register a Windows Scheduled Task that syncs every hour at minute 30:
-
-```powershell
-.\scripts\register_hourly_railway_sync.ps1
-```
-
-Check the task:
-
-```powershell
-Get-ScheduledTask -TaskName "RUCxiaolaba Railway Runtime Sync"
-Get-ScheduledTaskInfo -TaskName "RUCxiaolaba Railway Runtime Sync"
-```
-
-Run it manually once:
-
-```powershell
-Start-ScheduledTask -TaskName "RUCxiaolaba Railway Runtime Sync"
-```
-
-Remove it:
-
-```powershell
-.\scripts\unregister_hourly_railway_sync.ps1
-```
+Use `--include-db` only when the Volume has enough free space.
