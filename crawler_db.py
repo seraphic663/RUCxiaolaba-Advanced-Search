@@ -12,8 +12,11 @@ import json
 import os
 import random
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -32,6 +35,7 @@ CID = 4
 DATA_DIR = ROOT / "data"
 DEFAULT_DB = DATA_DIR / "posts.db"
 DEFAULT_LOCK_TIMEOUT = 180
+STALE_LOCK_SECONDS = 6 * 60 * 60
 
 HEADERS = {
     "User-Agent": (
@@ -110,17 +114,67 @@ def fetch_detail(session: requests.Session, post_id: str) -> tuple[dict, list[di
     return normalize_detail(str(post_id), data)
 
 
+def latest_list_id(session: requests.Session) -> int:
+    data, err = api_get(session, "/article/article/lists", {"community_id": CID, "page": 1})
+    if err:
+        raise RuntimeError(f"cannot determine latest id: {err}")
+    ids = [safe_int(item.get("id")) for item in (data or {}).get("list", [])]
+    latest = max(ids, default=0)
+    if latest <= 0:
+        raise RuntimeError("cannot determine latest id from lists page 1")
+    return latest
+
+
 @contextmanager
 def db_write_lock(db_path: str | Path, timeout: int = DEFAULT_LOCK_TIMEOUT):
     lock_path = Path(str(db_path) + ".crawler.lock")
     deadline = time.time() + timeout
     fd = None
+
+    def remove_stale_lock() -> bool:
+        try:
+            owner_pid = int(lock_path.read_text(encoding="ascii").strip())
+        except (FileNotFoundError, OSError, ValueError):
+            owner_pid = 0
+
+        owner_alive = False
+        if owner_pid > 0:
+            try:
+                os.kill(owner_pid, 0)
+                owner_alive = True
+            except PermissionError:
+                owner_alive = True
+            except OSError:
+                pass
+
+        try:
+            lock_age = time.time() - lock_path.stat().st_mtime
+        except FileNotFoundError:
+            return True
+
+        if owner_alive:
+            return False
+        if owner_pid <= 0 and lock_age < STALE_LOCK_SECONDS:
+            return False
+        try:
+            lock_path.unlink()
+            print(
+                f"[lock] removed stale lock pid={owner_pid} age={int(lock_age)}s "
+                f"path={lock_path}",
+                flush=True,
+            )
+            return True
+        except FileNotFoundError:
+            return True
+
     while True:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(fd, str(os.getpid()).encode("ascii", errors="ignore"))
             break
         except FileExistsError:
+            if remove_stale_lock():
+                continue
             if time.time() >= deadline:
                 raise TimeoutError(f"crawler lock timeout: {lock_path}")
             time.sleep(2)
@@ -249,6 +303,153 @@ def command_incremental(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_id_scan(args: argparse.Namespace) -> int:
+    cookie = load_cookie(Path(args.config))
+    probe_session = make_session(cookie)
+    state_key = args.state_key or f"crawler_db_id_scan_{args.from_date.replace('-', '')}"
+
+    with SQLitePostStore(args.db_path) as state_store:
+        row = state_store.conn.execute(
+            "select value from crawl_state where key=?", (state_key,)
+        ).fetchone()
+        saved = json.loads(row[0]) if row else {}
+        if saved.get("complete") and not args.force:
+            print(f"[id-scan] already complete state={state_key}", flush=True)
+            return 0
+
+        start_id = safe_int(args.start_id)
+        if start_id <= 0:
+            start_row = state_store.conn.execute(
+                """
+                select min(cast(id as integer))
+                from posts
+                where create_time >= ?
+                """,
+                (f"{args.from_date} 00:00:00",),
+            ).fetchone()
+            start_id = safe_int(start_row[0] if start_row else 0)
+        if start_id <= 0:
+            raise RuntimeError(f"cannot determine start id for {args.from_date}")
+        start_id = max(1, start_id - max(0, args.id_margin))
+
+        end_id = safe_int(args.end_id) or safe_int(saved.get("end_id"))
+        if end_id <= 0:
+            end_id = latest_list_id(probe_session) + max(0, args.id_margin)
+        next_id = start_id
+        if args.resume and not args.force:
+            next_id = max(start_id, safe_int(saved.get("next_id"), start_id))
+
+    if next_id > end_id:
+        print(f"[id-scan] empty range {next_id}>{end_id}", flush=True)
+        return 0
+
+    print(
+        f"[id-scan] range={next_id}..{end_id} from_date={args.from_date} "
+        f"workers={args.workers} chunk={args.chunk_size} state={state_key}",
+        flush=True,
+    )
+
+    local = threading.local()
+
+    def scan_one(post_id: int):
+        if not hasattr(local, "session"):
+            local.session = make_session(cookie)
+        time.sleep(random.uniform(args.min_delay, args.max_delay))
+        last_error = ""
+        for attempt in range(args.retries + 1):
+            data, err = api_get(
+                local.session,
+                "/article/article/info",
+                {"community_id": CID, "id": str(post_id)},
+            )
+            if err == "cookie_expired":
+                return post_id, None, "cookie_expired"
+            if err == "not_found" or not data:
+                return post_id, None, "missing"
+            if err:
+                last_error = err
+                if attempt < args.retries:
+                    time.sleep(1.0 + attempt)
+                    continue
+                return post_id, None, f"error:{last_error}"
+            parsed = normalize_detail(str(post_id), data)
+            if parsed is None:
+                return post_id, None, "foreign"
+            return post_id, parsed, "ok"
+        return post_id, None, f"error:{last_error}"
+
+    stats = {
+        "start_id": start_id,
+        "end_id": end_id,
+        "next_id": next_id,
+        "processed": 0,
+        "written": 0,
+        "missing": 0,
+        "foreign": 0,
+        "errors": 0,
+        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    with db_write_lock(args.db_path, args.lock_timeout):
+        with SQLitePostStore(args.db_path) as store:
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                chunk_start = next_id
+                while chunk_start <= end_id:
+                    chunk_end = min(end_id, chunk_start + args.chunk_size - 1)
+                    results = executor.map(scan_one, range(chunk_start, chunk_end + 1))
+                    cookie_expired = False
+                    for post_id, parsed, status in results:
+                        stats["processed"] += 1
+                        if status == "ok":
+                            post, comments = parsed
+                            if post["create_time"] >= f"{args.from_date} 00:00:00":
+                                if not args.dry_run:
+                                    store.upsert_post(post, comments, commit=False)
+                                stats["written"] += 1
+                            else:
+                                stats["foreign"] += 1
+                        elif status == "missing":
+                            stats["missing"] += 1
+                        elif status == "foreign":
+                            stats["foreign"] += 1
+                        elif status == "cookie_expired":
+                            cookie_expired = True
+                            stats["errors"] += 1
+                        else:
+                            stats["errors"] += 1
+
+                    stats["next_id"] = chunk_end + 1
+                    state = {
+                        **stats,
+                        "complete": False,
+                        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    if not args.dry_run:
+                        store.set_state(state_key, json.dumps(state, ensure_ascii=False), commit=False)
+                        store.conn.commit()
+                    print(
+                        f"[id-scan] {chunk_start}..{chunk_end} "
+                        f"processed={stats['processed']} written={stats['written']} "
+                        f"missing={stats['missing']} foreign={stats['foreign']} "
+                        f"errors={stats['errors']}",
+                        flush=True,
+                    )
+                    if cookie_expired:
+                        raise RuntimeError("cookie_expired")
+                    chunk_start = chunk_end + 1
+
+            final_state = {
+                **stats,
+                "next_id": end_id + 1,
+                "complete": True,
+                "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            if not args.dry_run:
+                store.set_state(state_key, json.dumps(final_state, ensure_ascii=False), commit=True)
+    print("[id-scan] done", json.dumps(final_state, ensure_ascii=False), flush=True)
+    return 0
+
+
 def command_new(args: argparse.Namespace) -> int:
     args.endpoint = "lists"
     return command_incremental(args)
@@ -313,6 +514,24 @@ def main() -> int:
     detail.add_argument("--min-delay", type=float, default=0.8)
     detail.add_argument("--max-delay", type=float, default=2.0)
     detail.set_defaults(func=command_detail_fill)
+
+    id_scan = sub.add_parser("id-scan", help="scan a continuous ID range with resume support")
+    add_common(id_scan)
+    id_scan.add_argument("--config", default=str(DATA_DIR / "config.txt"))
+    id_scan.add_argument("--from-date", default="2026-06-01")
+    id_scan.add_argument("--start-id", type=int, default=0)
+    id_scan.add_argument("--end-id", type=int, default=0)
+    id_scan.add_argument("--id-margin", type=int, default=100)
+    id_scan.add_argument("--workers", type=int, default=4)
+    id_scan.add_argument("--chunk-size", type=int, default=500)
+    id_scan.add_argument("--retries", type=int, default=2)
+    id_scan.add_argument("--state-key", default="")
+    id_scan.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    id_scan.add_argument("--force", action="store_true")
+    id_scan.add_argument("--dry-run", action="store_true")
+    id_scan.add_argument("--min-delay", type=float, default=0.15)
+    id_scan.add_argument("--max-delay", type=float, default=0.4)
+    id_scan.set_defaults(func=command_id_scan)
 
     inc = sub.add_parser("incremental", help="compatibility alias: scan selected endpoint")
     add_scan_options(inc, endpoint=None, pages=500, min_pages=20, stop_unchanged=300)
