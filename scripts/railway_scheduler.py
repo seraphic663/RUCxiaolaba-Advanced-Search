@@ -25,6 +25,7 @@ def env_int(name: str, default: int) -> int:
 NEW_INTERVAL = env_int("CRAWLER_NEW_INTERVAL", 30 * 60)
 REFRESH_INTERVAL = env_int("CRAWLER_REFRESH_INTERVAL", 60 * 60)
 BACKFILL_INTERVAL = env_int("CRAWLER_BACKFILL_INTERVAL", 24 * 60 * 60)
+ID_SCAN_FROM = os.environ.get("CRAWLER_ID_SCAN_FROM", "").strip()
 
 
 JOBS = {
@@ -80,6 +81,22 @@ def main() -> int:
         f"backfill={BACKFILL_INTERVAL}s",
         flush=True,
     )
+
+    if ID_SCAN_FROM:
+        run_job_command = [
+            sys.executable,
+            str(ROOT / "crawler_db.py"),
+            "id-scan",
+            "--from-date", ID_SCAN_FROM,
+            "--db-path", DB_PATH,
+            "--config", CONFIG_PATH,
+            "--workers", os.environ.get("CRAWLER_ID_SCAN_WORKERS", "4"),
+            "--chunk-size", os.environ.get("CRAWLER_ID_SCAN_CHUNK", "500"),
+            "--lock-timeout", "21600",
+        ]
+        print(f"[scheduler] start id-scan from={ID_SCAN_FROM}", flush=True)
+        result = subprocess.run(run_job_command, cwd=ROOT, check=False)
+        print(f"[scheduler] done id-scan exit={result.returncode}", flush=True)
 
     while True:
         now = time.monotonic()
