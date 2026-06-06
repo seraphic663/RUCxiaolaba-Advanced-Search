@@ -33,6 +33,15 @@ Backend: sqlite (...\data\posts.db)
 
 唯一爬虫入口是 `crawler_db.py`。它直接写 SQLite，并用 `data/posts.db.crawler.lock` 防止多个定时任务同时写库。
 
+Phase 1 连续扫描全部 ID，可按日期自动确定范围：
+
+```powershell
+python crawler_db.py phase1 --from-date 2026-06-01 --db-path data\posts.db
+```
+
+使用 `--to-date` 可以限制结束日期；也可以直接传入 `--start-id` 和
+`--end-id`。相同范围中断后再次执行会自动续扫。
+
 补新帖，范围保守偏大：
 
 ```powershell

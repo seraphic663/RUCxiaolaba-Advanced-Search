@@ -29,6 +29,18 @@ data/config.txt
 ys7_ysxy_session=你的cookie
 ```
 
+连续 ID 全量扫描，可按日期自动确定范围：
+
+```powershell
+python crawler_db.py phase1 --from-date 2026-06-01 --db-path data\posts.db
+```
+
+也可明确指定范围：
+
+```powershell
+python crawler_db.py phase1 --start-id 5004321 --end-id 5066654 --db-path data\posts.db
+```
+
 补新帖：
 
 ```powershell
@@ -56,7 +68,6 @@ server.py                 Web 服务与 API
 crawler_db.py             唯一爬虫入口，直接写 SQLite
 storage/sqlite_store.py   SQLite 写入与索引维护
 scripts/backup_runtime.py 运行时数据备份
-scripts/sync_railway_runtime.ps1  拉取 Railway 反馈/人数文件
 data/posts.db             主数据库
 ```
 
