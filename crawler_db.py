@@ -303,20 +303,26 @@ def command_incremental(args: argparse.Namespace) -> int:
     return 0
 
 
-def command_id_scan(args: argparse.Namespace) -> int:
+def parse_date(value: str, option: str) -> str:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"{option} must use YYYY-MM-DD: {value}") from exc
+
+
+def command_phase1(args: argparse.Namespace) -> int:
     cookie = load_cookie(Path(args.config))
     probe_session = make_session(cookie)
-    state_key = args.state_key or f"crawler_db_id_scan_{args.from_date.replace('-', '')}"
+    from_date = parse_date(args.from_date, "--from-date") if args.from_date else ""
+    to_date = parse_date(args.to_date, "--to-date") if args.to_date else ""
+    if from_date and to_date and from_date > to_date:
+        raise ValueError("--to-date must not be earlier than --from-date")
+    if not args.start_id and not from_date:
+        raise ValueError("provide --start-id or --from-date")
 
     with SQLitePostStore(args.db_path) as state_store:
-        row = state_store.conn.execute(
-            "select value from crawl_state where key=?", (state_key,)
-        ).fetchone()
-        saved = json.loads(row[0]) if row else {}
-        if saved.get("complete") and not args.force:
-            print(f"[id-scan] already complete state={state_key}", flush=True)
-            return 0
-
+        if args.init_schema:
+            state_store.init_schema()
         start_id = safe_int(args.start_id)
         if start_id <= 0:
             start_row = state_store.conn.execute(
@@ -325,27 +331,48 @@ def command_id_scan(args: argparse.Namespace) -> int:
                 from posts
                 where create_time >= ?
                 """,
-                (f"{args.from_date} 00:00:00",),
+                (f"{from_date} 00:00:00",),
             ).fetchone()
             start_id = safe_int(start_row[0] if start_row else 0)
         if start_id <= 0:
-            raise RuntimeError(f"cannot determine start id for {args.from_date}")
-        start_id = max(1, start_id - max(0, args.id_margin))
+            raise RuntimeError(f"cannot determine start id for {from_date}")
+        if not args.start_id:
+            start_id = max(1, start_id - 100)
 
-        end_id = safe_int(args.end_id) or safe_int(saved.get("end_id"))
+        end_id = safe_int(args.end_id)
         if end_id <= 0:
-            end_id = latest_list_id(probe_session) + max(0, args.id_margin)
-        next_id = start_id
-        if args.resume and not args.force:
-            next_id = max(start_id, safe_int(saved.get("next_id"), start_id))
+            if to_date:
+                end_row = state_store.conn.execute(
+                    """
+                    select max(cast(id as integer))
+                    from posts
+                    where create_time <= ?
+                    """,
+                    (f"{to_date} 23:59:59",),
+                ).fetchone()
+                end_id = safe_int(end_row[0] if end_row else 0)
+                if end_id <= 0:
+                    raise RuntimeError(f"cannot determine end id for {to_date}")
+                end_id += 100
+            else:
+                end_id = latest_list_id(probe_session) + 100
+        if end_id < start_id:
+            raise ValueError(f"end id {end_id} is earlier than start id {start_id}")
 
-    if next_id > end_id:
-        print(f"[id-scan] empty range {next_id}>{end_id}", flush=True)
-        return 0
+        state_key = f"crawler_db_phase1_{start_id}_{end_id}"
+        row = state_store.conn.execute(
+            "select value from crawl_state where key=?", (state_key,)
+        ).fetchone()
+        saved = json.loads(row[0]) if row and not args.restart else {}
+        if saved.get("complete"):
+            print(f"[phase1] already complete range={start_id}..{end_id}", flush=True)
+            return 0
+        next_id = max(start_id, safe_int(saved.get("next_id"), start_id))
 
     print(
-        f"[id-scan] range={next_id}..{end_id} from_date={args.from_date} "
-        f"workers={args.workers} chunk={args.chunk_size} state={state_key}",
+        f"[phase1] range={next_id}..{end_id} "
+        f"dates={from_date or '*'}..{to_date or 'latest'} "
+        f"workers={args.workers} chunk={args.chunk_size}",
         flush=True,
     )
 
@@ -354,9 +381,9 @@ def command_id_scan(args: argparse.Namespace) -> int:
     def scan_one(post_id: int):
         if not hasattr(local, "session"):
             local.session = make_session(cookie)
-        time.sleep(random.uniform(args.min_delay, args.max_delay))
+        time.sleep(random.uniform(0.15, 0.4))
         last_error = ""
-        for attempt in range(args.retries + 1):
+        for attempt in range(3):
             data, err = api_get(
                 local.session,
                 "/article/article/info",
@@ -364,14 +391,16 @@ def command_id_scan(args: argparse.Namespace) -> int:
             )
             if err == "cookie_expired":
                 return post_id, None, "cookie_expired"
-            if err == "not_found" or not data:
+            if err == "not_found":
                 return post_id, None, "missing"
             if err:
                 last_error = err
-                if attempt < args.retries:
+                if attempt < 2:
                     time.sleep(1.0 + attempt)
                     continue
                 return post_id, None, f"error:{last_error}"
+            if not data:
+                return post_id, None, "missing"
             parsed = normalize_detail(str(post_id), data)
             if parsed is None:
                 return post_id, None, "foreign"
@@ -382,13 +411,17 @@ def command_id_scan(args: argparse.Namespace) -> int:
         "start_id": start_id,
         "end_id": end_id,
         "next_id": next_id,
-        "processed": 0,
-        "written": 0,
-        "missing": 0,
-        "foreign": 0,
-        "errors": 0,
-        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "processed": safe_int(saved.get("processed")),
+        "new": safe_int(saved.get("new")),
+        "refreshed": safe_int(saved.get("refreshed")),
+        "filtered": safe_int(saved.get("filtered")),
+        "missing": safe_int(saved.get("missing")),
+        "foreign": safe_int(saved.get("foreign")),
+        "errors": safe_int(saved.get("errors")),
+        "started_at": saved.get("started_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    from_time = f"{from_date} 00:00:00" if from_date else ""
+    to_time = f"{to_date} 23:59:59" if to_date else ""
 
     with db_write_lock(args.db_path, args.lock_timeout):
         with SQLitePostStore(args.db_path) as store:
@@ -398,16 +431,25 @@ def command_id_scan(args: argparse.Namespace) -> int:
                     chunk_end = min(end_id, chunk_start + args.chunk_size - 1)
                     results = executor.map(scan_one, range(chunk_start, chunk_end + 1))
                     cookie_expired = False
+                    chunk_errors = 0
                     for post_id, parsed, status in results:
                         stats["processed"] += 1
                         if status == "ok":
                             post, comments = parsed
-                            if post["create_time"] >= f"{args.from_date} 00:00:00":
+                            in_date_range = (
+                                (not from_time or post["create_time"] >= from_time)
+                                and (not to_time or post["create_time"] <= to_time)
+                            )
+                            if in_date_range:
+                                existing = store.get_post_counts(post_id)
                                 if not args.dry_run:
                                     store.upsert_post(post, comments, commit=False)
-                                stats["written"] += 1
+                                if existing is None:
+                                    stats["new"] += 1
+                                else:
+                                    stats["refreshed"] += 1
                             else:
-                                stats["foreign"] += 1
+                                stats["filtered"] += 1
                         elif status == "missing":
                             stats["missing"] += 1
                         elif status == "foreign":
@@ -415,10 +457,12 @@ def command_id_scan(args: argparse.Namespace) -> int:
                         elif status == "cookie_expired":
                             cookie_expired = True
                             stats["errors"] += 1
+                            chunk_errors += 1
                         else:
                             stats["errors"] += 1
+                            chunk_errors += 1
 
-                    stats["next_id"] = chunk_end + 1
+                    stats["next_id"] = chunk_start if chunk_errors else chunk_end + 1
                     state = {
                         **stats,
                         "complete": False,
@@ -428,14 +472,16 @@ def command_id_scan(args: argparse.Namespace) -> int:
                         store.set_state(state_key, json.dumps(state, ensure_ascii=False), commit=False)
                         store.conn.commit()
                     print(
-                        f"[id-scan] {chunk_start}..{chunk_end} "
-                        f"processed={stats['processed']} written={stats['written']} "
+                        f"[phase1] {chunk_start}..{chunk_end} "
+                        f"processed={stats['processed']} new={stats['new']} "
+                        f"refreshed={stats['refreshed']} filtered={stats['filtered']} "
                         f"missing={stats['missing']} foreign={stats['foreign']} "
                         f"errors={stats['errors']}",
                         flush=True,
                     )
-                    if cookie_expired:
-                        raise RuntimeError("cookie_expired")
+                    if chunk_errors:
+                        reason = "cookie_expired" if cookie_expired else "request errors"
+                        raise RuntimeError(f"{reason}; retry from id {chunk_start}")
                     chunk_start = chunk_end + 1
 
             final_state = {
@@ -446,7 +492,7 @@ def command_id_scan(args: argparse.Namespace) -> int:
             }
             if not args.dry_run:
                 store.set_state(state_key, json.dumps(final_state, ensure_ascii=False), commit=True)
-    print("[id-scan] done", json.dumps(final_state, ensure_ascii=False), flush=True)
+    print("[phase1] done", json.dumps(final_state, ensure_ascii=False), flush=True)
     return 0
 
 
@@ -469,7 +515,6 @@ def command_backfill(args: argparse.Namespace) -> int:
 def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db-path", default=str(DEFAULT_DB))
     parser.add_argument("--init-schema", action="store_true")
-    parser.add_argument("--batch-size", type=int, default=100)
     parser.add_argument("--lock-timeout", type=int, default=DEFAULT_LOCK_TIMEOUT)
 
 
@@ -508,6 +553,7 @@ def main() -> int:
 
     detail = sub.add_parser("detail-fill", help="fetch detail for explicit ids and upsert DB")
     add_common(detail)
+    detail.add_argument("--batch-size", type=int, default=100)
     detail.add_argument("--config", default=str(DATA_DIR / "config.txt"))
     detail.add_argument("--ids", required=True)
     detail.add_argument("--dry-run", action="store_true")
@@ -515,23 +561,18 @@ def main() -> int:
     detail.add_argument("--max-delay", type=float, default=2.0)
     detail.set_defaults(func=command_detail_fill)
 
-    id_scan = sub.add_parser("id-scan", help="scan a continuous ID range with resume support")
-    add_common(id_scan)
-    id_scan.add_argument("--config", default=str(DATA_DIR / "config.txt"))
-    id_scan.add_argument("--from-date", default="2026-06-01")
-    id_scan.add_argument("--start-id", type=int, default=0)
-    id_scan.add_argument("--end-id", type=int, default=0)
-    id_scan.add_argument("--id-margin", type=int, default=100)
-    id_scan.add_argument("--workers", type=int, default=4)
-    id_scan.add_argument("--chunk-size", type=int, default=500)
-    id_scan.add_argument("--retries", type=int, default=2)
-    id_scan.add_argument("--state-key", default="")
-    id_scan.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
-    id_scan.add_argument("--force", action="store_true")
-    id_scan.add_argument("--dry-run", action="store_true")
-    id_scan.add_argument("--min-delay", type=float, default=0.15)
-    id_scan.add_argument("--max-delay", type=float, default=0.4)
-    id_scan.set_defaults(func=command_id_scan)
+    phase1 = sub.add_parser("phase1", help="scan every ID in an explicit or date-derived range")
+    add_common(phase1)
+    phase1.add_argument("--config", default=str(DATA_DIR / "config.txt"))
+    phase1.add_argument("--from-date", default="", help="derive start ID from this date (YYYY-MM-DD)")
+    phase1.add_argument("--to-date", default="", help="derive end ID from this date; default is API latest")
+    phase1.add_argument("--start-id", type=int, default=0)
+    phase1.add_argument("--end-id", type=int, default=0)
+    phase1.add_argument("--workers", type=int, default=4)
+    phase1.add_argument("--chunk-size", type=int, default=500)
+    phase1.add_argument("--restart", action="store_true", help="ignore the saved checkpoint for this range")
+    phase1.add_argument("--dry-run", action="store_true")
+    phase1.set_defaults(func=command_phase1)
 
     inc = sub.add_parser("incremental", help="compatibility alias: scan selected endpoint")
     add_scan_options(inc, endpoint=None, pages=500, min_pages=20, stop_unchanged=300)

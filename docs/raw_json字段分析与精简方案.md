@@ -317,7 +317,6 @@ DB 总缩减:         3.98 GB → 1.62 GB  (省 2.36 GB, 59%)
 | `/api/comments?id=` | ✅ 嵌套结构正常 |
 | `/api/categories` | ✅ 585 类 |
 | `/admin` | ✅ 200 |
-| `/api/checkin` | ✅ |
 
 ### 对爬虫的影响
 

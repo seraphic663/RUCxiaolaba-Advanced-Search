@@ -65,23 +65,33 @@ CRAWLER_REFRESH_INTERVAL=3600
 CRAWLER_BACKFILL_INTERVAL=86400
 ```
 
-## 一次性全量 ID 补扫
+## Phase 1 全量 ID 补扫
 
-需要补齐某个日期以来所有帖子及其当前评论时，设置：
+Phase 1 是手动维护命令，不随网站启动自动执行。按日期自动确定 ID 范围：
 
-```text
-CRAWLER_ID_SCAN_FROM=2026-06-01
-CRAWLER_ID_SCAN_WORKERS=4
-CRAWLER_ID_SCAN_CHUNK=500
+```powershell
+python crawler_db.py phase1 --from-date 2026-06-01 --db-path data\posts.db
 ```
 
-下次部署时，调度器会从数据库中该日期的最小帖子 ID 开始，连续扫描到
-API 当前最新 ID。每 500 个 ID 提交一次并记录断点；部署中断后会自动续扫，
-不会从头开始。日志以 `[id-scan]` 开头。
+限制结束日期：
 
-扫描完成后状态会保存在 SQLite 的 `crawl_state` 表中，同一日期不会重复执行。
-确认日志出现 `[id-scan] done` 后，可以删除上述三个变量；常规自动更新仍由
-`new`、`refresh`、`backfill` 负责。
+```powershell
+python crawler_db.py phase1 --from-date 2026-06-01 --to-date 2026-06-03 --db-path data\posts.db
+```
+
+也可以明确指定 ID：
+
+```powershell
+python crawler_db.py phase1 --start-id 5004321 --end-id 5066654 --db-path data\posts.db
+```
+
+Phase 1 每 500 个 ID 保存一次断点，重复执行相同范围会自动续扫。需要从头重扫时
+加 `--restart`。线上执行可先进入持久 SSH 会话：
+
+```powershell
+railway ssh --session phase1
+python crawler_db.py phase1 --from-date 2026-06-01 --db-path /app/data/posts.db --config /app/data/config.txt
+```
 
 ## Cookie 更新
 
