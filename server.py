@@ -6,7 +6,7 @@ Features:
   - /api/search?q=...&sort=...&page=...&limit=50
   - /api/comments?id=... (lazy comment loading)
   - Admin panel with CSRF + session auth
-  - Random password generation on first run
+  - Admin password from environment or local data file
   - Template-based rendering (templates/*.html)
 """
 import json
@@ -16,7 +16,6 @@ import sqlite3
 import time
 import threading
 import html as _html
-import string as _string
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -66,7 +65,6 @@ def choose_sqlite_db(explicit_path=None):
 
 SQLITE_DB = choose_sqlite_db()
 PASSWORD_FILE = os.path.join(DATA_DIR, "admin_password.txt")
-CHECKIN_FILE = os.path.join(DATA_DIR, "checkin_count.json")
 
 SESSION_TTL = 86400   # 24 hours
 CSRF_TTL = 3600       # 1 hour
@@ -75,60 +73,24 @@ COMMENT_LIMIT = 500   # max comments to return per post
 # ==================== THREAD-SAFE STATE ====================
 
 _state_lock = threading.Lock()
-_checkin_lock = threading.Lock()
 _admin_sessions = {}   # token -> expiry (unix timestamp)
 _csrf_tokens = {}      # token -> expiry (unix timestamp)
 
 # ==================== PASSWORD ====================
 
 def get_password():
-    """Return admin password, generating a random one on first run."""
+    """Return the stable admin password from env, with a local-file fallback."""
+    env_password = os.environ.get("ADMIN_PASSWORD", "").strip()
+    if env_password:
+        return env_password
     if os.path.exists(PASSWORD_FILE):
         with open(PASSWORD_FILE, "r", encoding="utf-8") as f:
             pwd = f.read().strip()
             if pwd:
                 return pwd
-    # Generate and persist a random password
-    pwd = ''.join(secrets.choice(_string.ascii_letters + _string.digits) for _ in range(16))
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(PASSWORD_FILE, "w", encoding="utf-8") as f:
-        f.write(pwd)
-    print(f"\n[!] ========================================")
-    print(f"[!]  生成随机管理员密码: {pwd}")
-    print(f"[!]  已保存至: {PASSWORD_FILE}")
-    print(f"[!] ========================================\n")
-    return pwd
-
-
-# ==================== CHECK-IN COUNT ====================
-
-def _read_checkin_count_unlocked():
-    if not os.path.exists(CHECKIN_FILE):
-        return 0
-    try:
-        with open(CHECKIN_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return max(0, int(data.get("count", 0)))
-    except Exception:
-        return 0
-
-
-def get_checkin_count():
-    with _checkin_lock:
-        return _read_checkin_count_unlocked()
-
-
-def increment_checkin_count():
-    with _checkin_lock:
-        count = _read_checkin_count_unlocked() + 1
-        os.makedirs(DATA_DIR, exist_ok=True)
-        payload = {
-            "count": count,
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        with open(CHECKIN_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
-        return count
+    raise RuntimeError(
+        "admin password missing: set ADMIN_PASSWORD or create data/admin_password.txt"
+    )
 
 
 def _safe_int(value, default=0):
@@ -750,27 +712,6 @@ class Handler(BaseHTTPRequestHandler):
         )
         self._serve_json(result)
 
-    # ---- API: feedback ----
-    def _handle_api_feedback(self):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode("utf-8", errors="replace")
-        try:
-            data = json.loads(body)
-            name = (data.get("name") or "").strip()[:50]
-            message = (data.get("message") or "").strip()[:2000]
-            if not message:
-                self._serve_json({"ok": False, "error": "message required"}, 400)
-                return
-        except json.JSONDecodeError:
-            self._serve_json({"ok": False, "error": "invalid json"}, 400)
-            return
-
-        feedback_file = os.path.join(DATA_DIR, "feedback.jsonl")
-        with open(feedback_file, "a", encoding="utf-8") as f:
-            json.dump({"name": name, "message": message, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}, f, ensure_ascii=False)
-            f.write("\n")
-        self._serve_json({"ok": True})
-
     # ---- API: categories ----
     def _handle_api_categories(self):
         self._serve_json(api_categories_sqlite())
@@ -795,13 +736,6 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_healthcheck(self):
         self._serve_json({"ok": True})
 
-    # ---- API: check-in ----
-    def _handle_api_checkin_get(self):
-        self._serve_json({"count": get_checkin_count()})
-
-    def _handle_api_checkin_post(self):
-        self._serve_json({"count": increment_checkin_count()})
-
     # ---- ROUTING ----
     def do_GET(self):
         _, path = self._parse_query()
@@ -812,8 +746,6 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_api_comments()
         elif path == "/api/categories":
             self._handle_api_categories()
-        elif path == "/api/checkin":
-            self._handle_api_checkin_get()
         elif path == "/healthz":
             self._handle_healthcheck()
         elif path == "/admin":
@@ -831,10 +763,6 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/admin":
             self._handle_admin_post()
-        elif path == "/api/checkin":
-            self._handle_api_checkin_post()
-        elif path == "/api/feedback":
-            self._handle_api_feedback()
         else:
             self.send_response(404)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -872,8 +800,7 @@ if __name__ == "__main__":
     port = args.port
     HOST = args.host
 
-    # Pre-load password (triggers generation if needed)
-    pwd = get_password()
+    get_password()
 
     overview = sqlite_overview()
     print(
@@ -887,8 +814,6 @@ if __name__ == "__main__":
     print(f"  局域网:  http://{local_ip}:{port}")
     print(f"  Admin:   http://127.0.0.1:{port}/admin")
     print(f"  Backend: sqlite ({SQLITE_DB})")
-    if not os.path.exists(PASSWORD_FILE) or os.path.getsize(PASSWORD_FILE) < 8:
-        print(f"  管理员密码: {pwd}")
     print()
 
     ThreadingHTTPServer((HOST, port), Handler).serve_forever()
