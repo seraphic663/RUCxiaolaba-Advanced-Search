@@ -2,7 +2,7 @@
 import requests, urllib3, os, time, threading
 urllib3.disable_warnings()
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 with open(os.path.join(DATA_DIR, "config.txt"), encoding="utf-8") as f:
     cookie = f.read().strip().split("=", 1)[1]
 
