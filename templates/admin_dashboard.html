@@ -68,6 +68,27 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
   .result-row .stats-row { align-items: flex-start; }
   .post-stats-inline { justify-content: flex-start; }
 }
+/* ── AI Test ── */
+.ai-section { max-width: 1040px; margin: 0 auto 14px; padding: 0 16px; }
+.ai-card { background: #fff; padding: 14px; border-radius: 8px; border: 1px solid #eee; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.ai-card h3 { font-size: 0.95em; color: #8b0012; margin-bottom: 8px; }
+.ai-row { display: flex; gap: 8px; }
+.ai-row input { flex: 1; padding: 7px 11px; border: 2px solid #ddd; border-radius: 8px; font-size: 13px; outline: none; }
+.ai-row input:focus { border-color: #8b0012; }
+.ai-row button { padding: 7px 18px; border: none; border-radius: 8px; background: #8b0012; color: #fff; cursor: pointer; font-size: 13px; white-space: nowrap; height: 34px; }
+.ai-row button:disabled { background: #ccc; cursor: not-allowed; }
+.ai-response { margin-top: 10px; line-height: 1.7; font-size: 0.9em; white-space: pre-wrap; word-break: break-word; display: none; }
+.ai-response.active { display: block; }
+.ai-response .ai-cited { margin-top: 8px; font-size: 0.85em; color: #8b0012; }
+.ai-debug { margin-top: 8px; font-size: 0.78em; color: #666; background: #f8f8f8; padding: 8px; border-radius: 6px; display: none; }
+.ai-debug.active { display: block; }
+.ai-findings { padding-left: 20px; margin-top: 8px; }
+.ai-findings li { margin: 6px 0; line-height: 1.6; }
+.ai-findings strong { color: #8b0012; }
+.ai-caveat { color: #777; font-size: 0.86em; border-top: 1px solid #eee; padding-top: 7px; margin-top: 8px; }
+.ai-evidence-list { margin-top: 10px; }
+.ai-evidence-list .result-row { cursor: default; }
+.ai-reference { margin-top: 6px; padding: 6px 9px; border-left: 3px solid #e4c3c7; background: #fafafa; color: #555; font-size: 0.84em; line-height: 1.55; }
 </style>
 </head>
 <body>
@@ -98,6 +119,19 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 
 <div id="results"><div class="loading">输入关键词后点击搜索</div></div>
 <div class="pagination" id="pager"></div>
+
+<!-- ═══════════════ AI 测试（Admin Only） ═══════════════ -->
+<div class="ai-section">
+  <div class="ai-card">
+    <h3>🤖 AI 搜索测试（管理员 · 含证据统计）</h3>
+    <div class="ai-row">
+      <input type="text" id="ai-query" placeholder="自然语言问题，如：最近大家对食堂怎么看？">
+      <button id="ai-btn" onclick="aiTest()">AI 搜索</button>
+    </div>
+    <div class="ai-response" id="ai-resp"></div>
+    <div class="ai-debug" id="ai-debug"></div>
+  </div>
+</div>
 
 <script>
 var currentPage = 1;
@@ -258,6 +292,94 @@ function renderPager(data) {
 // Enter key triggers search
 document.getElementById('q').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') doSearch(1);
+});
+
+// ── AI Test ──
+function aiEscape(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function aiTest() {
+  var q = document.getElementById('ai-query').value.trim();
+  if (!q) return;
+  var btn = document.getElementById('ai-btn');
+  var resp = document.getElementById('ai-resp');
+  var debug = document.getElementById('ai-debug');
+  btn.disabled = true; btn.textContent = '搜索中...';
+  resp.classList.remove('active'); debug.classList.remove('active');
+
+  fetch('/api/ai/search', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({query: q})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        var answer = d.answer || {overview: d.summary || '', findings: [], caveat: ''};
+        var html = '<div>' + aiEscape(answer.overview || '') + '</div>';
+        if (answer.findings && answer.findings.length) {
+          html += '<ol class="ai-findings">' + answer.findings.map(function(item) {
+            return '<li><strong>' + aiEscape(item.title || '相关发现') + '</strong>：' +
+              aiEscape(item.detail || '') + '</li>';
+          }).join('') + '</ol>';
+        }
+        if (answer.caveat) html += '<div class="ai-caveat">说明：' + aiEscape(answer.caveat) + '</div>';
+        html += renderAdminAiEvidence(d.evidence_posts || []);
+        resp.innerHTML = html;
+        resp.classList.add('active');
+
+        if (d._debug) {
+          var s = d.evidence_stats || d._debug.evidence_stats || {};
+          var dbg = '<strong>⏱ ' + d.elapsed_s + 's · 🔤 in:' + d._debug.tokens_in + ' out:' + d._debug.tokens_out + '</strong><br>';
+          dbg += '候选帖子 ' + (s.candidate_posts || 0) +
+            ' · 回答上下文 ' + (s.context_posts || 0) +
+            ' · 正文命中 ' + (s.body_matched_posts || 0) +
+            ' · 评论命中帖子 ' + (s.comment_matched_posts || 0) +
+            ' · 相关评论 ' + (s.matched_comments || 0) +
+            ' · 实际引用 ' + (s.cited_posts || 0);
+          debug.innerHTML = dbg;
+          debug.classList.add('active');
+        }
+      } else {
+        resp.innerHTML = '<span style="color:#e94560">' + aiEscape(d.error || 'AI 错误') + '</span>';
+        resp.classList.add('active');
+      }
+    })
+    .catch(function(err) {
+      resp.innerHTML = '<span style="color:#e94560">网络错误: ' + aiEscape(err.message) + '</span>';
+      resp.classList.add('active');
+    })
+    .finally(function() {
+      btn.disabled = false; btn.textContent = 'AI 搜索';
+    });
+}
+
+function renderAdminAiEvidence(posts) {
+  if (!posts.length) return '<div class="ai-caveat">本次回答没有可验证的引用帖子。</div>';
+  return '<div class="ai-evidence-list">' + posts.map(function(p) {
+    var refs = (p.matched_comments || []).map(function(c) {
+      return '<div class="ai-reference"><b>' + aiEscape(c.user_name || '?') + '</b> · ' +
+        aiEscape(c.time || '') + '<br>' + aiEscape(c.detail || '') + '</div>';
+    }).join('');
+    return '<div class="result-row">' +
+      '<div class="top"><span><span class="post-cat">' + aiEscape(p.category || '?') +
+      '</span> ' + aiEscape(p.user || '?') + ' <span class="meta">#' + aiEscape(p.id) +
+      '</span></span><span class="meta">' + aiEscape(p.time || '') + '</span></div>' +
+      '<div class="text">' + aiEscape(p.content || '') + '</div>' +
+      refs +
+      '<div class="stats-row"><span>正文命中 ' + aiEscape((p.body_match_terms || []).join('、') || '无') +
+      ' · 相关评论 ' + (p.comment_match_count || 0) + ' 条</span>' +
+      '<span class="post-stats-inline"><span>❤ ' + (p.stars || 0) +
+      '</span><span>💬 ' + (p.comments || 0) + '</span></span></div></div>';
+  }).join('') + '</div>';
+}
+
+// Enter key in AI input
+document.getElementById('ai-query').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') { e.preventDefault(); aiTest(); }
 });
 </script>
 </body>
