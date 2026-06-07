@@ -94,6 +94,51 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .info a { color: #8b0012; text-decoration: none; }
 .info a:hover { text-decoration: underline; }
 
+/* ── AI Panel (top bar) ── */
+.ai-section { max-width: 760px; margin: 0 auto; padding: 0 16px 6px; }
+.ai-bar { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #eee; border-radius: 10px; padding: 8px 14px; box-shadow: 0 1px 3px rgba(0,0,0,.04); }
+.ai-bar-icon { font-size: 1.1em; }
+.ai-bar-label { font-weight: 600; font-size: 0.9em; color: #8b0012; white-space: nowrap; }
+.ai-bar-hint { color: #bbb; font-size: 0.78em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-bar-invite, .ai-bar-query { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.ai-bar-invite input { width: 90px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.82em; outline: none; }
+.ai-bar-invite input:focus { border-color: #8b0012; }
+.ai-bar-invite button { padding: 4px 12px; border: none; border-radius: 6px; background: #8b0012; color: #fff; font-size: 0.82em; cursor: pointer; white-space: nowrap; }
+.ai-bar-invite button:hover { background: #6d000e; }
+.ai-bar-query input { width: 200px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.82em; outline: none; font-family: inherit; }
+.ai-bar-query input:focus { border-color: #8b0012; }
+.ai-bar-query button { padding: 4px 12px; border: none; border-radius: 6px; background: #8b0012; color: #fff; font-size: 0.82em; cursor: pointer; white-space: nowrap; }
+.ai-bar-query button:disabled { background: #ccc; cursor: not-allowed; }
+.ai-bar-status { font-size: 0.75em; color: #bbb; margin-left: 4px; white-space: nowrap; }
+
+/* result dropdown */
+.ai-result { max-width: 760px; margin: 6px auto 0; padding: 0 16px; }
+.ai-result > .ai-answer-card { background: #fff; border-radius: 10px; padding: 14px 18px; box-shadow: 0 1px 4px rgba(0,0,0,.08); border: 1px solid #eee; margin-bottom: 10px; }
+.ai-summary { line-height: 1.75; color: #222; white-space: pre-wrap; word-break: break-word; }
+.ai-overview { line-height: 1.75; color: #222; margin-bottom: 10px; }
+.ai-findings { margin: 0; padding-left: 20px; }
+.ai-findings li { margin: 8px 0; line-height: 1.65; }
+.ai-findings strong { color: #8b0012; }
+.ai-caveat { margin-top: 10px; padding-top: 8px; border-top: 1px solid #eee; color: #777; font-size: 0.86em; line-height: 1.6; }
+.ai-evidence-summary { color: #777; font-size: 0.82em; margin: 8px 0; line-height: 1.5; }
+.ai-evidence-title { color: #8b0012; font-weight: 600; font-size: 0.9em; margin: 12px 0 8px; }
+.ai-match-info { color: #777; font-size: 0.78em; margin: 5px 0; }
+.ai-comment-reference { background: #fafafa; border-left: 3px solid #e4c3c7; padding: 7px 10px; margin: 6px 0; color: #555; font-size: 0.84em; line-height: 1.55; }
+.ai-comment-reference .meta { color: #999; font-size: 0.9em; margin-bottom: 2px; }
+.ai-cited { margin-top: 8px; font-size: 0.85em; color: #8b0012; }
+.ai-cited a { color: #8b0012; text-decoration: none; cursor: pointer; }
+.ai-cited a:hover { text-decoration: underline; }
+.ai-error { color: #e94560; }
+.ai-spinner { display: inline-block; width: 10px; height: 10px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: ai-spin .5s linear infinite; vertical-align: middle; margin-right: 3px; }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 600px) {
+  .ai-bar { flex-wrap: wrap; gap: 4px; }
+  .ai-bar-hint { display: none; }
+  .ai-bar-invite, .ai-bar-query { margin-left: 0; width: 100%; }
+  .ai-bar-query input { flex: 1; width: auto; }
+}
+
 /* Mobile */
 @media (max-width: 600px) {
   .header { padding: 14px 12px; }
@@ -121,6 +166,34 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
   <h1>RUC小喇叭 搜索</h1>
   <p>共 __TOTAL__ 条帖子 &nbsp;·&nbsp; 时间跨度 __EARLIEST_TIME__ ~ __LATEST_TIME__ &nbsp;·&nbsp; 数据更新于 __CRAWL_TIME__</p>
   <a class="admin-link" href="/admin" title="管理面板">&#128274; 管理</a>
+</div>
+
+<!-- ═══════════════ AI 智能搜索 ═══════════════ -->
+<div class="ai-section" id="ai-top">
+  <div class="ai-bar">
+    <span class="ai-bar-icon">🤖</span>
+    <span class="ai-bar-label">AI 智能搜索</span>
+    <span class="ai-bar-hint">用自然语言问，AI 帮你总结论坛讨论</span>
+
+    <!-- invite code (hidden when active) -->
+    <span class="ai-bar-invite" id="ai-bar-invite">
+      <input type="text" id="ai-invite-code" placeholder="邀请码" autocomplete="off" size="14">
+      <button id="ai-activate-btn" onclick="aiActivate()">激活</button>
+    </span>
+
+    <!-- query (shown when active) -->
+    <span class="ai-bar-query" id="ai-bar-query" style="display:none">
+      <input type="text" id="ai-query" placeholder="问点什么..." autocomplete="off">
+      <button id="ai-search-btn" onclick="aiSearch()">搜索</button>
+      <span class="ai-bar-status" id="ai-status"></span>
+    </span>
+  </div>
+
+  <!-- result dropdown -->
+  <div class="ai-result" id="ai-result" style="display:none">
+    <div class="ai-summary" id="ai-summary"></div>
+    <div class="ai-cited" id="ai-cited"></div>
+  </div>
 </div>
 
 <div class="search-wrap">
@@ -486,7 +559,222 @@ fetch('/api/categories')
   })
   .catch(function() {});
 
-fetchResults();
+// ===== AI Search =====
+var aiActivated = false;
+var _aiPostData = {};
+var _aiCommentsLoaded = {};
+
+function aiShowError(msg) {
+  var result = document.getElementById('ai-result');
+  result.style.display = 'block';
+  result.innerHTML = '<div><span class="ai-error">' + escapeHtml(msg) + '</span></div>';
+}
+
+function _aiUpdateBar() {
+  if (aiActivated) {
+    document.getElementById('ai-bar-invite').style.display = 'none';
+    document.getElementById('ai-bar-query').style.display = 'inline-flex';
+  } else {
+    document.getElementById('ai-bar-invite').style.display = 'inline-flex';
+    document.getElementById('ai-bar-query').style.display = 'none';
+    document.getElementById('ai-result').style.display = 'none';
+    document.getElementById('ai-status').textContent = '';
+  }
+}
+
+function checkAiStatus() {
+  fetch('/api/ai/status')
+    .then(function(r) {
+      if (r.status === 401) { aiActivated = false; _aiUpdateBar(); return; }
+      return r.json();
+    })
+    .then(function(d) {
+      if (d && d.ok) {
+        aiActivated = true;
+        _aiUpdateBar();
+        document.getElementById('ai-status').textContent = '剩余 ' + d.remaining + '/' + d.daily_quota;
+      }
+    })
+    .catch(function(){});
+}
+
+function aiActivate() {
+  var code = document.getElementById('ai-invite-code').value.trim().toUpperCase();
+  if (!code) { alert('请输入邀请码'); return; }
+  var btn = document.getElementById('ai-activate-btn');
+  btn.disabled = true; btn.textContent = '...';
+  fetch('/api/ai/activate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({code: code})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        aiActivated = true;
+        _aiUpdateBar();
+        document.getElementById('ai-status').textContent = '剩余 ' + d.remaining + '/' + d.daily_quota;
+        document.getElementById('ai-invite-code').value = '';
+      } else {
+        alert('激活失败: ' + (d.error || '未知错误'));
+      }
+    })
+    .catch(function(err) { alert('网络错误: ' + err.message); })
+    .finally(function() { btn.disabled = false; btn.textContent = '激活'; });
+}
+
+function aiSearch() {
+  var query = document.getElementById('ai-query').value.trim();
+  if (!query) return;
+  var btn = document.getElementById('ai-search-btn');
+  var resultEl = document.getElementById('ai-result');
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="ai-spinner"></span>';
+  resultEl.style.display = 'none';
+  document.getElementById('ai-status').textContent = '';
+
+  fetch('/api/ai/search', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({query: query})
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) {
+        _aiPostData = {};
+        _aiCommentsLoaded = {};
+        var answer = d.answer || {overview: d.summary || '', findings: [], caveat: ''};
+        var findings = (answer.findings || []).map(function(item) {
+          return '<li><strong>' + escapeHtml(item.title || '相关发现') + '</strong>：' +
+            escapeHtml(item.detail || '') + '</li>';
+        }).join('');
+        var answerHtml = '<div class="ai-answer-card">' +
+          '<div class="ai-overview">' + escapeHtml(answer.overview || '') + '</div>' +
+          (findings ? '<ol class="ai-findings">' + findings + '</ol>' : '') +
+          (answer.caveat ? '<div class="ai-caveat">说明：' + escapeHtml(answer.caveat) + '</div>' : '') +
+          renderAiEvidenceSummary(d.evidence_stats || {}) +
+        '</div>';
+        var evidence = (d.evidence_posts || []).map(function(post, index) {
+          return renderAiEvidencePost(post, index, query);
+        }).join('');
+        resultEl.style.display = 'block';
+        resultEl.innerHTML = answerHtml +
+          (evidence ? '<div class="ai-evidence-title">回答依据</div>' + evidence : '');
+        if (d.remaining !== undefined) {
+          document.getElementById('ai-status').textContent = '剩余 ' + d.remaining + '/' + d.daily_quota;
+        }
+      } else {
+        if (d.error && d.error.indexOf('请先激活') >= 0) {
+          aiActivated = false; _aiUpdateBar(); alert('会话已过期，请重新输入邀请码');
+        } else {
+          aiShowError(d.error || '未知错误');
+        }
+      }
+    })
+    .catch(function(err) { aiShowError('网络错误: ' + err.message); })
+    .finally(function() { btn.disabled = false; btn.textContent = '搜索'; });
+}
+
+function renderAiEvidenceSummary(stats) {
+  return '<div class="ai-evidence-summary">检索 ' + (stats.candidate_posts || 0) +
+    ' 条候选帖子，选取前 ' + (stats.context_posts || 0) +
+    ' 条作为回答上下文；其中正文命中 ' + (stats.body_matched_posts || 0) +
+    ' 条、评论命中 ' + (stats.comment_matched_posts || 0) +
+    ' 条帖子（共 ' + (stats.matched_comments || 0) +
+    ' 条相关评论），回答实际引用 ' + (stats.cited_posts || 0) + ' 条。</div>';
+}
+
+function renderAiEvidencePost(post, index, query) {
+  var fullContent = post.content || '';
+  var tc = truncateContent(fullContent);
+  var keywords = (post.body_match_terms || []).length
+    ? post.body_match_terms
+    : query.split(/\s+/).filter(Boolean);
+  _aiPostData[index] = {postId: post.id, commentCount: post.comments || 0};
+
+  var header = '<div class="post-header"><div class="left">' +
+    '<span class="post-cat">' + escapeHtml(post.category || '?') + '</span>' +
+    '<span class="post-user">' + escapeHtml(post.user || '?') + '</span>' +
+    '<span class="post-id">#' + escapeHtml(post.id) + '</span></div>' +
+    '<span class="post-time-right">' + escapeHtml(post.time || '') + '</span></div>';
+  var content = '<div class="post-content">' +
+    highlightText(tc.preview, keywords) + '</div>';
+  var matchInfo = '<div class="ai-match-info">' +
+    ((post.body_match_terms || []).length
+      ? '正文命中：' + (post.body_match_terms || []).map(escapeHtml).join('、')
+      : '正文未直接命中') +
+    ' · 相关评论 ' + (post.comment_match_count || 0) + ' 条</div>';
+  var commentRefs = (post.matched_comments || []).map(function(c) {
+    return '<div class="ai-comment-reference"><div class="meta">' +
+      escapeHtml(c.user_name || '?') + ' · ' + escapeHtml(c.time || '') +
+      (c.is_publisher ? ' · 楼主' : '') + '</div>' +
+      highlightText(c.detail || '', keywords) + '</div>';
+  }).join('');
+  var toggle = post.comments > 0
+    ? '<span class="comment-toggle-inline" id="ai-cmt-btn-' + index +
+      '" onclick="toggleAiComments(' + index + ')">&#9654; 展开 ' +
+      post.comments + ' 条评论</span>'
+    : '<span></span>';
+  var bottom = '<div class="post-bottom-row">' + toggle +
+    '<span class="post-stats-inline"><span>&#10084; ' + (post.stars || 0) +
+    '</span><span>&#128172; ' + (post.comments || 0) + '</span></span></div>';
+  return '<div class="post">' + header + content + matchInfo + commentRefs + bottom +
+    '<div class="comments-wrap" id="ai-cmts-' + index +
+    '" style="display:none"></div></div>';
+}
+
+function toggleAiComments(index) {
+  var wrap = document.getElementById('ai-cmts-' + index);
+  var btn = document.getElementById('ai-cmt-btn-' + index);
+  var data = _aiPostData[index];
+  if (!wrap || !btn || !data) return;
+  if (wrap.style.display === 'block') {
+    wrap.style.display = 'none';
+    btn.textContent = '▶ 展开 ' + data.commentCount + ' 条评论';
+    return;
+  }
+  wrap.style.display = 'block';
+  btn.textContent = '▼ 收起评论';
+  if (_aiCommentsLoaded[index]) return;
+  wrap.innerHTML = '<div class="loading"><span class="spinner"></span>加载评论...</div>';
+  fetch('/api/comments?id=' + encodeURIComponent(data.postId))
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(payload) {
+      wrap.innerHTML = renderComments(payload.comment_list || [], []);
+      _aiCommentsLoaded[index] = true;
+    })
+    .catch(function(err) {
+      wrap.innerHTML = '<div class="ai-error">评论加载失败：' + escapeHtml(err.message) + '</div>';
+    });
+}
+
+function searchById(postId) {
+  document.getElementById('q').value = postId;
+  currentSort = 'time'; currentPage = 1;
+  document.querySelectorAll('.sort-bar button').forEach(function(b) { b.classList.remove('active'); });
+  document.getElementById('btn-time').classList.add('active');
+  fetchResults();
+  window.scrollTo({top: document.getElementById('q').offsetTop - 20, behavior: 'smooth'});
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  // Enter in AI query input
+  var aiQuery = document.getElementById('ai-query');
+  if (aiQuery) {
+    aiQuery.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); aiSearch(); }
+    });
+  }
+  // Enter in invite code input
+  var aiInvite = document.getElementById('ai-invite-code');
+  if (aiInvite) {
+    aiInvite.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); aiActivate(); }
+    });
+  }
+  checkAiStatus();
+});
 </script>
 </body>
 </html>
