@@ -123,13 +123,14 @@ python -u server.py --db --sqlite-db "$DB_PATH"
 设置 `CRAWLER_ENABLED=1` 后，`start.sh` 会启动同服务后台调度器：
 
 ```text
-new       每 4 小时
-refresh   每 4 小时，与 new 错开 2 小时
+new       每 8 小时
+refresh   每 8 小时，与 new 错开 4 小时
 backfill  每 24 小时
 phase1    每 7 天，重扫最近 8 个自然日
 ```
 
-任务直接更新 `/app/data/posts.db`，不需要重新上传 DB。
+任务直接更新 `/app/data/posts.db`，不需要重新上传 DB。重新部署后不会立即
+扫描，首轮新帖等待 4 小时，首轮新回复等待 8 小时。
 
 更详细步骤见 `docs/Railway部署与运维.md`。
 

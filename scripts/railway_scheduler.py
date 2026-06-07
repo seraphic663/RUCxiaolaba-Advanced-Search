@@ -23,8 +23,8 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
-NEW_INTERVAL = env_int("CRAWLER_NEW_INTERVAL", 4 * 60 * 60)
-REFRESH_INTERVAL = env_int("CRAWLER_REFRESH_INTERVAL", 4 * 60 * 60)
+NEW_INTERVAL = env_int("CRAWLER_NEW_INTERVAL", 8 * 60 * 60)
+REFRESH_INTERVAL = env_int("CRAWLER_REFRESH_INTERVAL", 8 * 60 * 60)
 BACKFILL_INTERVAL = env_int("CRAWLER_BACKFILL_INTERVAL", 24 * 60 * 60)
 PHASE1_INTERVAL = env_int("CRAWLER_PHASE1_INTERVAL", 7 * 24 * 60 * 60)
 PHASE1_MARKER = Path(DB_PATH).with_name(".phase1_weekly_last")
@@ -88,8 +88,10 @@ def main() -> int:
 
     now = time.monotonic()
     next_run = {
-        "new": now + 60,
-        "refresh": now + 2 * 60 * 60,
+        # Avoid an extra full scan on every deployment. The two regular jobs
+        # remain staggered, but the first run also respects that cadence.
+        "new": now + NEW_INTERVAL / 2,
+        "refresh": now + REFRESH_INTERVAL,
         "backfill": now + 6 * 60 * 60,
         "phase1": now + phase1_delay(),
     }
