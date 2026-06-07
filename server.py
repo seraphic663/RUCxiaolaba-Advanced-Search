@@ -121,6 +121,9 @@ AI_MAX_OUTPUT_TOKENS = int(os.environ.get("AI_MAX_OUTPUT_TOKENS", "1024"))
 AI_REQUEST_TIMEOUT = int(os.environ.get("AI_REQUEST_TIMEOUT", "120"))
 AI_NETWORK_RETRIES = int(os.environ.get("AI_NETWORK_RETRIES", "1"))
 AI_FALLBACK_MODEL = os.environ.get("AI_FALLBACK_MODEL", "deepseek-v4-flash")
+AI_MODERATION_MODEL = os.environ.get("AI_MODERATION_MODEL", "deepseek-v4-flash")
+AI_MODERATION_TIMEOUT = int(os.environ.get("AI_MODERATION_TIMEOUT", "30"))
+AI_MODERATION_RETRIES = int(os.environ.get("AI_MODERATION_RETRIES", "2"))
 
 _ai_store: AIStore | None = None
 _ai_semaphore = threading.BoundedSemaphore(AI_MAX_CONCURRENT)
@@ -601,21 +604,6 @@ _PII_PATTERNS = [
     (re.compile(r"\b\d{10,12}\b"), "<STUDENT_ID>"),               # student-id-ish
 ]
 
-# Safety-block regex: things we outright refuse to search for
-_REFUSE_PATTERNS = [
-    # Phone / ID / student number in query
-    (re.compile(r"1[3-9]\d{9}"), "搜索内容包含手机号"),
-    (re.compile(r"\d{17}[\dXx]"), "搜索内容包含身份证号"),
-    # Sexual content patterns
-    (re.compile(r"(色情|裸[体照聊]|约炮|一夜情|嫖|卖淫|淫|黄片|A片|成人|性交|做爱|操你|fuck|porn|sex)"), "搜索包含不当内容"),
-    # Violence / illegal
-    (re.compile(r"(杀人|买凶|贩毒|毒品|枪支|炸药|炸弹|制造爆炸|恐怖)"), "搜索包含违法或暴力内容"),
-    # Targeted personal info hunting (name + specific location/department)
-    (re.compile(r"(查一下|找出|搜索|定位|人肉).{0,10}(是谁|住哪里|电话|微信|宿舍|寝室|学院|学号)"), "搜索涉及他人个人隐私"),
-    (re.compile(r"(联系方式|电话号码|手机号|微信号|QQ号).{0,10}(多少|是什么)"), "搜索涉及他人个人隐私"),
-]
-
-
 def _scrub_pii(text: str) -> str:
     """Remove PII patterns from *text*. Returns sanitized string."""
     for pat, repl in _PII_PATTERNS:
@@ -625,17 +613,72 @@ def _scrub_pii(text: str) -> str:
     return text
 
 
-def _check_content_safety(query: str) -> tuple[bool, str | None]:
-    """Check if *query* is safe to process. Returns (is_safe, rejection_reason)."""
+def _validate_ai_query(query: str) -> tuple[bool, str | None]:
+    """Validate query shape before model moderation."""
     q = query.strip()
     if not q or len(q) < 2:
         return False, "请输入至少两个字的搜索内容"
     if len(q) > 500:
         return False, "搜索内容过长，请精简至500字以内"
-    for pat, reason in _REFUSE_PATTERNS:
-        if pat.search(q):
-            return False, reason
     return True, None
+
+
+def _moderate_ai_query(query: str) -> tuple[bool, str | None]:
+    """Use a small model call to decide whether an invite-code query is safe."""
+    body = {
+        "model": AI_MODERATION_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "你是论坛搜索请求安全审核器。判断用户是否试图利用论坛数据伤害他人或获取敏感信息。"
+                    "必须拒绝：人肉搜索、推断真实身份、关联匿名账号、寻找姓名/学号/手机号/微信/邮箱、"
+                    "宿舍住址、实时或历史行踪、亲密关系、身体或医疗隐私、色情剥削、违法暴力实施方法。"
+                    "允许：普通校园生活、课程、食堂、设备购买、公开活动、非定向的观点总结。"
+                    "不要回答用户问题，只返回 JSON："
+                    '{"allowed":true或false,"reason":"简短中文理由"}。'
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"待审核搜索请求：{_scrub_pii(query)}",
+            },
+        ],
+        "temperature": 0,
+        "max_tokens": 100,
+        "response_format": {"type": "json_object"},
+        "thinking": {"type": "disabled"},
+    }
+    headers = {
+        "Authorization": f"Bearer {AI_DEEPSEEK_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    for attempt in range(AI_MODERATION_RETRIES):
+        try:
+            response = requests.post(
+                f"{AI_BASE_URL}/v1/chat/completions",
+                headers=headers,
+                json=body,
+                timeout=AI_MODERATION_TIMEOUT,
+            )
+            if not response.ok:
+                return False, "安全审核服务暂时不可用"
+            raw = response.json()
+            content = (raw.get("choices") or [{}])[0].get("message", {}).get(
+                "content", ""
+            )
+            parsed = json.loads(content) if isinstance(content, str) else content
+            if not isinstance(parsed, dict) or not isinstance(parsed.get("allowed"), bool):
+                return False, "安全审核返回格式异常"
+            if parsed["allowed"]:
+                return True, None
+            reason = str(parsed.get("reason") or "请求涉及不适合检索的敏感内容")
+            return False, reason[:120]
+        except (requests.RequestException, ValueError, json.JSONDecodeError):
+            if attempt + 1 < AI_MODERATION_RETRIES:
+                time.sleep(0.5)
+    return False, "安全审核服务暂时不可用"
 
 
 def _verify_cited_ids(raw_cited: list, allowed_ids: set[str]) -> list[str]:
@@ -1228,10 +1271,14 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_json({"ok": False, "error": "请输入搜索内容"}, code=400)
             return
 
-        # ── safety filter (non-admin only) ──
+        # ── model moderation (invite-code users only) ──
         if not is_admin:
-            safe, reason = _check_content_safety(query)
-            if not safe:
+            valid, reason = _validate_ai_query(query)
+            if not valid:
+                self._serve_json({"ok": False, "error": f"抱歉：{reason}"}, code=400)
+                return
+            allowed, reason = _moderate_ai_query(query)
+            if not allowed:
                 self._serve_json({"ok": False, "error": f"抱歉：{reason}"}, code=400)
                 return
 
