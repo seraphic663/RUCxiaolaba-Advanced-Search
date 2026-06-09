@@ -79,6 +79,7 @@ def choose_sqlite_db(explicit_path=None):
 
 
 SQLITE_DB = choose_sqlite_db()
+BIGRAM_DB = os.environ.get("BIGRAM_DB", "")
 PASSWORD_FILE = os.path.join(DATA_DIR, "admin_password.txt")
 
 SESSION_TTL = 86400   # 24 hours
@@ -234,13 +235,23 @@ def render_template(name, **kwargs):
 
 # ==================== SQLITE BACKEND ====================
 
+class ClosingSQLiteConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def sqlite_connect():
-    conn = sqlite3.connect(SQLITE_DB)
+    conn = sqlite3.connect(SQLITE_DB, factory=ClosingSQLiteConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("pragma query_only=on")
     conn.execute("pragma mmap_size=0")
     conn.execute("pragma cache_size=-2000")
     conn.execute("pragma temp_store=file")
+    if BIGRAM_DB:
+        conn.execute("attach database ? as bigram", (str(Path(BIGRAM_DB).resolve()),))
     return conn
 
 
@@ -394,28 +405,90 @@ def sqlite_fts_query(keywords):
     return " AND ".join(quoted)
 
 
+BIGRAM_TOKEN_RUN = re.compile(r"[0-9A-Za-z_\u3400-\u4dbf\u4e00-\u9fff]+")
+BIGRAM_BOUNDARY_TOKEN = "zzbigramsegmentboundaryzz"
+
+
+def sqlite_bigram_query(keyword):
+    runs = [run.lower() for run in BIGRAM_TOKEN_RUN.findall(keyword or "")]
+    if sum(len(run) for run in runs) < 2:
+        return None
+    segments = []
+    for run in runs:
+        if len(run) == 1:
+            segments.append(run)
+        else:
+            segments.append(" ".join(run[i : i + 2] for i in range(len(run) - 1)))
+    phrase = f" {BIGRAM_BOUNDARY_TOKEN} ".join(segments)
+    return f'"{phrase.replace(chr(34), chr(34) * 2)}"'
+
+
+def sqlite_has_bigram_index():
+    if not BIGRAM_DB or not os.path.exists(BIGRAM_DB):
+        return False
+    try:
+        with sqlite_connect() as conn:
+            row = conn.execute(
+                "select value from bigram.index_meta where key = 'schema_version'"
+            ).fetchone()
+        return row is not None and row[0] == "bigram-v1"
+    except sqlite3.Error:
+        return False
+
+
 def sqlite_search_where(query, category=None, date_from=None, date_to=None, scope="content",
-                        uid=None, uname=None, admin=False, use_fts=False,
+                        uid=None, uname=None, admin=False, use_fts=False, use_bigram=False,
                         identity=None, admin_fields=None):
     clauses = []
     args = []
     keywords = (query or "").lower().split()
     fields = admin_fields or {"body", "cmt", "uid", "name"}
-    fts_query = sqlite_fts_query(keywords) if scope == "all" and use_fts and not admin else None
+    fts_query = (
+        sqlite_fts_query(keywords)
+        if not use_bigram and scope == "all" and use_fts and not admin
+        else None
+    )
     if fts_query:
         clauses.append("p.id in (select post_id from search_index where body match ?)")
         args.append(fts_query)
     else:
         for kw in keywords:
             like = f"%{kw}%"
+            bigram_query = sqlite_bigram_query(kw) if use_bigram else None
             if admin:
                 field_clauses = []
                 if "body" in fields:
-                    field_clauses.append("(lower(p.content) like ? or p.id like ?)")
-                    args.extend([like, like])
+                    if bigram_query:
+                        body_clause = (
+                            "p.id in ("
+                            "select m.post_id from bigram.search_bigram f "
+                            "join bigram.search_rows m on m.row_id = f.rowid "
+                            "where f.tokens match ? and m.kind = 'post'"
+                            ")"
+                        )
+                        if kw.isdigit():
+                            body_clause = f"(p.id like ? or {body_clause})"
+                            args.append(like)
+                        field_clauses.append(body_clause)
+                        args.append(bigram_query)
+                    else:
+                        field_clauses.append("(lower(p.content) like ? or p.id like ?)")
+                        args.extend([like, like])
                 if "cmt" in fields:
-                    field_clauses.append("p.id in (select post_id from comments where lower(detail) like ?)")
-                    args.append(like)
+                    if bigram_query:
+                        field_clauses.append(
+                            "p.id in ("
+                            "select m.post_id from bigram.search_bigram f "
+                            "join bigram.search_rows m on m.row_id = f.rowid "
+                            "where f.tokens match ? and m.kind = 'comment'"
+                            ")"
+                        )
+                        args.append(bigram_query)
+                    else:
+                        field_clauses.append(
+                            "p.id in (select post_id from comments where lower(detail) like ?)"
+                        )
+                        args.append(like)
                 if "uid" in fields:
                     field_clauses.append(
                         "("
@@ -433,6 +506,20 @@ def sqlite_search_where(query, category=None, date_from=None, date_to=None, scop
                     )
                     args.extend([like, like, like])
                 clauses.append("(" + " or ".join(field_clauses or ["0"]) + ")")
+            elif bigram_query:
+                kind_filter = " and m.kind = 'post'" if scope == "content" else ""
+                text_clause = (
+                    "p.id in ("
+                    "select m.post_id from bigram.search_bigram f "
+                    "join bigram.search_rows m on m.row_id = f.rowid "
+                    f"where f.tokens match ?{kind_filter}"
+                    ")"
+                )
+                if kw.isdigit():
+                    text_clause = f"(p.id like ? or {text_clause})"
+                    args.append(like)
+                clauses.append(text_clause)
+                args.append(bigram_query)
             elif scope == "all":
                 clauses.append(
                     "p.id in ("
@@ -483,10 +570,12 @@ def api_search_sqlite(query, sort_by, page, limit, category=None, date_from=None
         ),
     }
     order_by = order_map.get(sort_by, order_map["time"])
-    use_fts = scope == "all" and bool(query) and sqlite_has_search_index()
+    use_bigram = bool(query) and sqlite_has_bigram_index()
+    use_fts = not use_bigram and scope == "all" and bool(query) and sqlite_has_search_index()
     where_sql, args = sqlite_search_where(
         query, category, date_from, date_to, scope, uid, uname, admin,
-        use_fts=use_fts, identity=identity, admin_fields=admin_fields
+        use_fts=use_fts, use_bigram=use_bigram,
+        identity=identity, admin_fields=admin_fields
     )
 
     with sqlite_connect() as conn:
@@ -514,7 +603,27 @@ def api_search_sqlite(query, sort_by, page, limit, category=None, date_from=None
             item["show_user_id"] = row["show_user_id"]
             item["real_user_id"] = row["real_user_id"]
         results.append(item)
-    return {"total": total, "page": page, "page_size": limit, "total_pages": total_pages, "results": results}
+    if use_bigram:
+        bigram_terms = [
+            sqlite_bigram_query(keyword) is not None
+            for keyword in (query or "").lower().split()
+        ]
+        if bigram_terms and all(bigram_terms):
+            backend = "bigram"
+        elif any(bigram_terms):
+            backend = "hybrid"
+        else:
+            backend = "like"
+    else:
+        backend = "trigram" if use_fts else "like"
+    return {
+        "total": total,
+        "page": page,
+        "page_size": limit,
+        "total_pages": total_pages,
+        "results": results,
+        "search_backend": backend,
+    }
 
 
 def api_categories_sqlite():
@@ -1446,11 +1555,17 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run RUC Xiaolaba search server")
     parser.add_argument("--db", action="store_true", help="accepted for compatibility; SQLite is always used")
     parser.add_argument("--sqlite-db", default=None, help="SQLite DB path")
+    parser.add_argument(
+        "--bigram-db",
+        default=os.environ.get("BIGRAM_DB", ""),
+        help="optional sidecar bigram FTS database",
+    )
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8080)))
     parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     args = parser.parse_args()
 
     SQLITE_DB = choose_sqlite_db(args.sqlite_db)
+    BIGRAM_DB = args.bigram_db
 
     port = args.port
     HOST = args.host
@@ -1481,6 +1596,9 @@ if __name__ == "__main__":
     print(f"  局域网:  http://{local_ip}:{port}")
     print(f"  Admin:   http://127.0.0.1:{port}/admin")
     print(f"  Backend: sqlite ({SQLITE_DB})")
+    if BIGRAM_DB:
+        status = "ready" if sqlite_has_bigram_index() else "invalid"
+        print(f"  Search:  bigram sidecar ({BIGRAM_DB}, {status})")
     print()
 
     ThreadingHTTPServer((HOST, port), Handler).serve_forever()
