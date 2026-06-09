@@ -7,10 +7,27 @@ older full schema by filling posts.comments_json when that column exists.
 from __future__ import annotations
 
 import json
+import os
+import re
 import sqlite3
 import time
 from pathlib import Path
 from typing import Iterable
+
+
+BIGRAM_TOKEN_RUN = re.compile(r"[0-9A-Za-z_\u3400-\u4dbf\u4e00-\u9fff]+")
+BIGRAM_BOUNDARY_TOKEN = "zzbigramsegmentboundaryzz"
+
+
+def bigram_tokens(text: str) -> str:
+    segments: list[str] = []
+    for run in BIGRAM_TOKEN_RUN.findall(text or ""):
+        lowered = run.lower()
+        if len(lowered) == 1:
+            segments.append(lowered)
+        else:
+            segments.append(" ".join(lowered[i : i + 2] for i in range(len(lowered) - 1)))
+    return f" {BIGRAM_BOUNDARY_TOKEN} ".join(segments)
 
 
 def safe_int(value, default=0) -> int:
@@ -80,8 +97,10 @@ def flatten_comments(post_id: str, comments: Iterable[dict], updated_at: str) ->
 
 
 class SQLitePostStore:
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, bigram_path: str | Path | None = None):
         self.db_path = Path(db_path)
+        configured_bigram = bigram_path if bigram_path is not None else os.environ.get("BIGRAM_DB", "")
+        self.bigram_path = Path(configured_bigram).resolve() if configured_bigram else None
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("pragma journal_mode=wal")
@@ -90,6 +109,19 @@ class SQLitePostStore:
         self.conn.execute("pragma mmap_size=0")
         self.conn.execute("pragma cache_size=-2000")
         self.conn.execute("pragma temp_store=file")
+        self._has_bigram_index = False
+        if self.bigram_path:
+            if not self.bigram_path.exists():
+                raise FileNotFoundError(f"bigram index not found: {self.bigram_path}")
+            self.conn.execute("attach database ? as bigram", (str(self.bigram_path),))
+            meta = self.conn.execute(
+                "select value from bigram.index_meta where key='schema_version'"
+            ).fetchone()
+            if meta is None or meta[0] != "bigram-v1":
+                raise RuntimeError(f"unsupported bigram index: {self.bigram_path}")
+            self.conn.execute("pragma bigram.journal_mode=wal")
+            self.conn.execute("pragma bigram.synchronous=normal")
+            self._has_bigram_index = True
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
         self._has_search_index = self._table_exists("search_index")
 
@@ -221,6 +253,7 @@ class SQLitePostStore:
                 commit=False,
             )
         self.refresh_search_index(post_id, values["content"], comments, commit=False)
+        self.refresh_bigram_index(post_id, values["content"], comments, commit=False)
         if commit:
             self.conn.commit()
 
@@ -270,6 +303,59 @@ class SQLitePostStore:
             "insert into search_index(post_id, kind, body) values (?,?,?)",
             ((post_id, "comment", body) for body in bodies),
         )
+        if commit:
+            self.conn.commit()
+
+    def refresh_bigram_index(
+        self,
+        post_id: str,
+        content: str | None = None,
+        comments: list[dict] | None = None,
+        commit: bool = True,
+    ) -> None:
+        if not self._has_bigram_index:
+            return
+
+        row_ids = self.conn.execute(
+            "select row_id from bigram.search_rows where post_id=?",
+            (post_id,),
+        ).fetchall()
+        if row_ids:
+            self.conn.executemany(
+                "delete from bigram.search_bigram where rowid=?",
+                ((row[0],) for row in row_ids),
+            )
+            self.conn.execute("delete from bigram.search_rows where post_id=?", (post_id,))
+
+        if content is None:
+            row = self.conn.execute("select content from posts where id=?", (post_id,)).fetchone()
+            content = row[0] if row else ""
+        if comments is None:
+            rows = self.conn.execute(
+                "select detail from comments where post_id=? and detail != ''",
+                (post_id,),
+            ).fetchall()
+            comment_bodies = [row[0] for row in rows]
+        else:
+            comment_bodies = [
+                row[4]
+                for row in flatten_comments(post_id, comments, now_text())
+                if row[4]
+            ]
+
+        bodies = []
+        if content:
+            bodies.append(("post", content))
+        bodies.extend(("comment", body) for body in comment_bodies if body)
+        for kind, body in bodies:
+            cursor = self.conn.execute(
+                "insert into bigram.search_rows(post_id, kind) values (?,?)",
+                (post_id, kind),
+            )
+            self.conn.execute(
+                "insert into bigram.search_bigram(rowid, tokens) values (?,?)",
+                (cursor.lastrowid, bigram_tokens(body)),
+            )
         if commit:
             self.conn.commit()
 
