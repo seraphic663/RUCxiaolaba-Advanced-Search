@@ -438,7 +438,8 @@ def sqlite_has_bigram_index():
 
 def sqlite_search_where(query, category=None, date_from=None, date_to=None, scope="content",
                         uid=None, uname=None, admin=False, use_fts=False, use_bigram=False,
-                        identity=None, admin_fields=None):
+                        identity=None, admin_fields=None, id_match="exact",
+                        name_match="exact"):
     clauses = []
     args = []
     keywords = (query or "").lower().split()
@@ -490,21 +491,39 @@ def sqlite_search_where(query, category=None, date_from=None, date_to=None, scop
                         )
                         args.append(like)
                 if "uid" in fields:
-                    field_clauses.append(
-                        "("
-                        "p.show_user_id like ? or p.real_user_id like ? or "
-                        "p.id in (select post_id from comments where show_user_id like ? or real_user_id like ? or reply_show_user_id like ?)"
-                        ")"
-                    )
-                    args.extend([like, like, like, like, like])
+                    if id_match == "contains":
+                        field_clauses.append(
+                            "("
+                            "p.id like ? or p.show_user_id like ? or p.real_user_id like ? or "
+                            "p.id in (select post_id from comments where show_user_id like ? or real_user_id like ? or reply_show_user_id like ?)"
+                            ")"
+                        )
+                        args.extend([like, like, like, like, like, like])
+                    else:
+                        field_clauses.append(
+                            "("
+                            "p.id = ? or p.show_user_id = ? or p.real_user_id = ? or "
+                            "p.id in (select post_id from comments where show_user_id = ? or real_user_id = ? or reply_show_user_id = ?)"
+                            ")"
+                        )
+                        args.extend([kw, kw, kw, kw, kw, kw])
                 if "name" in fields:
-                    field_clauses.append(
-                        "("
-                        "lower(p.user_name) like ? or "
-                        "p.id in (select post_id from comments where lower(show_user_name) like ? or lower(reply_show_user_name) like ?)"
-                        ")"
-                    )
-                    args.extend([like, like, like])
+                    if name_match == "contains":
+                        field_clauses.append(
+                            "("
+                            "lower(p.user_name) like ? or "
+                            "p.id in (select post_id from comments where lower(show_user_name) like ? or lower(reply_show_user_name) like ?)"
+                            ")"
+                        )
+                        args.extend([like, like, like])
+                    else:
+                        field_clauses.append(
+                            "("
+                            "lower(p.user_name) = ? or "
+                            "p.id in (select post_id from comments where lower(show_user_name) = ? or lower(reply_show_user_name) = ?)"
+                            ")"
+                        )
+                        args.extend([kw, kw, kw])
                 clauses.append("(" + " or ".join(field_clauses or ["0"]) + ")")
             elif bigram_query:
                 kind_filter = " and m.kind = 'post'" if scope == "content" else ""
@@ -555,7 +574,8 @@ def sqlite_search_where(query, category=None, date_from=None, date_to=None, scop
 
 def api_search_sqlite(query, sort_by, page, limit, category=None, date_from=None, date_to=None,
                       scope="content", uid=None, uname=None, admin=False,
-                      identity=None, admin_fields=None):
+                      identity=None, admin_fields=None, id_match="exact",
+                      name_match="exact"):
     if not os.path.exists(SQLITE_DB):
         return {"total": 0, "page": 1, "page_size": limit, "total_pages": 1, "results": []}
 
@@ -575,7 +595,8 @@ def api_search_sqlite(query, sort_by, page, limit, category=None, date_from=None
     where_sql, args = sqlite_search_where(
         query, category, date_from, date_to, scope, uid, uname, admin,
         use_fts=use_fts, use_bigram=use_bigram,
-        identity=identity, admin_fields=admin_fields
+        identity=identity, admin_fields=admin_fields,
+        id_match=id_match, name_match=name_match,
     )
 
     with sqlite_connect() as conn:
@@ -1210,6 +1231,8 @@ class Handler(BaseHTTPRequestHandler):
             scope = "content"
         admin = self._is_admin()
         admin_fields = None
+        id_match = "exact"
+        name_match = "exact"
         if admin:
             raw_fields = params.get("admin_fields", [""])[0].strip()
             allowed_fields = {"body", "cmt", "uid", "name"}
@@ -1219,6 +1242,12 @@ class Handler(BaseHTTPRequestHandler):
                 admin_fields = {"body", "cmt", "uid", "name"}
             if not admin_fields:
                 admin_fields = allowed_fields
+            id_match = params.get("id_match", ["exact"])[0]
+            name_match = params.get("name_match", ["exact"])[0]
+            if id_match not in ("exact", "contains"):
+                id_match = "exact"
+            if name_match not in ("exact", "contains"):
+                name_match = "exact"
         identity = params.get("identity", [""])[0].strip()
         if identity not in ("", "anonymous", "real"):
             identity = ""
@@ -1255,6 +1284,7 @@ class Handler(BaseHTTPRequestHandler):
             category=category, date_from=date_from, date_to=date_to,
             scope=scope, uid=uid, uname=uname, admin=admin,
             identity=identity or None, admin_fields=admin_fields,
+            id_match=id_match, name_match=name_match,
         )
         self._serve_json(result)
 

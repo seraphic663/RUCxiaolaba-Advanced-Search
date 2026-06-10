@@ -51,13 +51,13 @@ class BigramSearchTest(unittest.TestCase):
             "insert into posts values (?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 ("1", "食堂今天开门", "", "甲", "u1", "0", "2026-06-01", 0, 0, 0, 0, 0),
-                ("2", "普通正文", "", "乙", "u2", "0", "2026-06-02", 1, 0, 0, 0, 0),
+                ("2", "普通正文", "", "测试昵称", "u2", "real-2", "2026-06-02", 1, 0, 0, 0, 0),
                 ("3", "只有单字猫", "", "丙", "u3", "0", "2026-06-03", 0, 0, 0, 0, 0),
             ],
         )
         conn.execute(
             "insert into comments values (?,?,?,?,?,?,?)",
-            ("2", "食堂座位很多", "c1", "0", "", "评论者", ""),
+            ("2", "食堂座位很多", "comment-id", "comment-real", "reply-id", "评论者", "回复昵称"),
         )
         conn.commit()
         conn.close()
@@ -121,6 +121,40 @@ class BigramSearchTest(unittest.TestCase):
         result = self.search("猫", scope="content")
         self.assertEqual(result["search_backend"], "like")
         self.assertEqual([item["id"] for item in result["results"]], ["3"])
+
+    def test_admin_id_defaults_to_exact_and_can_use_contains(self) -> None:
+        exact = self.search("u2", admin=True, admin_fields={"uid"})
+        partial_exact = self.search("u", admin=True, admin_fields={"uid"})
+        partial_contains = self.search(
+            "u",
+            admin=True,
+            admin_fields={"uid"},
+            id_match="contains",
+        )
+        comment_exact = self.search("comment-id", admin=True, admin_fields={"uid"})
+        self.assertEqual([item["id"] for item in exact["results"]], ["2"])
+        self.assertEqual(partial_exact["results"], [])
+        self.assertEqual({item["id"] for item in partial_contains["results"]}, {"1", "2", "3"})
+        self.assertEqual([item["id"] for item in comment_exact["results"]], ["2"])
+
+    def test_admin_name_defaults_to_exact_and_can_use_contains(self) -> None:
+        exact = self.search("测试昵称", admin=True, admin_fields={"name"})
+        partial_exact = self.search("昵称", admin=True, admin_fields={"name"})
+        partial_contains = self.search(
+            "昵称",
+            admin=True,
+            admin_fields={"name"},
+            name_match="contains",
+        )
+        reply_exact = self.search("回复昵称", admin=True, admin_fields={"name"})
+        self.assertEqual([item["id"] for item in exact["results"]], ["2"])
+        self.assertEqual(partial_exact["results"], [])
+        self.assertEqual([item["id"] for item in partial_contains["results"]], ["2"])
+        self.assertEqual([item["id"] for item in reply_exact["results"]], ["2"])
+
+    def test_public_search_never_uses_admin_identity_fields(self) -> None:
+        result = self.search("u2", admin=False, admin_fields={"uid"})
+        self.assertEqual(result["results"], [])
 
 
 if __name__ == "__main__":

@@ -113,7 +113,9 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
     <label><input type="checkbox" id="sc-body" checked> 正文</label>
     <label><input type="checkbox" id="sc-cmt"> 评论</label>
     <label><input type="checkbox" id="sc-uid"> ID</label>
+    <select id="id-match" aria-label="ID匹配方式"><option value="exact">ID 精确</option><option value="contains">ID 包含（慢）</option></select>
     <label><input type="checkbox" id="sc-name"> 昵称</label>
+    <select id="name-match" aria-label="昵称匹配方式"><option value="exact">昵称精确</option><option value="contains">昵称包含（慢）</option></select>
   </div>
 </div>
 
@@ -157,6 +159,8 @@ function doSearch(page) {
   if (document.getElementById('sc-uid').checked) scopes.push('uid');
   if (document.getElementById('sc-name').checked) scopes.push('name');
   if (scopes.length > 0) params.push('admin_fields=' + scopes.join(','));
+  if (scopes.indexOf('uid') >= 0) params.push('id_match=' + document.getElementById('id-match').value);
+  if (scopes.indexOf('name') >= 0) params.push('name_match=' + document.getElementById('name-match').value);
   if (scopes.indexOf('cmt') >= 0) params.push('scope=all');
   else params.push('scope=content');
 

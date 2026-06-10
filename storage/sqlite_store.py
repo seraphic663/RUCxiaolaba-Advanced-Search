@@ -192,8 +192,16 @@ class SQLitePostStore:
             create index if not exists idx_posts_views on posts(views desc, id desc);
             create index if not exists idx_posts_stars on posts(star_count desc, id desc);
             create index if not exists idx_posts_category on posts(category_name);
+            create index if not exists idx_posts_show_user_id on posts(show_user_id);
+            create index if not exists idx_posts_real_user_id on posts(real_user_id);
+            create index if not exists idx_posts_user_name_lower on posts(lower(user_name));
             create index if not exists idx_comments_post_id on comments(post_id);
             create index if not exists idx_comments_create_time on comments(create_time);
+            create index if not exists idx_comments_show_user_id on comments(show_user_id);
+            create index if not exists idx_comments_real_user_id on comments(real_user_id);
+            create index if not exists idx_comments_reply_show_user_id on comments(reply_show_user_id);
+            create index if not exists idx_comments_show_user_name_lower on comments(lower(show_user_name));
+            create index if not exists idx_comments_reply_user_name_lower on comments(lower(reply_show_user_name));
             """
         )
         if not self._table_exists("search_index"):
