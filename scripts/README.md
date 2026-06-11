@@ -2,7 +2,7 @@
 
 ## Railway scheduler
 
-The Web service starts `railway_scheduler.py` when:
+The Web service starts `jobs.scheduler` when:
 
 ```text
 CRAWLER_ENABLED=1
@@ -11,10 +11,10 @@ CRAWLER_ENABLED=1
 It updates `/app/data/posts.db` sequentially:
 
 ```text
-new       every 4 hours
-refresh   every 4 hours, offset by 2 hours
+sync-latest  every 8 hours
+sync-active  every 8 hours, staggered
 backfill  every 24 hours
-phase1    every 7 days, rescanning the latest 8 calendar days
+scan-id-range every 7 days, rescanning the latest 7 calendar days
 ```
 
 The scheduler requires `/app/data/config.txt`.
@@ -22,7 +22,10 @@ The scheduler requires `/app/data/config.txt`.
 ## Backup
 
 ```bash
-python scripts/backup_runtime.py --data-dir /app/data
+python -m jobs.backup --data-dir /app/data
 ```
 
 Use `--include-db` only when the Volume has enough free space.
+
+Files under `scripts/` are compatibility wrappers. Canonical implementations
+live under `jobs/` and `tools/`.

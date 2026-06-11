@@ -32,43 +32,47 @@ ys7_ysxy_session=你的cookie
 连续 ID 全量扫描，可按日期自动确定范围：
 
 ```powershell
-python crawler_db.py phase1 --from-date 2026-06-01 --db-path data\posts.db
+python crawler_db.py scan-id-range --from-date 2026-06-01 --db-path data\posts.db
 ```
 
 也可明确指定范围：
 
 ```powershell
-python crawler_db.py phase1 --start-id 5004321 --end-id 5066654 --db-path data\posts.db
+python crawler_db.py scan-id-range --start-id 5004321 --end-id 5066654 --db-path data\posts.db
 ```
 
 补新帖：
 
 ```powershell
-python crawler_db.py new --db-path data\posts.db --pages 500 --min-pages 20 --stop-unchanged 300
+python crawler_db.py sync-latest --db-path data\posts.db --pages 500 --min-pages 20 --stop-unchanged 300
 ```
 
 补新回复/活跃帖：
 
 ```powershell
-python crawler_db.py refresh --db-path data\posts.db --pages 500 --min-pages 20 --stop-unchanged 300
+python crawler_db.py sync-active --db-path data\posts.db --pages 500 --min-pages 20 --stop-unchanged 300
 ```
 
 补历史旧页：
 
 ```powershell
-python crawler_db.py backfill --endpoint lists --db-path data\posts.db --start-page 200 --pages 500 --min-pages 20 --stop-unchanged 600
+python crawler_db.py scan-history --endpoint lists --db-path data\posts.db --start-page 200 --pages 500 --min-pages 20 --stop-unchanged 600
 ```
 
-更多说明见 [docs/quick-start.md](docs/quick-start.md)。
+更多说明见 [docs/operations/crawler.md](docs/operations/crawler.md)。
 
 ## 项目结构
 
 ```text
-server.py                 Web 服务与 API
-crawler_db.py             唯一爬虫入口，直接写 SQLite
-storage/sqlite_store.py   SQLite 写入与索引维护
-scripts/backup_runtime.py 运行时数据备份
-data/posts.db             主数据库
+server.py                 Web 兼容启动入口
+crawler_db.py             爬虫兼容 CLI 入口
+app/                      Web、Repository、Service、AI 与 HTTP 路由
+crawler/                  API Client、规范化、扫描策略与执行服务
+storage/post_writer.py     SQLite 写入与搜索索引维护
+jobs/                     Railway 调度与运行时备份
+tools/                    迁移、审计、性能和运维工具
+tests/                    单元、集成、契约和性能测试
+data/posts.db             主数据库（不进入 Git）
 ```
 
 ## Railway
@@ -91,7 +95,11 @@ Volume 挂载：
 bash start.sh
 ```
 
-建议把新帖、回复刷新、历史补全拆成独立 Railway Cron 服务，并共用同一个 Volume。
+当前由 `start.sh` 在同一服务中启动 `jobs.scheduler`。SQLite 和 Railway
+Volume 不适合未经验证地由多个服务同时挂载写入，因此暂不拆成多个 Cron 服务。
+
+旧命令 `new`、`refresh`、`backfill`、`phase1`、`detail-fill` 仍可使用，
+但新文档统一采用语义更明确的正式命令。
 
 ## License
 

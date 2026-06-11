@@ -708,7 +708,7 @@ function renderAiEvidencePost(post, index, query) {
   var commentRefs = (post.matched_comments || []).map(function(c) {
     return '<div class="ai-comment-reference"><div class="meta">' +
       escapeHtml(c.user_name || '?') + ' · ' + escapeHtml(c.time || '') +
-      (c.is_publisher ? ' · 楼主' : '') + '</div>' +
+      (c.is_publisher === 1 ? ' · 楼主' : '') + '</div>' +
       highlightText(c.detail || '', keywords) + '</div>';
   }).join('');
   var toggle = post.comments > 0

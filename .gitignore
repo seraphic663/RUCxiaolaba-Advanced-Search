@@ -13,6 +13,18 @@ data/*
 *.csv
 *.jsonl
 *.ndjson
+*.db-journal
+*.db.crawler.lock
+.phase1_weekly_last
+
+# Generated exports and backups
+backups/
+backup/
+messages.json
+messages.txt
+messages.*.json
+messages.*.txt
+ai_invite_codes.txt
 
 # Runtime logs
 *.log
@@ -39,6 +51,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 .mypy_cache/
 .ruff_cache/
