@@ -44,6 +44,10 @@ BIGRAM_DB_PATH
 
 旧变量优先级保持兼容。
 
+本地未设置 Bigram 环境变量时，会自动探测 `data/bigram_index.db`；文件不存在
+则回退 `LIKE`。Railway 仍建议显式配置
+`BIGRAM_DB=/app/data/bigram_index.db`。
+
 ## 测试层次
 
 ```text
@@ -70,6 +74,18 @@ python crawler_db.py --help
    SQLite Volume 带来的不确定性。
 3. `posts.db` 与 Bigram 旁路库不是跨库原子事务；Bigram 必须视为可重建索引。
 4. 在线 API 测试依赖有效 Cookie，不属于默认离线测试。
+
+## 迁移工具生命周期
+
+| 工具 | 当前运行时是否调用 | 建议 |
+|---|---:|---|
+| `tools/migrations/build_slim_sqlite.py` | 否 | 保留，用于从旧全量库恢复或重新生成瘦身主库 |
+| `tools/migrations/migrate_slim_raw_json.py` | 否 | 历史一次性迁移；当前库与新爬虫已不需要 |
+| `tools/migrations/add_admin_search_indexes.py` | 否 | 历史旧库补索引；索引定义已进入 `SQLitePostStore.init_schema()` |
+| `tools/migrations/rebuild_sqlite_search_index.py` | 否 | 保留，用于 FTS 损坏或缺行时重建 |
+
+后两项可以删除而不影响当前网站、爬虫和 Railway；只有再次导入未经升级的旧库时
+才可能用到。即使删除，代码仍可从 Git 历史恢复。
 
 ## 本轮验收记录
 

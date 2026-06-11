@@ -53,6 +53,7 @@ templates/                    主页和管理后台模板
 
 ```text
 data/posts.db             主数据库
+data/bigram_index.db      Bigram 旁路索引；存在时本地自动启用
 data/config.txt           小程序 cookie，爬虫需要
 Railway ADMIN_PASSWORD    admin 固定密码环境变量
 ```
@@ -73,7 +74,7 @@ Railway ADMIN_PASSWORD    admin 固定密码环境变量
 ## 当前风险点
 
 1. `data/posts.db` 很大，Railway 5GB Volume 下不要频繁做完整 DB 备份。
-2. 1-2 个中文字符搜索会回退 `LIKE`，比 3 字以上查询慢。
+2. 单字中文搜索回退 `LIKE`；两字及以上在 Bigram 可用时走旁路索引。
 3. admin 的复杂筛选如果勾选评论/ID/昵称，会比正文搜索慢。
 4. 定时爬虫需要错峰，虽然已有跨进程锁，但不建议多个服务同时写 DB。
 5. Bigram 是可重建的旁路索引库，更新由 PostWriter 同步执行。

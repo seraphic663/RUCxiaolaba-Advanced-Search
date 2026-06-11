@@ -7,26 +7,12 @@ only sampled search rows, so the production database is never modified.
 from __future__ import annotations
 
 import argparse
-import re
 import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
 
-
-TOKEN_RUN = re.compile(r"[0-9A-Za-z_\u3400-\u4dbf\u4e00-\u9fff]+")
-BOUNDARY_TOKEN = "zzbigramsegmentboundaryzz"
-
-
-def bigram_tokens(text: str) -> str:
-    segments: list[str] = []
-    for run in TOKEN_RUN.findall(text or ""):
-        lowered = run.lower()
-        if len(lowered) == 1:
-            segments.append(lowered)
-        else:
-            segments.append(" ".join(lowered[i : i + 2] for i in range(len(lowered) - 1)))
-    return f" {BOUNDARY_TOKEN} ".join(segments)
+from storage.post_writer import bigram_tokens
 
 
 def file_size(path: Path) -> int:

@@ -11,6 +11,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_TEMPLATES_DIR = PROJECT_ROOT / "templates"
+DEFAULT_BIGRAM_DB = DEFAULT_DATA_DIR / "bigram_index.db"
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -53,6 +54,18 @@ def choose_posts_db(explicit_path: str | Path | None = None) -> Path:
     return max(available, key=lambda item: item[1])[0]
 
 
+def choose_bigram_db(
+    explicit_path: str | Path | None = None,
+) -> Path | None:
+    """Use an explicit/env sidecar, otherwise auto-detect the local default."""
+    if explicit_path is not None:
+        return Path(explicit_path) if str(explicit_path).strip() else None
+    env_path = os.environ.get("BIGRAM_DB_PATH") or os.environ.get("BIGRAM_DB")
+    if env_path:
+        return Path(env_path)
+    return DEFAULT_BIGRAM_DB if DEFAULT_BIGRAM_DB.exists() else None
+
+
 @dataclass(frozen=True)
 class AppConfig:
     project_root: Path
@@ -86,18 +99,13 @@ class AppConfig:
         posts_db: str | Path | None = None,
         bigram_db: str | Path | None = None,
     ) -> "AppConfig":
-        bigram_value = (
-            bigram_db
-            if bigram_db is not None
-            else os.environ.get("BIGRAM_DB_PATH") or os.environ.get("BIGRAM_DB")
-        )
         ai_db = os.environ.get("AI_DB_PATH", str(DEFAULT_DATA_DIR / "ai.db"))
         return cls(
             project_root=PROJECT_ROOT,
             data_dir=DEFAULT_DATA_DIR,
             templates_dir=DEFAULT_TEMPLATES_DIR,
             posts_db=choose_posts_db(posts_db),
-            bigram_db=Path(bigram_value) if bigram_value else None,
+            bigram_db=choose_bigram_db(bigram_db),
             ai_db=Path(ai_db),
             admin_password_file=DEFAULT_DATA_DIR / "admin_password.txt",
             ai_key_file=DEFAULT_DATA_DIR / "deepseek_key.txt",
