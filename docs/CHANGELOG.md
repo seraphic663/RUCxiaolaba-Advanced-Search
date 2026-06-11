@@ -1,5 +1,14 @@
 # 更新记录
 
+## 2026-06-11：删除过渡层与生成文件
+
+- 删除 `scripts/` 薄包装层，运维命令统一使用 `python -m jobs...` 或
+  `python -m tools...`。
+- 删除 `ai_retriever.py`、`storage/ai_store.py`、`storage/sqlite_store.py`
+  兼容模块，测试和文档统一引用正式模块。
+- 删除未被调用的爬虫 ID 范围模型和页面策略常量，保留实际使用的停止策略。
+- 清理 Python/test 缓存和空临时日志，不改动正式数据库与本地运行配置。
+
 ## 2026-06-11：工程化模块重构
 
 - 保留 `server.py`、`crawler_db.py` 兼容入口，实际实现迁入包结构。

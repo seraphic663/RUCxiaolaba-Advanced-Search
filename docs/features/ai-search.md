@@ -22,7 +22,7 @@
 | 组件 | 文件 |
 |------|------|
 | 独立数据库（邀请码/会话/配额） | `app/repositories/ai_access_repository.py` |
-| 检索器（关键词→FTS→评论匹配） | `ai_retriever.py` |
+| 检索器（关键词→FTS→评论匹配） | `app/ai/retriever.py` |
 | API 端点（activate/status/search） | `server.py` |
 | 前端 AI 面板 + Admin 测试区 | `templates/main.html`, `templates/admin_dashboard.html` |
 | CLI 邀请码管理 | `tools/operations/manage_invites.py` |

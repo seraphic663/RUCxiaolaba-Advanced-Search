@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import crawler_db
-from storage.sqlite_store import SQLitePostStore
+from storage.post_writer import SQLitePostStore
 
 
 def args_for(db_path: Path, config_path: Path, **overrides) -> argparse.Namespace:

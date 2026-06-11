@@ -5,8 +5,8 @@ This reduces reply_comment_list from ~836 bytes/row to ~120 bytes/row (only for
 the 2.2% of comments that actually have nested replies), saving ~1.76 GB.
 
 Usage:
-    python scripts/migrate_slim_raw_json.py --db-path data/posts.db
-    python scripts/migrate_slim_raw_json.py --db-path data/posts.db --dry-run
+    python -m tools.migrations.migrate_slim_raw_json --db-path data/posts.db
+    python -m tools.migrations.migrate_slim_raw_json --db-path data/posts.db --dry-run
 
 The script supports both schemas:
 - old comments.raw_json

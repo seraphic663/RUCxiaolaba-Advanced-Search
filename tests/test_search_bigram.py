@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import server
-from scripts.benchmark_bigram_index import bigram_tokens
+from storage.post_writer import bigram_tokens
 
 
 class BigramSearchTest(unittest.TestCase):

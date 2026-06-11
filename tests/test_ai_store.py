@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from storage.ai_store import AIStore
+from app.repositories.ai_access_repository import AIStore
 
 
 class AIStoreTest(unittest.TestCase):

@@ -1,1 +1,0 @@
-"""Backward-compatible script entrypoints."""

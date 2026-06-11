@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ai_retriever import retrieve_ai
+from app.ai.retriever import retrieve_ai
 
 
 class AIRetrieverTest(unittest.TestCase):

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from storage.sqlite_store import SQLitePostStore
+from storage.post_writer import SQLitePostStore
 
 
 def main() -> int:

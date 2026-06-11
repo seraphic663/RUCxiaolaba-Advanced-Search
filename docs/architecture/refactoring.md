@@ -20,7 +20,7 @@
 - 旧命令继续作为 argparse alias。
 - 生产任务移动到 `jobs/`。
 - 迁移、审计、性能和运维工具移动到 `tools/`。
-- `scripts/` 只保留兼容包装器。
+- 运维命令直接使用 `python -m jobs...` 或 `python -m tools...`，不再维护 `scripts/` 包装层。
 - 修复 `is_publisher=2` 在 AI 提示词和证据界面中被错误视为楼主的问题。
 
 ## 保持不变
