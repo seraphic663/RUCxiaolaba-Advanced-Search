@@ -15,6 +15,7 @@ server.py 提供网站
 
 ```text
 /app/data/posts.db
+/app/data/bigram_index.db
 /app/data/config.txt
 ```
 
@@ -22,6 +23,7 @@ server.py 提供网站
 
 ```powershell
 railway volume files upload data\posts.db /posts.db --overwrite
+railway volume files upload data\bigram_index.db /bigram_index.db --overwrite
 railway volume files upload data\config.txt /config.txt --overwrite
 ```
 
@@ -33,11 +35,16 @@ railway volume files upload data\config.txt /config.txt --overwrite
 
 ```text
 SQLITE_DB=/app/data/posts.db
+BIGRAM_DB=/app/data/bigram_index.db
 ADMIN_PASSWORD=<固定强密码>
 CRAWLER_ENABLED=1
 ```
 
 不要上传 `admin_password.txt`。
+
+Bigram 文件存在且变量正确时，两字及以上搜索返回
+`"search_backend": "bigram"`；单字搜索仍返回 `"like"`。爬虫通过
+`SQLitePostStore` 同步维护主库和旁路索引。
 
 ## 自动更新
 

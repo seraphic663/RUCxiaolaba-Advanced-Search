@@ -14,6 +14,15 @@
 python server.py
 ```
 
+若存在 `data/bigram_index.db`，启动时会自动启用 Bigram 搜索；无需额外参数。
+两字及以上关键词使用 Bigram，单字关键词回退 `LIKE`。
+
+首次构建本地索引：
+
+```powershell
+python -m tools.benchmarks.benchmark_bigram_index --db-path data\posts.db --output-dir data --sample-mod 1 --only-bigram
+```
+
 指定端口或 DB：
 
 ```powershell
@@ -73,6 +82,7 @@ jobs/                     Railway 调度与运行时备份
 tools/                    迁移、审计、性能和运维工具
 tests/                    单元、集成、契约和性能测试
 data/posts.db             主数据库（不进入 Git）
+data/bigram_index.db      可重建 Bigram 搜索旁路索引（不进入 Git）
 ```
 
 ## Railway
@@ -87,6 +97,7 @@ Volume 挂载：
 
 ```text
 /app/data/posts.db
+/app/data/bigram_index.db
 ```
 
 启动命令：

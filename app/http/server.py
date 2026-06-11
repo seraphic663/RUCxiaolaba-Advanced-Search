@@ -434,9 +434,11 @@ def main(argv=None):
     parser.add_argument("--sqlite-db", default=None, help="SQLite DB path")
     parser.add_argument(
         "--bigram-db",
-        default=os.environ.get("BIGRAM_DB_PATH")
-        or os.environ.get("BIGRAM_DB", ""),
-        help="optional sidecar bigram FTS database",
+        default=None,
+        help=(
+            "sidecar bigram FTS database; defaults to BIGRAM_DB_PATH, "
+            "BIGRAM_DB, or data/bigram_index.db when present"
+        ),
     )
     parser.add_argument("--port", type=int, default=APP_CONFIG.port)
     parser.add_argument("--host", default=APP_CONFIG.host)
@@ -473,6 +475,8 @@ def main(argv=None):
     if BIGRAM_DB:
         status = "ready" if sqlite_has_bigram_index() else "invalid"
         print(f"  Search:  bigram sidecar ({BIGRAM_DB}, {status})")
+    else:
+        print("  Search:  LIKE fallback (data/bigram_index.db not found)")
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     return 0
 

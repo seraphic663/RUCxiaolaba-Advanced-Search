@@ -70,7 +70,8 @@ updated_at           本库最后更新时间
 
 ## 表：search_index
 
-用途：FTS5 trigram 全文索引。
+用途：兼容的 FTS5 trigram 全文索引。当前两字及以上搜索优先使用独立
+`bigram_index.db`，该表仍用于无 Bigram 环境下的长词回退与 AI 检索。
 
 ```text
 post_id
@@ -80,8 +81,9 @@ body     正文或评论文本
 
 限制：
 
-- 3 字及以上中文关键词更适合 trigram FTS。
-- 1-2 字中文搜索通常回退 `LIKE`，会慢。
+- Bigram 可用时，两字及以上中文关键词使用旁路索引。
+- 单字中文搜索回退 `LIKE`，会慢。
+- Bigram 不可用时，满足条件的长词可使用 trigram FTS，其余回退 `LIKE`。
 
 ## 表：crawl_state
 

@@ -1,5 +1,9 @@
 # 页面加载与搜索性能优化方案（草案 v2）
 
+> 状态说明：本文前半部分保留了优化实施前的诊断和实验推导，属于历史记录。
+> 当前结论以第 7 节及代码为准：两字及以上优先使用
+> `data/bigram_index.db`，单字回退 `LIKE`，本地存在该文件时自动启用。
+
 **日期**: 2026-06-09  
 **状态**: 草案，待讨论  
 **版本**: v2 —— 基于实测数据重写
@@ -569,13 +573,13 @@ extra = 0
 python -m tools.benchmarks.benchmark_bigram_index \
   --sample-mod 1 \
   --only-bigram \
-  --output-dir temp/bigram_full
+  --output-dir data
 ```
 
 结果：
 
 ```text
-文件：temp/bigram_full/bigram_index.db
+文件：data/bigram_index.db
 有效索引行：2,797,496
 文件大小：360.47 MiB
 构建耗时：约 3 分 08 秒
@@ -597,28 +601,33 @@ abc：     LIKE 257， bigram 257
 
 全量索引包含 `index_meta`，记录版本、源 DB 大小、源行数和构建时间。主库没有被修改或替换。
 
-### 7.8 Sidecar Demo Server
+### 7.8 当前 Sidecar 启动方式
 
-`server.py` 现支持可选参数 `--bigram-db`。不传参数时仍使用原有 trigram/LIKE；传入后，两个及以上可索引字符使用 bigram，一字搜索继续走 LIKE。
+`server.py` 会按以下优先级选择 Bigram：
 
-启动：
+1. `--bigram-db`
+2. `BIGRAM_DB_PATH` 或 `BIGRAM_DB`
+3. 本地存在的 `data/bigram_index.db`
+
+成功挂载后，两个及以上可索引字符使用 Bigram，一字搜索继续走 LIKE。
+本地默认启动：
 
 ```powershell
-python server.py --sqlite-db data\posts.db --bigram-db temp\bigram_full\bigram_index.db --host 127.0.0.1 --port 8099
+python server.py
 ```
 
 打开：
 
 ```text
-http://127.0.0.1:8099/
-http://127.0.0.1:8099/admin
+http://127.0.0.1:8080/
+http://127.0.0.1:8080/admin
 ```
 
 接口测试：
 
 ```powershell
-Invoke-RestMethod "http://127.0.0.1:8099/api/search?q=食堂&scope=content&limit=10"
-Invoke-RestMethod "http://127.0.0.1:8099/api/search?q=食堂&scope=all&limit=10"
+Invoke-RestMethod "http://127.0.0.1:8080/api/search?q=食堂&scope=content&limit=10"
+Invoke-RestMethod "http://127.0.0.1:8080/api/search?q=食堂&scope=all&limit=10"
 ```
 
 JSON 会返回实际搜索后端：

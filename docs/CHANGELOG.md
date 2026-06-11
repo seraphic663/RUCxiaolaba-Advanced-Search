@@ -1,5 +1,12 @@
 # 更新记录
 
+## 2026-06-11：本地默认启用 Bigram
+
+- 本地存在 `data/bigram_index.db` 时，`python server.py` 自动挂载旁路索引。
+- 环境变量和 `--bigram-db` 仍可覆盖默认路径；索引不存在时回退 `LIKE`。
+- Bigram benchmark 与正式写入器共用同一分词实现，避免算法漂移。
+- 更新本地构建、Railway 上传、变量设置和搜索后端核验文档。
+
 ## 2026-06-11：删除过渡层与生成文件
 
 - 删除 `scripts/` 薄包装层，运维命令统一使用 `python -m jobs...` 或
