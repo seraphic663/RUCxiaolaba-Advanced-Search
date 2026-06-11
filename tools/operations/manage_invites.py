@@ -2,13 +2,13 @@
 """Manage AI-search invite codes.
 
 Usage:
-  python scripts/manage_invites.py generate --count 50 --daily 30
-  python scripts/manage_invites.py list
-  python scripts/manage_invites.py disable <hash-prefix>
-  python scripts/manage_invites.py enable  <hash-prefix>
-  python scripts/manage_invites.py set-quota <hash-prefix> --daily 50
-  python scripts/manage_invites.py stats
-  python scripts/manage_invites.py cleanup-sessions
+  python -m tools.operations.manage_invites generate --count 50 --daily 30
+  python -m tools.operations.manage_invites list
+  python -m tools.operations.manage_invites disable <hash-prefix>
+  python -m tools.operations.manage_invites enable  <hash-prefix>
+  python -m tools.operations.manage_invites set-quota <hash-prefix> --daily 50
+  python -m tools.operations.manage_invites stats
+  python -m tools.operations.manage_invites cleanup-sessions
 """
 
 from __future__ import annotations

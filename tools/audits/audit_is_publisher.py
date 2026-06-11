@@ -3,13 +3,13 @@
 
 用法:
   # 两组 cookie 对比
-  python scripts/audit_is_publisher.py <post_id> <cookie_a> <cookie_b>
+  python -m tools.audits.audit_is_publisher <post_id> <cookie_a> <cookie_b>
 
   # 三组对比（第三组用 none 表示无 cookie）
-  python scripts/audit_is_publisher.py <post_id> <cookie_a> <cookie_b> none
+  python -m tools.audits.audit_is_publisher <post_id> <cookie_a> <cookie_b> none
 
   # 从文件读取 cookie
-  python scripts/audit_is_publisher.py <post_id> "$(cat cookie_a.txt)" "$(cat cookie_b.txt)"
+  python -m tools.audits.audit_is_publisher <post_id> "$(cat cookie_a.txt)" "$(cat cookie_b.txt)"
 
 输出:
   - 每组 cookie 下每条评论的 (comment_id, show_user_name, is_publisher)

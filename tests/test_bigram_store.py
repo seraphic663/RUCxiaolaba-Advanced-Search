@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from storage.sqlite_store import SQLitePostStore, bigram_tokens
+from storage.post_writer import SQLitePostStore, bigram_tokens
 
 
 def create_sidecar(path: Path) -> None:

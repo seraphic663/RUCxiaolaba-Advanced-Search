@@ -3,7 +3,6 @@ Test RUC-Xiaolaba API endpoints. Reads cookie from data/config.txt .
 Usage: python test_api.py
 """
 import requests
-import json
 import os
 import urllib3
 

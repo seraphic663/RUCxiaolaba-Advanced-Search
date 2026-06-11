@@ -1,18 +1,8 @@
-"""Stable definitions for list-based crawler modes."""
+"""Stopping policy for list-based crawler modes."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class PageScanStrategy:
-    name: str
-    endpoint: str
-    start_page: int
-    pages: int
-    min_pages: int
-    stop_unchanged: int
 
 
 @dataclass
@@ -36,14 +26,3 @@ class PageScanProgress:
             self.pages >= min_pages
             and self.consecutive_unchanged >= threshold
         )
-
-
-LATEST_POSTS = PageScanStrategy(
-    "sync-latest", "lists", 1, 500, 20, 300
-)
-ACTIVE_POSTS = PageScanStrategy(
-    "sync-active", "lists2", 1, 500, 20, 300
-)
-HISTORY_PAGES = PageScanStrategy(
-    "scan-history", "lists2", 2, 500, 20, 600
-)

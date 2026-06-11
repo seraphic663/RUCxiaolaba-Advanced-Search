@@ -3,19 +3,19 @@
 
 用法:
   # 从文件读取 cookie（推荐）
-  python scripts/fetch_messages.py --cookie-file data/config.txt
+  python -m tools.operations.fetch_messages --cookie-file data/config.txt
 
   # 直接传 cookie
-  python scripts/fetch_messages.py --cookie "ys7_ysxy_session=xxxx"
+  python -m tools.operations.fetch_messages --cookie "ys7_ysxy_session=xxxx"
 
   # 指定输出文件（默认 data/messages.json）
-  python scripts/fetch_messages.py --cookie-file data/config.txt --output my_messages.json
+  python -m tools.operations.fetch_messages --cookie-file data/config.txt --output my_messages.json
 
   # 只输出文本摘要（不用 JSON）
-  python scripts/fetch_messages.py --cookie-file data/config.txt --output messages.txt --format text
+  python -m tools.operations.fetch_messages --cookie-file data/config.txt --output messages.txt --format text
 
   # 先探测 API 格式再决定（dry-run，不保存）
-  python scripts/fetch_messages.py --cookie-file data/config.txt --dry-run
+  python -m tools.operations.fetch_messages --cookie-file data/config.txt --dry-run
 
 获取 Cookie:
   1. 在电脑上安装微信 + mitmproxy
@@ -371,9 +371,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python scripts/fetch_messages.py --cookie-file data/config.txt
-  python scripts/fetch_messages.py --cookie-file data/config.txt --dry-run
-  python scripts/fetch_messages.py --cookie "ys7_ysxy_session=xxx" --format text
+  python -m tools.operations.fetch_messages --cookie-file data/config.txt
+  python -m tools.operations.fetch_messages --cookie-file data/config.txt --dry-run
+  python -m tools.operations.fetch_messages --cookie "ys7_ysxy_session=xxx" --format text
         """,
     )
     # Cookie 来源（二选一）
