@@ -30,7 +30,7 @@ PY
 
 if [ "${CRAWLER_ENABLED:-0}" = "1" ]; then
   echo "[boot] Starting crawler scheduler"
-  python -u scripts/railway_scheduler.py &
+  python -u -m jobs.scheduler &
 else
   echo "[boot] Crawler scheduler disabled"
 fi
