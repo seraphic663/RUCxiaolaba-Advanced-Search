@@ -23,6 +23,21 @@ python server.py
 python -m tools.benchmarks.benchmark_bigram_index --db-path data\posts.db --output-dir data --sample-mod 1 --only-bigram
 ```
 
+正确性与速度对比：
+
+```powershell
+python -m tools.benchmarks.benchmark_search_backends
+```
+
+慢速单字和复杂 Admin 搜索使用按页游标扫描：先按所选排序读取候选，找到一页
+结果即返回。页面显示已检查数量，上一页会恢复已展开正文和已加载评论。
+
+游标首屏 benchmark：
+
+```powershell
+python -m tools.benchmarks.benchmark_cursor_pagination --repeats 3
+```
+
 指定端口或 DB：
 
 ```powershell

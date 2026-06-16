@@ -2,6 +2,33 @@
 
 > 从 CLAUDE.md 提取，覆盖所有已知端点。Base URL: `https://ys.qimiaoyuanfen.com`，Community ID: `4`。
 
+## 本站搜索 API
+
+`GET /api/search` 保持原分页参数，并支持以下可选游标参数：
+
+| 参数 | 说明 |
+|---|---|
+| `cursor=1` | 允许慢速 LIKE 查询按页扫描 |
+| `scan_offset` | 已扫描候选位置，第一页为 `0` |
+| `matched_before` | 前面页面累计命中数量 |
+
+Bigram/trigram 等快速查询仍返回 `pagination_mode=numbered`。单字 LIKE 和复杂
+Admin 查询返回 `pagination_mode=cursor`，附带：
+
+```json
+{
+  "candidate_total": 544993,
+  "scanned": 16654,
+  "matched_so_far": 50,
+  "next_offset": 16654,
+  "has_more": true,
+  "total_exact": false
+}
+```
+
+候选总数是在分类、日期、匿名/实名等非文本条件过滤后统计的。游标模式先按时间、
+点赞、评论或综合排序，再扫描关键词，因此返回页面顺序与完整查询一致。
+
 ## 认证
 
 ```

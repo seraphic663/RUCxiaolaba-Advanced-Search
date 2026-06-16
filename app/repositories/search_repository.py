@@ -42,6 +42,8 @@ def bigram_query(keyword: str) -> str | None:
 
 
 class SearchRepository:
+    SCAN_BATCH_SIZE = 500
+
     def __init__(
         self,
         posts_db: str | Path,
@@ -50,8 +52,11 @@ class SearchRepository:
         self.posts_db = Path(posts_db)
         self.bigram_db = Path(bigram_db) if bigram_db else None
 
-    def connect(self):
-        return connect_readonly(self.posts_db, self.bigram_db)
+    def connect(self, *, include_bigram: bool = False):
+        return connect_readonly(
+            self.posts_db,
+            self.bigram_db if include_bigram else None,
+        )
 
     def has_search_index(self) -> bool:
         if not self.posts_db.exists():
@@ -67,7 +72,7 @@ class SearchRepository:
         if not self.bigram_db or not self.bigram_db.exists():
             return False
         try:
-            with self.connect() as conn:
+            with self.connect(include_bigram=True) as conn:
                 row = conn.execute(
                     "select value from bigram.index_meta "
                     "where key='schema_version'"
@@ -217,6 +222,173 @@ class SearchRepository:
         where_sql = " where " + " and ".join(clauses) if clauses else ""
         return where_sql, args
 
+    def _candidate_where(self, request: SearchQuery) -> tuple[str, list]:
+        """Build non-text filters used before a cursor scan."""
+        clauses: list[str] = []
+        args: list = []
+        if request.category:
+            clauses.append("p.category_name = ?")
+            args.append(request.category)
+        if request.date_from:
+            clauses.append("p.create_time >= ?")
+            args.append(request.date_from.strftime("%Y-%m-%d %H:%M:%S"))
+        if request.date_to:
+            clauses.append("p.create_time <= ?")
+            args.append(request.date_to.strftime("%Y-%m-%d %H:%M:%S"))
+        if request.admin and request.user_id:
+            clauses.append("p.show_user_id = ?")
+            args.append(request.user_id)
+        if request.admin and request.user_name:
+            clauses.append("lower(p.user_name) like ?")
+            args.append(f"%{request.user_name.lower()}%")
+        if request.admin and request.identity == "anonymous":
+            clauses.append("(p.real_user_id='' or p.real_user_id='0')")
+        if request.admin and request.identity == "real":
+            clauses.append("(p.real_user_id!='' and p.real_user_id!='0')")
+        return (
+            " where " + " and ".join(clauses) if clauses else "",
+            args,
+        )
+
+    @staticmethod
+    def _order_by(sort_by: str) -> str:
+        order_map = {
+            "time": "p.create_time desc, p.id desc",
+            "stars": "p.star_count desc, cast(p.id as integer) desc",
+            "comments": "p.comment_count desc, cast(p.id as integer) desc",
+            "score": (
+                "(p.star_count * 3 + p.comment_count * 5 + "
+                "max(0, 30 - ((strftime('%s','now') - "
+                "strftime('%s',p.create_time)) / 86400.0))) desc, "
+                "p.create_time desc, cast(p.id as integer) desc"
+            ),
+        }
+        return order_map.get(sort_by, order_map["time"])
+
+    def _plan(self, request: SearchQuery) -> tuple[bool, bool, str]:
+        keywords = (request.text or "").lower().split()
+        can_use_bigram = any(
+            bigram_query(keyword) is not None for keyword in keywords
+        )
+        use_bigram = can_use_bigram and self.has_bigram_index()
+        use_fts = (
+            not use_bigram
+            and request.scope == "all"
+            and bool(request.text)
+            and self.has_search_index()
+        )
+        used_fts = (
+            use_fts
+            and not request.admin
+            and fts_query(keywords) is not None
+        )
+        if use_bigram:
+            terms = [bigram_query(keyword) is not None for keyword in keywords]
+            backend = "bigram" if terms and all(terms) else "hybrid"
+        else:
+            backend = "trigram" if used_fts else "like"
+        return use_bigram, use_fts, backend
+
+    @staticmethod
+    def _comments_by_post(conn, post_ids: list[str]) -> dict[str, list]:
+        if not post_ids:
+            return {}
+        placeholders = ",".join("?" for _ in post_ids)
+        rows = conn.execute(
+            f"""
+            select post_id, detail, show_user_id, real_user_id,
+                   reply_show_user_id, show_user_name, reply_show_user_name
+            from comments
+            where post_id in ({placeholders})
+            """,
+            post_ids,
+        ).fetchall()
+        grouped: dict[str, list] = {}
+        for row in rows:
+            grouped.setdefault(str(row["post_id"]), []).append(row)
+        return grouped
+
+    @staticmethod
+    def _matches_scan_row(
+        row,
+        comments: list,
+        request: SearchQuery,
+    ) -> bool:
+        keywords = (request.text or "").lower().split()
+        if not keywords:
+            return True
+        fields = set(request.admin_fields)
+        content = str(row["content"] or "").lower()
+        post_id = str(row["id"] or "").lower()
+        user_name = str(row["user_name"] or "").lower()
+        post_show_id = str(row["show_user_id"] or "").lower()
+        post_real_id = str(row["real_user_id"] or "").lower()
+
+        def exact_or_contains(value: str, keyword: str, mode: str) -> bool:
+            return keyword in value if mode == "contains" else keyword == value
+
+        for keyword in keywords:
+            if not request.admin:
+                body_match = keyword in content or keyword in post_id
+                comment_match = (
+                    request.scope == "all"
+                    and any(keyword in str(item["detail"] or "").lower() for item in comments)
+                )
+                if not body_match and not comment_match:
+                    return False
+                continue
+
+            matched = False
+            if "body" in fields:
+                matched = keyword in content or keyword in post_id
+            if not matched and "cmt" in fields:
+                matched = any(
+                    keyword in str(item["detail"] or "").lower()
+                    for item in comments
+                )
+            if not matched and "uid" in fields:
+                values = [post_id, post_show_id, post_real_id]
+                for item in comments:
+                    values.extend(
+                        [
+                            str(item["show_user_id"] or "").lower(),
+                            str(item["real_user_id"] or "").lower(),
+                            str(item["reply_show_user_id"] or "").lower(),
+                        ]
+                    )
+                matched = any(
+                    exact_or_contains(value, keyword, request.id_match)
+                    for value in values
+                )
+            if not matched and "name" in fields:
+                values = [user_name]
+                for item in comments:
+                    values.extend(
+                        [
+                            str(item["show_user_name"] or "").lower(),
+                            str(item["reply_show_user_name"] or "").lower(),
+                        ]
+                    )
+                matched = any(
+                    exact_or_contains(value, keyword, request.name_match)
+                    for value in values
+                )
+            if not matched:
+                return False
+        return True
+
+    def _should_cursor_scan(self, request: SearchQuery, backend: str) -> bool:
+        if not request.text or backend != "like":
+            return False
+        if not request.admin:
+            return True
+        fields = set(request.admin_fields)
+        exact_identity_only = fields <= {"uid", "name"} and (
+            ("uid" not in fields or request.id_match == "exact")
+            and ("name" not in fields or request.name_match == "exact")
+        )
+        return not exact_identity_only
+
     @staticmethod
     def _public_post(row) -> dict:
         return {
@@ -242,29 +414,12 @@ class SearchRepository:
                 "results": [],
             }
 
-        order_map = {
-            "time": "p.create_time desc, p.id desc",
-            "stars": "p.star_count desc, cast(p.id as integer) desc",
-            "comments": "p.comment_count desc, cast(p.id as integer) desc",
-            "score": (
-                "(p.star_count * 3 + p.comment_count * 5 + "
-                "max(0, 30 - ((strftime('%s','now') - "
-                "strftime('%s',p.create_time)) / 86400.0))) desc, "
-                "p.create_time desc, cast(p.id as integer) desc"
-            ),
-        }
-        order_by = order_map.get(request.sort_by, order_map["time"])
-        use_bigram = bool(request.text) and self.has_bigram_index()
-        use_fts = (
-            not use_bigram
-            and request.scope == "all"
-            and bool(request.text)
-            and self.has_search_index()
-        )
+        order_by = self._order_by(request.sort_by)
+        use_bigram, use_fts, backend = self._plan(request)
         where_sql, args = self._where(
             request, use_fts=use_fts, use_bigram=use_bigram
         )
-        with self.connect() as conn:
+        with self.connect(include_bigram=use_bigram) as conn:
             total = conn.execute(
                 f"select count(*) from posts p{where_sql}", args
             ).fetchone()[0]
@@ -293,19 +448,6 @@ class SearchRepository:
                 item["real_user_id"] = row["real_user_id"]
             results.append(item)
 
-        if use_bigram:
-            terms = [
-                bigram_query(keyword) is not None
-                for keyword in (request.text or "").lower().split()
-            ]
-            if terms and all(terms):
-                backend = "bigram"
-            elif any(terms):
-                backend = "hybrid"
-            else:
-                backend = "like"
-        else:
-            backend = "trigram" if use_fts else "like"
         return {
             "total": total,
             "page": page,
@@ -313,6 +455,111 @@ class SearchRepository:
             "total_pages": total_pages,
             "results": results,
             "search_backend": backend,
+        }
+
+    def search_cursor(
+        self,
+        request: SearchQuery,
+        *,
+        scan_offset: int = 0,
+        matched_before: int = 0,
+        batch_size: int | None = None,
+    ) -> dict:
+        """Return one sorted page, stopping once enough LIKE matches are found."""
+        use_bigram, use_fts, backend = self._plan(request)
+        if not self._should_cursor_scan(request, backend):
+            result = self.search(request)
+            result.update(
+                {
+                    "pagination_mode": "numbered",
+                    "candidate_total": result["total"],
+                    "scanned": result["total"],
+                    "matched_so_far": result["total"],
+                    "has_more": result["page"] < result["total_pages"],
+                    "next_offset": None,
+                    "total_exact": True,
+                }
+            )
+            return result
+
+        scan_offset = max(0, scan_offset)
+        matched_before = max(0, matched_before)
+        candidate_where, candidate_args = self._candidate_where(request)
+        order_by = self._order_by(request.sort_by)
+        results: list[dict] = []
+        need_comments = request.scope == "all" or (
+            request.admin
+            and bool(set(request.admin_fields) & {"cmt", "uid", "name"})
+        )
+        default_batch = self.SCAN_BATCH_SIZE if need_comments else 5_000
+        max_batch = 900 if need_comments else 5_000
+        batch_size = max(
+            request.limit,
+            min(batch_size or default_batch, max_batch),
+        )
+
+        with self.connect() as conn:
+            candidate_total = conn.execute(
+                f"select count(*) from posts p{candidate_where}",
+                candidate_args,
+            ).fetchone()[0]
+            cursor = min(scan_offset, candidate_total)
+            while cursor < candidate_total and len(results) < request.limit:
+                rows = conn.execute(
+                    f"""
+                    select p.id, p.content, p.category_name, p.user_name,
+                           p.create_time, p.comment_count, p.star_count,
+                           p.trace_count, p.views, p.hot,
+                           p.show_user_id, p.real_user_id
+                    from posts p
+                    {candidate_where}
+                    order by {order_by}
+                    limit ? offset ?
+                    """,
+                    candidate_args + [batch_size, cursor],
+                ).fetchall()
+                if not rows:
+                    cursor = candidate_total
+                    break
+                comments = (
+                    self._comments_by_post(
+                        conn, [str(row["id"]) for row in rows]
+                    )
+                    if need_comments
+                    else {}
+                )
+                for index, row in enumerate(rows):
+                    cursor += 1
+                    if self._matches_scan_row(
+                        row,
+                        comments.get(str(row["id"]), []),
+                        request,
+                    ):
+                        item = self._public_post(row)
+                        if request.admin:
+                            item["show_user_id"] = row["show_user_id"]
+                            item["real_user_id"] = row["real_user_id"]
+                        results.append(item)
+                        if len(results) >= request.limit:
+                            break
+
+        has_more = cursor < candidate_total
+        matched_so_far = matched_before + len(results)
+        total = matched_so_far if not has_more else None
+        return {
+            "total": total,
+            "page": max(1, request.page),
+            "page_size": request.limit,
+            "total_pages": request.page if not has_more else None,
+            "results": results,
+            "search_backend": "scan-like",
+            "pagination_mode": "cursor",
+            "candidate_total": candidate_total,
+            "scanned": cursor,
+            "matched_so_far": matched_so_far,
+            "has_more": has_more,
+            "next_offset": cursor if has_more else None,
+            "total_exact": not has_more,
         }
 
     def categories(self) -> dict:

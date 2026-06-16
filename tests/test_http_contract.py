@@ -161,6 +161,14 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(payload["results"][0]["id"], "100")
         self.assertNotIn("show_user_id", payload["results"][0])
 
+        status, cursor = self.get_json(
+            f"/api/search?q={quote('食')}&limit=10&cursor=1"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(cursor["pagination_mode"], "cursor")
+        self.assertEqual(cursor["candidate_total"], 1)
+        self.assertTrue(cursor["total_exact"])
+
     def test_comments_and_categories_contract(self):
         _, categories = self.get_json("/api/categories")
         self.assertEqual(categories, {"categories": []})

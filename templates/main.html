@@ -65,6 +65,8 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .cmt .replies { margin-left: 14px; border-left: 2px solid #eee; padding-left: 12px; margin-top: 4px; }
 .cmt .reply { padding: 5px 0; font-size: 0.95em; }
 .loading { text-align: center; color: #999; padding: 20px; font-size: 0.9em; }
+.search-progress { display:none; height:3px; background:#e8e8e8; overflow:hidden; }
+.search-progress span { display:block; height:100%; width:0; background:#94151c; transition:width .2s ease; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #ddd; border-top-color: #8b0012; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -207,6 +209,7 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
   <button id="btn-score" onclick="setSort('score')">综合</button>
   <span class="count-text" id="count-text"></span>
 </div>
+<div class="search-progress" id="search-progress"><span></span></div>
 
 <div class="filter-bar">
   <label>分类:</label>
@@ -239,6 +242,10 @@ let currentPage = 1;
 let currentSort = 'time';
 let currentQuery = '';
 let totalPages = 1;
+let paginationMode = 'numbered';
+let cursorPages = [{ offset: 0, matchedBefore: 0 }];
+let pageCache = {};
+let searchController = null;
 const PAGE_SIZE = 50;
 const TRUNCATE_LEN = 140;
 
@@ -458,12 +465,16 @@ function renderComments(cmts, keywords) {
 function doSearch() {
   currentQuery = document.getElementById('q').value.trim();
   currentPage = 1;
+  cursorPages = [{ offset: 0, matchedBefore: 0 }];
+  pageCache = {};
   fetchResults();
 }
 
 function setSort(sort) {
   currentSort = sort;
   currentPage = 1;
+  cursorPages = [{ offset: 0, matchedBefore: 0 }];
+  pageCache = {};
   document.querySelectorAll('.sort-bar button').forEach(b => b.classList.remove('active'));
   let btnId = 'btn-' + sort;
   let btn = document.getElementById(btnId);
@@ -472,10 +483,56 @@ function setSort(sort) {
 }
 
 function goToPage(page) {
-  if (page < 1 || page > totalPages) return;
+  if (page < 1) return;
+  if (paginationMode === 'numbered' && page > totalPages) return;
+  saveCurrentPage();
   currentPage = page;
+  if (pageCache[page]) {
+    restorePage(page);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    return;
+  }
   fetchResults();
   window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function saveCurrentPage() {
+  var resultsEl = document.getElementById('results');
+  if (!resultsEl || resultsEl.querySelector('.loading')) return;
+  pageCache[currentPage] = {
+    html: resultsEl.innerHTML,
+    count: document.getElementById('count-text').textContent,
+    postData: Object.assign({}, _postData),
+    contentState: Object.assign({}, _contentState),
+    commentsLoaded: Object.assign({}, _commentsLoaded),
+    data: resultsEl._pageData
+  };
+}
+
+function restorePage(page) {
+  var cached = pageCache[page];
+  if (!cached) return;
+  var resultsEl = document.getElementById('results');
+  resultsEl.innerHTML = cached.html;
+  resultsEl._pageData = cached.data;
+  _postData = Object.assign({}, cached.postData);
+  _contentState = Object.assign({}, cached.contentState);
+  _commentsLoaded = Object.assign({}, cached.commentsLoaded);
+  document.getElementById('count-text').textContent = cached.count;
+  updateProgress(cached.data);
+  renderPagination(cached.data);
+}
+
+function updateProgress(data) {
+  var bar = document.getElementById('search-progress');
+  if (!data || data.pagination_mode !== 'cursor') {
+    bar.style.display = 'none';
+    return;
+  }
+  var pct = data.candidate_total > 0
+    ? Math.min(100, data.scanned * 100 / data.candidate_total) : 100;
+  bar.style.display = 'block';
+  bar.firstElementChild.style.width = pct.toFixed(1) + '%';
 }
 
 function getFilterParams() {
@@ -491,22 +548,35 @@ function fetchResults() {
   let resultsEl = document.getElementById('results');
   resultsEl.innerHTML = '<div class="loading"><span class="spinner"></span>加载中...</div>';
   document.getElementById('pagination').innerHTML = '';
+  if (searchController) searchController.abort();
+  searchController = new AbortController();
 
+  var cursor = cursorPages[currentPage - 1] || { offset: 0, matchedBefore: 0 };
   let url = '/api/search?q=' + encodeURIComponent(currentQuery) +
     '&sort=' + currentSort +
     '&page=' + currentPage +
     '&limit=' + PAGE_SIZE +
+    '&cursor=1&scan_offset=' + cursor.offset +
+    '&matched_before=' + cursor.matchedBefore +
     getFilterParams();
 
-  fetch(url)
+  fetch(url, { signal: searchController.signal })
     .then(r => r.json())
     .then(data => {
-      totalPages = data.total_pages;
+      paginationMode = data.pagination_mode || 'numbered';
+      totalPages = data.total_pages || currentPage;
       let keywords = currentQuery.split(/\s+/).filter(Boolean);
 
-      document.getElementById('count-text').textContent = '共 ' + data.total + ' 条结果';
+      if (paginationMode === 'cursor' && !data.total_exact) {
+        document.getElementById('count-text').textContent =
+          '已找到 ' + data.matched_so_far + ' 条 · 已检查 ' +
+          data.scanned + ' / ' + data.candidate_total;
+      } else {
+        document.getElementById('count-text').textContent =
+          '共 ' + (data.total || 0) + ' 条结果';
+      }
 
-      if (data.total === 0) {
+      if (!data.results || data.results.length === 0) {
         resultsEl.innerHTML = '<div class="empty"><div class="icon">&#128269;</div><div class="text">没有找到匹配的帖子</div></div>';
       } else {
         _postData = {};
@@ -515,15 +585,35 @@ function fetchResults() {
         resultsEl.innerHTML = data.results.map((p, i) => renderPost(p, i, keywords)).join('');
       }
 
-      renderPagination(data.total_pages);
+      resultsEl._pageData = data;
+      if (paginationMode === 'cursor' && data.has_more) {
+        cursorPages[currentPage] = {
+          offset: data.next_offset,
+          matchedBefore: data.matched_so_far
+        };
+      }
+      updateProgress(data);
+      renderPagination(data);
     })
     .catch(err => {
+      if (err.name === 'AbortError') return;
       resultsEl.innerHTML = '<div class="empty"><div class="text">加载失败，请重试</div></div>';
     });
 }
 
-function renderPagination(total) {
+function renderPagination(data) {
   let pgEl = document.getElementById('pagination');
+  if (data.pagination_mode === 'cursor') {
+    let html = '';
+    html += '<button ' + (currentPage <= 1 ? 'disabled' : '') +
+      ' onclick="goToPage(' + (currentPage - 1) + ')">&#171; 上一页</button>';
+    html += '<span class="page-info">第 ' + currentPage + ' 页</span>';
+    html += '<button ' + (!data.has_more ? 'disabled' : '') +
+      ' onclick="goToPage(' + (currentPage + 1) + ')">下一页 &#187;</button>';
+    pgEl.innerHTML = html;
+    return;
+  }
+  let total = data.total_pages;
   if (total <= 1) { pgEl.innerHTML = ''; return; }
 
   let html = '';
