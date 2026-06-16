@@ -60,6 +60,8 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 .no-results { text-align: center; color: #999; padding: 40px; background: #fff; border-radius: 8px; border: 1px solid #eee; }
 .loading { text-align: center; color: #999; padding: 40px; background: #fff; border-radius: 8px; border: 1px solid #eee; }
+.search-progress { display:none; height:3px; background:#e8e8e8; overflow:hidden; }
+.search-progress span { display:block; height:100%; width:0; background:#94151c; transition:width .2s ease; }
 @media (max-width: 700px) {
   .header { padding: 14px 12px; }
   .filter-row.primary { flex-wrap: wrap; }
@@ -104,7 +106,7 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 <div class="filters">
   <div class="filter-row primary">
     <input type="text" id="q" placeholder="搜索关键词（空格 AND）..." autofocus>
-    <button onclick="doSearch(1)">搜索</button>
+    <button onclick="startSearch()">搜索</button>
   </div>
   <div class="filter-row">
     <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="comments">按评论</option><option value="score">综合</option></select>
@@ -118,6 +120,7 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
     <select id="name-match" aria-label="昵称匹配方式"><option value="exact">昵称精确</option><option value="contains">昵称包含（慢）</option></select>
   </div>
 </div>
+<div class="search-progress" id="search-progress"><span></span></div>
 
 <div id="results"><div class="loading">输入关键词后点击搜索</div></div>
 <div class="pagination" id="pager"></div>
@@ -139,16 +142,73 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 var currentPage = 1;
 var currentKW = [];
 var commentsLoaded = {};
+var paginationMode = 'numbered';
+var cursorPages = [{offset: 0, matchedBefore: 0}];
+var pageCache = {};
+var searchController = null;
 
-function doSearch(page) {
-  currentPage = page || 1;
+function startSearch() {
+  currentPage = 1;
+  cursorPages = [{offset: 0, matchedBefore: 0}];
+  pageCache = {};
+  doSearch();
+}
+
+function saveAdminPage() {
+  var results = document.getElementById('results');
+  if (!results || results.querySelector('.loading')) return;
+  pageCache[currentPage] = {
+    html: results.innerHTML,
+    data: results._data,
+    commentsLoaded: Object.assign({}, commentsLoaded)
+  };
+}
+
+function goAdminPage(page) {
+  if (page < 1) return;
+  saveAdminPage();
+  currentPage = page;
+  if (pageCache[page]) {
+    var cached = pageCache[page];
+    var results = document.getElementById('results');
+    results.innerHTML = cached.html;
+    results._data = cached.data;
+    commentsLoaded = Object.assign({}, cached.commentsLoaded);
+    updateAdminProgress(cached.data);
+    renderPager(cached.data);
+    window.scrollTo({top: 0, behavior: 'smooth'});
+    return;
+  }
+  doSearch();
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function updateAdminProgress(data) {
+  var bar = document.getElementById('search-progress');
+  if (!data || data.pagination_mode !== 'cursor') {
+    bar.style.display = 'none';
+    return;
+  }
+  var pct = data.candidate_total > 0
+    ? Math.min(100, data.scanned * 100 / data.candidate_total) : 100;
+  bar.style.display = 'block';
+  bar.firstElementChild.style.width = pct.toFixed(1) + '%';
+}
+
+function doSearch() {
   var q = document.getElementById('q').value.trim();
   currentKW = q ? q.split(/\s+/).filter(Boolean) : [];
   var sort = document.getElementById('sort').value;
   var date = document.getElementById('date').value;
   var identity = document.getElementById('identity').value;
 
-  var params = ['q=' + encodeURIComponent(q), 'sort=' + sort, 'page=' + currentPage, 'limit=50'];
+  var cursor = cursorPages[currentPage - 1] || {offset: 0, matchedBefore: 0};
+  var params = [
+    'q=' + encodeURIComponent(q), 'sort=' + sort,
+    'page=' + currentPage, 'limit=50', 'cursor=1',
+    'scan_offset=' + cursor.offset,
+    'matched_before=' + cursor.matchedBefore
+  ];
   if (date) params.push('date=' + date);
   if (identity) params.push('identity=' + identity);
 
@@ -165,16 +225,28 @@ function doSearch(page) {
   else params.push('scope=content');
 
   document.getElementById('results').innerHTML = '<div class="loading">搜索中...</div>';
+  if (searchController) searchController.abort();
+  searchController = new AbortController();
 
-  fetch('/api/search?' + params.join('&'))
+  fetch('/api/search?' + params.join('&'), {signal: searchController.signal})
     .then(r => r.json())
     .then(data => {
       currentPage = data.page;
+      paginationMode = data.pagination_mode || 'numbered';
       commentsLoaded = {};
       renderResults(data);
+      document.getElementById('results')._data = data;
+      if (paginationMode === 'cursor' && data.has_more) {
+        cursorPages[currentPage] = {
+          offset: data.next_offset,
+          matchedBefore: data.matched_so_far
+        };
+      }
+      updateAdminProgress(data);
       renderPager(data);
     })
     .catch(e => {
+      if (e.name === 'AbortError') return;
       document.getElementById('results').innerHTML = '<div class="no-results">搜索出错: ' + e + '</div>';
     });
 }
@@ -279,23 +351,38 @@ function toggleCmts(idx) {
 
 function renderPager(data) {
   var h = '';
+  if (data.pagination_mode === 'cursor') {
+    h += '<button ' + (data.page <= 1 ? 'disabled' : '') +
+      ' onclick="goAdminPage(' + (data.page - 1) + ')">上一页</button>';
+    h += '<span style="color:#666;font-size:0.82em;">第 ' + data.page + ' 页</span>';
+    h += '<button ' + (!data.has_more ? 'disabled' : '') +
+      ' onclick="goAdminPage(' + (data.page + 1) + ')">下一页</button>';
+    h += '<span style="color:#888;font-size:0.8em;margin-left:8px;">' +
+      (data.total_exact
+        ? '共 ' + data.total + ' 条'
+        : '已找到 ' + data.matched_so_far + ' 条 · 已检查 ' +
+          data.scanned + ' / ' + data.candidate_total) +
+      '</span>';
+    document.getElementById('pager').innerHTML = h;
+    return;
+  }
   if (data.total_pages <= 1) { document.getElementById('pager').innerHTML = ''; return; }
-  h += '<button ' + (data.page <= 1 ? 'disabled' : '') + ' onclick="doSearch(1)">首页</button>';
-  h += '<button ' + (data.page <= 1 ? 'disabled' : '') + ' onclick="doSearch(' + (data.page-1) + ')">上一页</button>';
+  h += '<button ' + (data.page <= 1 ? 'disabled' : '') + ' onclick="goAdminPage(1)">首页</button>';
+  h += '<button ' + (data.page <= 1 ? 'disabled' : '') + ' onclick="goAdminPage(' + (data.page-1) + ')">上一页</button>';
   var start = Math.max(1, data.page - 3);
   var end = Math.min(data.total_pages, data.page + 3);
   for (var i = start; i <= end; i++) {
-    h += '<button class="' + (i === data.page ? 'active' : '') + '" onclick="doSearch(' + i + ')">' + i + '</button>';
+    h += '<button class="' + (i === data.page ? 'active' : '') + '" onclick="goAdminPage(' + i + ')">' + i + '</button>';
   }
-  h += '<button ' + (data.page >= data.total_pages ? 'disabled' : '') + ' onclick="doSearch(' + (data.page+1) + ')">下一页</button>';
-  h += '<button ' + (data.page >= data.total_pages ? 'disabled' : '') + ' onclick="doSearch(' + data.total_pages + ')">末页</button>';
+  h += '<button ' + (data.page >= data.total_pages ? 'disabled' : '') + ' onclick="goAdminPage(' + (data.page+1) + ')">下一页</button>';
+  h += '<button ' + (data.page >= data.total_pages ? 'disabled' : '') + ' onclick="goAdminPage(' + data.total_pages + ')">末页</button>';
   h += '<span style="color:#888;font-size:0.8em;margin-left:8px;">共 ' + data.total + ' 条 / ' + data.total_pages + ' 页</span>';
   document.getElementById('pager').innerHTML = h;
 }
 
 // Enter key triggers search
 document.getElementById('q').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') doSearch(1);
+  if (e.key === 'Enter') startSearch();
 });
 
 // ── AI Test ──

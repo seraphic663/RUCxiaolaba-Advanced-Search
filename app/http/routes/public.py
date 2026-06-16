@@ -26,8 +26,11 @@ def search(handler):
     try:
         page = max(1, int(params.get("page", ["1"])[0]))
         limit = max(1, min(int(params.get("limit", ["50"])[0]), 200))
+        scan_offset = max(0, int(params.get("scan_offset", ["0"])[0]))
+        matched_before = max(0, int(params.get("matched_before", ["0"])[0]))
     except ValueError:
-        page, limit = 1, 50
+        page, limit, scan_offset, matched_before = 1, 50, 0, 0
+    cursor_mode = params.get("cursor", ["0"])[0] == "1"
     category = params.get("category", [""])[0].strip() or None
     uid = params.get("uid", [""])[0].strip() or None
     uname = params.get("uname", [""])[0].strip() or None
@@ -81,11 +84,22 @@ def search(handler):
         except ValueError:
             pass
 
-    result = handler.context.search.search(
+    search_method = (
+        handler.context.search.search_cursor
+        if cursor_mode
+        else handler.context.search.search
+    )
+    cursor_args = (
+        {"scan_offset": scan_offset, "matched_before": matched_before}
+        if cursor_mode
+        else {}
+    )
+    result = search_method(
         query,
         sort_by,
         page,
         limit,
+        **cursor_args,
         category=category,
         date_from=date_from,
         date_to=date_to,

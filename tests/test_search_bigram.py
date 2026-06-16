@@ -122,6 +122,14 @@ class BigramSearchTest(unittest.TestCase):
         self.assertEqual(result["search_backend"], "like")
         self.assertEqual([item["id"] for item in result["results"]], ["3"])
 
+    def test_two_character_query_without_bigram_reports_like(self) -> None:
+        with (
+            patch.object(server, "SQLITE_DB", str(self.posts_db)),
+            patch.object(server, "BIGRAM_DB", ""),
+        ):
+            result = server.api_search_sqlite("食堂", "time", 1, 50, scope="all")
+        self.assertEqual(result["search_backend"], "like")
+
     def test_admin_id_defaults_to_exact_and_can_use_contains(self) -> None:
         exact = self.search("u2", admin=True, admin_fields={"uid"})
         partial_exact = self.search("u", admin=True, admin_fields={"uid"})
