@@ -57,8 +57,8 @@ class SearchService:
         )
         return self.repository.search(request)
 
-    def categories(self) -> dict:
-        return self.repository.categories()
+    def categories(self, min_count: int = 200) -> dict:
+        return self.repository.categories(min_count=min_count)
 
     def search_cursor(
         self,

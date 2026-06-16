@@ -110,6 +110,23 @@ class CursorSearchTest(unittest.TestCase):
         self.assertEqual(result["candidate_total"], 4)
         self.assertEqual([row["id"] for row in result["results"]], ["5", "1"])
 
+    def test_empty_query_cursor_skips_exact_total(self) -> None:
+        first = self.repository.search_cursor(
+            SearchQuery(text="", sort_by="time", limit=2)
+        )
+        self.assertEqual(first["pagination_mode"], "cursor")
+        self.assertEqual(first["search_backend"], "cursor")
+        self.assertIsNone(first["candidate_total"])
+        self.assertFalse(first["total_exact"])
+        self.assertEqual([row["id"] for row in first["results"]], ["5", "4"])
+
+        second = self.repository.search_cursor(
+            SearchQuery(text="", sort_by="time", page=2, limit=2),
+            scan_offset=first["next_offset"],
+            matched_before=first["matched_so_far"],
+        )
+        self.assertEqual([row["id"] for row in second["results"]], ["3", "2"])
+
 
 if __name__ == "__main__":
     unittest.main()

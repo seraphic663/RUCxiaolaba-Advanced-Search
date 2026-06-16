@@ -113,23 +113,17 @@ class SearchRepository:
                     field_clauses: list[str] = []
                     if "body" in fields:
                         if token_query:
-                            body_clause = (
+                            field_clauses.append(
                                 "p.id in ("
                                 "select m.post_id from bigram.search_bigram f "
                                 "join bigram.search_rows m on m.row_id=f.rowid "
                                 "where f.tokens match ? and m.kind='post'"
                                 ")"
                             )
-                            if keyword.isdigit():
-                                body_clause = f"(p.id like ? or {body_clause})"
-                                args.append(like)
-                            field_clauses.append(body_clause)
                             args.append(token_query)
                         else:
-                            field_clauses.append(
-                                "(lower(p.content) like ? or p.id like ?)"
-                            )
-                            args.extend([like, like])
+                            field_clauses.append("lower(p.content) like ?")
+                            args.append(like)
                     if "cmt" in fields:
                         if token_query:
                             field_clauses.append(
@@ -149,28 +143,35 @@ class SearchRepository:
                     if "uid" in fields:
                         operator = "like" if request.id_match == "contains" else "="
                         value = like if operator == "like" else keyword
-                        field_clauses.append(
-                            "("
-                            f"p.id {operator} ? or p.show_user_id {operator} ? or "
-                            f"p.real_user_id {operator} ? or "
-                            "p.id in (select post_id from comments where "
-                            f"show_user_id {operator} ? or real_user_id {operator} ? or "
-                            f"reply_show_user_id {operator} ?)"
-                            ")"
-                        )
-                        args.extend([value] * 6)
+                        id_parts = [
+                            f"p.show_user_id {operator} ?",
+                            f"p.real_user_id {operator} ?",
+                        ]
+                        args.extend([value] * 2)
+                        if "cmt" in fields:
+                            id_parts.append(
+                                "p.id in (select post_id from comments where "
+                                f"show_user_id {operator} ? or real_user_id {operator} ? or "
+                                f"reply_show_user_id {operator} ?)"
+                            )
+                            args.extend([value] * 3)
+                        field_clauses.append("(" + " or ".join(id_parts) + ")")
+                    if "post" in fields:
+                        field_clauses.append("p.id = ?")
+                        args.append(keyword)
                     if "name" in fields:
                         operator = "like" if request.name_match == "contains" else "="
                         value = like if operator == "like" else keyword
-                        field_clauses.append(
-                            "("
-                            f"lower(p.user_name) {operator} ? or "
-                            "p.id in (select post_id from comments where "
-                            f"lower(show_user_name) {operator} ? or "
-                            f"lower(reply_show_user_name) {operator} ?)"
-                            ")"
-                        )
-                        args.extend([value] * 3)
+                        name_parts = [f"lower(p.user_name) {operator} ?"]
+                        args.append(value)
+                        if "cmt" in fields:
+                            name_parts.append(
+                                "p.id in (select post_id from comments where "
+                                f"lower(show_user_name) {operator} ? or "
+                                f"lower(reply_show_user_name) {operator} ?)"
+                            )
+                            args.extend([value] * 2)
+                        field_clauses.append("(" + " or ".join(name_parts) + ")")
                     clauses.append("(" + " or ".join(field_clauses or ["0"]) + ")")
                 elif token_query:
                     kind_filter = (
@@ -183,22 +184,19 @@ class SearchRepository:
                         f"where f.tokens match ?{kind_filter}"
                         ")"
                     )
-                    if keyword.isdigit():
-                        text_clause = f"(p.id like ? or {text_clause})"
-                        args.append(like)
                     clauses.append(text_clause)
                     args.append(token_query)
                 elif request.scope == "all":
                     clauses.append(
                         "p.id in ("
-                        "select id from posts where lower(content) like ? or id like ? "
+                        "select id from posts where lower(content) like ? "
                         "union select post_id from comments where lower(detail) like ?"
                         ")"
                     )
-                    args.extend([like, like, like])
-                else:
-                    clauses.append("(lower(p.content) like ? or p.id like ?)")
                     args.extend([like, like])
+                else:
+                    clauses.append("lower(p.content) like ?")
+                    args.append(like)
 
         if request.category:
             clauses.append("p.category_name = ?")
@@ -329,7 +327,7 @@ class SearchRepository:
 
         for keyword in keywords:
             if not request.admin:
-                body_match = keyword in content or keyword in post_id
+                body_match = keyword in content
                 comment_match = (
                     request.scope == "all"
                     and any(keyword in str(item["detail"] or "").lower() for item in comments)
@@ -340,35 +338,39 @@ class SearchRepository:
 
             matched = False
             if "body" in fields:
-                matched = keyword in content or keyword in post_id
+                matched = keyword in content
             if not matched and "cmt" in fields:
                 matched = any(
                     keyword in str(item["detail"] or "").lower()
                     for item in comments
                 )
             if not matched and "uid" in fields:
-                values = [post_id, post_show_id, post_real_id]
-                for item in comments:
-                    values.extend(
-                        [
-                            str(item["show_user_id"] or "").lower(),
-                            str(item["real_user_id"] or "").lower(),
-                            str(item["reply_show_user_id"] or "").lower(),
-                        ]
-                    )
+                values = [post_show_id, post_real_id]
+                if "cmt" in fields:
+                    for item in comments:
+                        values.extend(
+                            [
+                                str(item["show_user_id"] or "").lower(),
+                                str(item["real_user_id"] or "").lower(),
+                                str(item["reply_show_user_id"] or "").lower(),
+                            ]
+                        )
                 matched = any(
                     exact_or_contains(value, keyword, request.id_match)
                     for value in values
                 )
+            if not matched and "post" in fields:
+                matched = keyword == post_id
             if not matched and "name" in fields:
                 values = [user_name]
-                for item in comments:
-                    values.extend(
-                        [
-                            str(item["show_user_name"] or "").lower(),
-                            str(item["reply_show_user_name"] or "").lower(),
-                        ]
-                    )
+                if "cmt" in fields:
+                    for item in comments:
+                        values.extend(
+                            [
+                                str(item["show_user_name"] or "").lower(),
+                                str(item["reply_show_user_name"] or "").lower(),
+                            ]
+                        )
                 matched = any(
                     exact_or_contains(value, keyword, request.name_match)
                     for value in values
@@ -378,12 +380,14 @@ class SearchRepository:
         return True
 
     def _should_cursor_scan(self, request: SearchQuery, backend: str) -> bool:
-        if not request.text or backend != "like":
+        if not request.text:
+            return True
+        if backend != "like":
             return False
         if not request.admin:
             return True
         fields = set(request.admin_fields)
-        exact_identity_only = fields <= {"uid", "name"} and (
+        exact_identity_only = fields <= {"uid", "name", "post"} and (
             ("uid" not in fields or request.id_match == "exact")
             and ("name" not in fields or request.name_match == "exact")
         )
@@ -482,6 +486,13 @@ class SearchRepository:
             )
             return result
 
+        if not request.text:
+            return self._search_cursor_without_text(
+                request,
+                scan_offset=scan_offset,
+                matched_before=matched_before,
+            )
+
         scan_offset = max(0, scan_offset)
         matched_before = max(0, matched_before)
         candidate_where, candidate_args = self._candidate_where(request)
@@ -562,20 +573,88 @@ class SearchRepository:
             "total_exact": not has_more,
         }
 
-    def categories(self) -> dict:
+    def _search_cursor_without_text(
+        self,
+        request: SearchQuery,
+        *,
+        scan_offset: int = 0,
+        matched_before: int = 0,
+    ) -> dict:
+        """Return filtered latest pages without an upfront count(*).
+
+        This keeps default/latest views responsive on hosted SQLite volumes even
+        when the table is large or indexes are not warmed.
+        """
+        scan_offset = max(0, scan_offset)
+        matched_before = max(0, matched_before)
+        candidate_where, candidate_args = self._candidate_where(request)
+        order_by = self._order_by(request.sort_by)
+        fetch_limit = request.limit + 1
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                select p.id, p.content, p.category_name, p.user_name,
+                       p.create_time, p.comment_count, p.star_count,
+                       p.trace_count, p.views, p.hot,
+                       p.show_user_id, p.real_user_id
+                from posts p
+                {candidate_where}
+                order by {order_by}
+                limit ? offset ?
+                """,
+                candidate_args + [fetch_limit, scan_offset],
+            ).fetchall()
+
+        page_rows = rows[: request.limit]
+        has_more = len(rows) > request.limit
+        results = []
+        for row in page_rows:
+            item = self._public_post(row)
+            if request.admin:
+                item["show_user_id"] = row["show_user_id"]
+                item["real_user_id"] = row["real_user_id"]
+            results.append(item)
+
+        next_offset = scan_offset + len(page_rows)
+        matched_so_far = matched_before + len(results)
+        return {
+            "total": matched_so_far if not has_more else None,
+            "page": max(1, request.page),
+            "page_size": request.limit,
+            "total_pages": request.page if not has_more else None,
+            "results": results,
+            "search_backend": "cursor",
+            "pagination_mode": "cursor",
+            "candidate_total": None,
+            "scanned": next_offset,
+            "matched_so_far": matched_so_far,
+            "has_more": has_more,
+            "next_offset": next_offset if has_more else None,
+            "total_exact": not has_more,
+        }
+
+    def categories(self, min_count: int = 200) -> dict:
         if not self.posts_db.exists():
             return {"categories": []}
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                select category_name from posts
+                select category_name, count(*) as count from posts
                 where category_name != ''
                 group by category_name
-                having count(*) >= 5
-                order by category_name
-                """
+                having count(*) >= ?
+                order by count desc, category_name
+                """,
+                (min_count,),
             ).fetchall()
-        return {"categories": [row["category_name"] for row in rows]}
+        categories = [row["category_name"] for row in rows]
+        result = {"categories": categories}
+        if categories:
+            result["category_counts"] = {
+                row["category_name"]: row["count"] for row in rows
+            }
+        return result
 
     def comments(
         self,

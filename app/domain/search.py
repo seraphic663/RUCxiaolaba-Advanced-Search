@@ -21,7 +21,7 @@ class SearchQuery:
     admin: bool = False
     identity: str | None = None
     admin_fields: frozenset[str] = field(
-        default_factory=lambda: frozenset({"body", "cmt", "uid", "name"})
+        default_factory=lambda: frozenset({"body", "cmt", "uid", "name", "post"})
     )
     id_match: str = "exact"
     name_match: str = "exact"

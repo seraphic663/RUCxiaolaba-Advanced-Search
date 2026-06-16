@@ -16,18 +16,28 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .stat-card { background: #fff; padding: 12px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.06); border: 1px solid #eee; }
 .stat-card .num { font-size: 1.55em; color: #8b0012; font-weight: bold; }
 .stat-card .label { color: #777; font-size: 0.75em; margin-top: 2px; }
-.filters { max-width: 1040px; margin: 0 auto 10px; padding: 8px 16px; background: #fff; border: 1px solid #eee; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-.filter-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.filter-row + .filter-row { margin-top: 6px; }
-.filter-row.primary { flex-wrap: nowrap; }
-.filters input[type=text] { flex: 1; min-width: 220px; max-width: 760px; padding: 7px 11px; border: 2px solid #ddd; border-radius: 8px; background: #fff; color: #222; font-size: 13px; outline: none; }
+.filters { max-width: 1040px; margin: 0 auto 10px; padding: 10px 14px; background: #fff; border: 1px solid #eee; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.filter-row { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+.filter-row + .filter-row { margin-top: 7px; }
+.filter-row.primary { display: grid; grid-template-columns: minmax(200px, 1fr) auto auto; gap: 8px; align-items: center; }
+.control-grid { display: grid; grid-template-columns: minmax(410px, 1fr) minmax(330px, .9fr) minmax(150px, .35fr); gap: 8px; align-items: start; }
+.control-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.filters .select-group select { flex: 1 1 0; min-width: 92px; }
+.field-group .field-toggle { flex: 0 0 auto; }
+.match-group { justify-content: flex-end; }
+.filters input[type=text] { width: 100%; min-width: 0; padding: 7px 11px; border: 2px solid #ddd; border-radius: 8px; background: #fff; color: #222; font-size: 14px; outline: none; height: 36px; }
+.filters .select-group input[type=text] { flex: 1 1 0; min-width: 120px; max-width: 190px; height: 30px; padding: 4px 9px; border-width: 1px; border-radius: 7px; font-size: 12px; }
 .filters input:focus { border-color: #8b0012; }
-.filters select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; color: #333; font-size: 12px; outline: none; height: 30px; }
+.filters select { flex: 1 1 118px; min-width: 112px; max-width: 170px; padding: 4px 9px; border: 1px solid #ddd; border-radius: 7px; background: #fff; color: #333; font-size: 12px; outline: none; height: 30px; }
 .filters select:focus { border-color: #8b0012; }
-.filters label { font-size: 12px; color: #666; display: flex; align-items: center; gap: 3px; cursor: pointer; user-select: none; line-height: 30px; }
-.filters label input[type=checkbox] { accent-color: #8b0012; }
-.filters button { padding: 7px 18px; border: none; border-radius: 8px; background: #8b0012; color: #fff; cursor: pointer; font-size: 13px; white-space: nowrap; height: 34px; }
+.field-toggle { position: relative; display: inline-flex; align-items: center; justify-content: center; height: 30px; padding: 0 11px; border: 1px solid #ddd; border-radius: 999px; color: #555; background: #fff; font-size: 12px; cursor: pointer; user-select: none; white-space: nowrap; transition: background .15s, border-color .15s, color .15s; }
+.field-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.field-toggle:has(input:checked) { background: #8b0012; border-color: #8b0012; color: #fff; }
+.filters button { padding: 7px 22px; border: none; border-radius: 8px; background: #8b0012; color: #fff; cursor: pointer; font-size: 14px; white-space: nowrap; height: 36px; }
 .filters button:hover { background: #6d000e; }
+.search-mode-pill { display: inline-flex; align-items: center; min-height: 26px; max-width: 280px; padding: 2px 10px; border-radius: 999px; background: #f8eeee; color: #8b0012; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.match-select { display: none; }
+.match-select.active { display: inline-block; flex: 1 1 132px; max-width: 170px; }
 #results { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
 .results { border-radius: 8px; overflow: hidden; }
 .result-row { background: #fff; padding: 14px 18px; margin-bottom: 10px; border: 1px solid #eee; border-radius: 8px; cursor: pointer; transition: box-shadow .15s, border-color .15s; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
@@ -43,15 +53,16 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .identity-pill { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 0.82em; font-weight: 600; }
 .identity-pill.anonymous { color: #777; background: #f2f2f2; }
 .identity-pill.real { color: #2e7d32; background: #eaf6ed; }
-.comments-panel { display: none; border-left: 3px solid #f0f0f0; margin: 10px 0 0 0; padding-left: 14px; }
+.identity-pill.unknown { color: #8a6d3b; background: #fff7df; }
+.comments-panel { display: none; border-left: 2px solid #eee; margin: 10px 0 0 0; padding-left: 12px; }
 .comments-panel.open { display: block; }
-.cmt { padding: 7px 0; border-bottom: 1px solid #f5f5f5; font-size: 0.86em; }
+.cmt { padding: 6px 0; border-bottom: 1px solid #f5f5f5; font-size: 0.86em; }
 .cmt:last-child { border-bottom: none; }
 .cmt .cmt-uid { color: #8b0012; font-family: monospace; font-size: 0.85em; }
 .cmt .cmt-name { color: #777; font-size: 0.85em; }
 .cmt .cmt-text { color: #444; margin-top: 2px; line-height: 1.6; }
 .cmt .reply-to { color: #999; font-size: 0.8em; margin-left: 4px; }
-.cmt .nested { margin-left: 16px; border-left: 2px solid #eee; padding-left: 10px; margin-top: 4px; }
+.cmt .nested { margin-left: 10px; border-left: 1px solid #eee; padding-left: 10px; margin-top: 4px; }
 .pagination { max-width: 1040px; margin: 0 auto; display: flex; justify-content: center; gap: 6px; padding: 16px; flex-wrap: wrap; }
 .pagination button { padding: 8px 14px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #333; cursor: pointer; font-size: 0.85em; }
 .pagination button:hover { border-color: #8b0012; color: #8b0012; }
@@ -60,15 +71,31 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 .no-results { text-align: center; color: #999; padding: 40px; background: #fff; border-radius: 8px; border: 1px solid #eee; }
 .loading { text-align: center; color: #999; padding: 40px; background: #fff; border-radius: 8px; border: 1px solid #eee; }
-.search-progress { display:none; height:3px; background:#e8e8e8; overflow:hidden; }
-.search-progress span { display:block; height:100%; width:0; background:#94151c; transition:width .2s ease; }
 @media (max-width: 700px) {
   .header { padding: 14px 12px; }
-  .filter-row.primary { flex-wrap: wrap; }
-  .filters input[type=text] { width: 100%; max-width: none; }
-  .filters select, .filters button { width: 100%; }
+  .filters { padding: 8px; }
+  .filter-row.primary { grid-template-columns: 1fr auto; }
+  .filter-row.primary .search-mode-pill { display: none; }
+  .filter-row:not(.primary) { gap: 4px; }
+  .control-grid { gap: 5px; }
+  .control-group { gap: 4px; }
+  .filters input[type=text] { height: 33px; font-size: 13px; }
+  .filters .select-group input[type=text] { flex: 1 1 calc(50% - 4px); min-width: 0; max-width: none; height: 27px; padding: 3px 7px; font-size: 12px; }
+  .filters select { flex: 1 1 calc(50% - 4px); min-width: 0; max-width: none; height: 27px; padding: 3px 7px; }
+  .field-toggle { flex: 1 1 auto; min-width: 52px; height: 26px; padding: 0 7px; }
+  .match-select.active { flex: 1 1 96px; min-width: 96px; max-width: none; }
+  .match-group { justify-content: stretch; }
+  .filters button { height: 33px; padding-left: 15px; padding-right: 15px; }
   .result-row .stats-row { align-items: flex-start; }
   .post-stats-inline { justify-content: flex-start; }
+}
+@media (max-width: 920px) {
+  .control-grid { grid-template-columns: 1fr; }
+  .match-group { justify-content: flex-start; }
+}
+@media (min-width: 701px) and (max-width: 920px) {
+  .control-grid { grid-template-columns: minmax(340px, .95fr) minmax(300px, 1fr); }
+  .match-group { grid-column: 1 / -1; }
 }
 /* ── AI Test ── */
 .ai-section { max-width: 1040px; margin: 0 auto 14px; padding: 0 16px; }
@@ -107,20 +134,29 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
   <div class="filter-row primary">
     <input type="text" id="q" placeholder="搜索关键词（空格 AND）..." autofocus>
     <button onclick="startSearch()">搜索</button>
+    <span class="search-mode-pill" id="search-mode">正文检索</span>
   </div>
-  <div class="filter-row">
-    <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="comments">按评论</option><option value="score">综合</option></select>
-    <select id="date"><option value="">全部时间</option><option value="1d">今天</option><option value="3d">3天</option><option value="7d">7天</option><option value="30d">30天</option></select>
-    <select id="identity"><option value="">匿名/实名</option><option value="anonymous">仅看匿名帖</option><option value="real">仅看实名帖</option></select>
-    <label><input type="checkbox" id="sc-body" checked> 正文</label>
-    <label><input type="checkbox" id="sc-cmt"> 评论</label>
-    <label><input type="checkbox" id="sc-uid"> ID</label>
-    <select id="id-match" aria-label="ID匹配方式"><option value="exact">ID 精确</option><option value="contains">ID 包含（慢）</option></select>
-    <label><input type="checkbox" id="sc-name"> 昵称</label>
-    <select id="name-match" aria-label="昵称匹配方式"><option value="exact">昵称精确</option><option value="contains">昵称包含（慢）</option></select>
+  <div class="filter-row control-grid">
+    <div class="control-group select-group">
+      <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="comments">按评论</option><option value="score">综合</option></select>
+      <select id="date"><option value="">全部时间</option><option value="1d">今天</option><option value="3d">3天</option><option value="7d">7天</option><option value="30d">30天</option></select>
+      <select id="identity"><option value="">匿名/实名</option><option value="anonymous">仅看匿名帖</option><option value="real">仅看实名帖</option></select>
+      <input type="text" id="category" list="category-options" placeholder="全部分类 / 输入tag" aria-label="分类">
+      <datalist id="category-options"></datalist>
+    </div>
+    <div class="control-group field-group">
+      <label class="field-toggle"><input type="checkbox" id="sc-body" checked>正文</label>
+      <label class="field-toggle"><input type="checkbox" id="sc-cmt">评论</label>
+      <label class="field-toggle"><input type="checkbox" id="sc-uid">用户ID</label>
+      <label class="field-toggle"><input type="checkbox" id="sc-post">帖子号</label>
+      <label class="field-toggle"><input type="checkbox" id="sc-name">昵称</label>
+    </div>
+    <div class="control-group match-group">
+      <select class="match-select" id="id-match" aria-label="用户ID匹配方式"><option value="exact">用户ID精确</option><option value="contains">用户ID包含</option></select>
+      <select class="match-select" id="name-match" aria-label="昵称匹配方式"><option value="exact">昵称精确</option><option value="contains">昵称包含</option></select>
+    </div>
   </div>
 </div>
-<div class="search-progress" id="search-progress"><span></span></div>
 
 <div id="results"><div class="loading">输入关键词后点击搜索</div></div>
 <div class="pagination" id="pager"></div>
@@ -154,6 +190,23 @@ function startSearch() {
   doSearch();
 }
 
+function parseJsonResponse(response) {
+  return response.text().then(function(text) {
+    var contentType = response.headers.get('content-type') || '';
+    if (!response.ok) {
+      throw new Error('HTTP ' + response.status + ': ' + (text || response.statusText));
+    }
+    if (contentType.indexOf('application/json') < 0) {
+      throw new Error(text || '服务器返回了非 JSON 响应');
+    }
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      throw new Error('服务器返回了无法解析的数据');
+    }
+  });
+}
+
 function saveAdminPage() {
   var results = document.getElementById('results');
   if (!results || results.querySelector('.loading')) return;
@@ -174,7 +227,6 @@ function goAdminPage(page) {
     results.innerHTML = cached.html;
     results._data = cached.data;
     commentsLoaded = Object.assign({}, cached.commentsLoaded);
-    updateAdminProgress(cached.data);
     renderPager(cached.data);
     window.scrollTo({top: 0, behavior: 'smooth'});
     return;
@@ -183,24 +235,14 @@ function goAdminPage(page) {
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
 
-function updateAdminProgress(data) {
-  var bar = document.getElementById('search-progress');
-  if (!data || data.pagination_mode !== 'cursor') {
-    bar.style.display = 'none';
-    return;
-  }
-  var pct = data.candidate_total > 0
-    ? Math.min(100, data.scanned * 100 / data.candidate_total) : 100;
-  bar.style.display = 'block';
-  bar.firstElementChild.style.width = pct.toFixed(1) + '%';
-}
-
 function doSearch() {
+  updateSearchMode();
   var q = document.getElementById('q').value.trim();
   currentKW = q ? q.split(/\s+/).filter(Boolean) : [];
   var sort = document.getElementById('sort').value;
   var date = document.getElementById('date').value;
   var identity = document.getElementById('identity').value;
+  var category = document.getElementById('category').value;
 
   var cursor = cursorPages[currentPage - 1] || {offset: 0, matchedBefore: 0};
   var params = [
@@ -211,12 +253,14 @@ function doSearch() {
   ];
   if (date) params.push('date=' + date);
   if (identity) params.push('identity=' + identity);
+  if (category) params.push('category=' + encodeURIComponent(category));
 
   // Build scope
   var scopes = [];
   if (document.getElementById('sc-body').checked) scopes.push('body');
   if (document.getElementById('sc-cmt').checked) scopes.push('cmt');
   if (document.getElementById('sc-uid').checked) scopes.push('uid');
+  if (document.getElementById('sc-post').checked) scopes.push('post');
   if (document.getElementById('sc-name').checked) scopes.push('name');
   if (scopes.length > 0) params.push('admin_fields=' + scopes.join(','));
   if (scopes.indexOf('uid') >= 0) params.push('id_match=' + document.getElementById('id-match').value);
@@ -229,7 +273,7 @@ function doSearch() {
   searchController = new AbortController();
 
   fetch('/api/search?' + params.join('&'), {signal: searchController.signal})
-    .then(r => r.json())
+    .then(parseJsonResponse)
     .then(data => {
       currentPage = data.page;
       paginationMode = data.pagination_mode || 'numbered';
@@ -242,7 +286,6 @@ function doSearch() {
           matchedBefore: data.matched_so_far
         };
       }
-      updateAdminProgress(data);
       renderPager(data);
     })
     .catch(e => {
@@ -267,11 +310,16 @@ function renderResults(data) {
   }
   var html = '';
   data.results.forEach(function(p, idx) {
-    var uid = p.show_user_id || '?';
-    var ruid = p.real_user_id || '0';
+    var hasAdminId = Object.prototype.hasOwnProperty.call(p, 'show_user_id');
+    var uid = hasAdminId ? (p.show_user_id || '?') : '未返回';
+    var ruid = Object.prototype.hasOwnProperty.call(p, 'real_user_id') ? String(p.real_user_id || '0') : null;
     var idTag = uid;
-    var postIdentity = (ruid === '0' || !ruid) ? '<span class="identity-pill anonymous">帖子匿名</span>' : '<span class="identity-pill real">帖子实名</span>';
-    if (ruid !== '0' && ruid !== uid) idTag += ' <span style="color:#8b0012">real:' + ruid + '</span>';
+    var postIdentity = ruid === null
+      ? '<span class="identity-pill unknown">ID未返回</span>'
+      : ((ruid === '0' || !ruid)
+        ? '<span class="identity-pill anonymous">帖子匿名</span>'
+        : '<span class="identity-pill real">帖子实名</span>');
+    if (ruid !== null && ruid !== '0' && ruid !== uid) idTag += ' <span style="color:#8b0012">real:' + ruid + '</span>';
     html += '<div class="result-row">';
     html += '<div class="top"><span class="uid">ID:' + idTag + postIdentity + '</span><span class="uname" style="color:#777">' + (p.user||'?') + '</span><span class="meta">' + (p.category||'?') + ' &middot; #' + p.id + ' &middot; ' + (p.time||'?').slice(0,16) + '</span></div>';
     html += '<div class="text">' + highlight(p.content||'') + '</div>';
@@ -336,10 +384,7 @@ function toggleCmts(idx) {
   if (commentsLoaded[idx]) return;
   panel.innerHTML = '<div class="loading">加载评论...</div>';
   fetch('/api/comments?id=' + encodeURIComponent(p.id))
-    .then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    })
+    .then(parseJsonResponse)
     .then(function(payload) {
       panel.innerHTML = renderComments(panel, payload.comment_list || []);
       commentsLoaded[idx] = true;
@@ -358,10 +403,7 @@ function renderPager(data) {
     h += '<button ' + (!data.has_more ? 'disabled' : '') +
       ' onclick="goAdminPage(' + (data.page + 1) + ')">下一页</button>';
     h += '<span style="color:#888;font-size:0.8em;margin-left:8px;">' +
-      (data.total_exact
-        ? '共 ' + data.total + ' 条'
-        : '已找到 ' + data.matched_so_far + ' 条 · 已检查 ' +
-          data.scanned + ' / ' + data.candidate_total) +
+      (data.total_exact ? '共 ' + data.total + ' 条' : '本页 ' + (data.results || []).length + ' 条') +
       '</span>';
     document.getElementById('pager').innerHTML = h;
     return;
@@ -385,6 +427,77 @@ document.getElementById('q').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') startSearch();
 });
 
+function updateSearchMode() {
+  var parts = [];
+  if (document.getElementById('sc-body').checked) parts.push('正文');
+  if (document.getElementById('sc-cmt').checked) parts.push('评论');
+  if (document.getElementById('sc-uid').checked) {
+    parts.push('用户ID' + (document.getElementById('id-match').value === 'contains' ? '包含' : '精确'));
+  }
+  if (document.getElementById('sc-post').checked) parts.push('帖子号精确');
+  if (document.getElementById('sc-name').checked) {
+    parts.push('昵称' + (document.getElementById('name-match').value === 'contains' ? '包含' : '精确'));
+  }
+  document.getElementById('search-mode').textContent = parts.length ? parts.join(' + ') : '未选择字段';
+  document.getElementById('id-match').classList.toggle('active', document.getElementById('sc-uid').checked);
+  document.getElementById('name-match').classList.toggle('active', document.getElementById('sc-name').checked);
+}
+
+document.getElementById('sc-uid').addEventListener('change', function() {
+  if (this.checked) {
+    document.getElementById('sc-body').checked = false;
+    document.getElementById('sc-name').checked = false;
+    document.getElementById('sc-post').checked = false;
+  }
+  updateSearchMode();
+});
+
+document.getElementById('sc-post').addEventListener('change', function() {
+  if (this.checked) {
+    document.getElementById('sc-body').checked = false;
+    document.getElementById('sc-cmt').checked = false;
+    document.getElementById('sc-uid').checked = false;
+    document.getElementById('sc-name').checked = false;
+  }
+  updateSearchMode();
+});
+
+document.getElementById('sc-name').addEventListener('change', function() {
+  if (this.checked) {
+    document.getElementById('sc-body').checked = false;
+    document.getElementById('sc-uid').checked = false;
+    document.getElementById('sc-post').checked = false;
+  }
+  updateSearchMode();
+});
+
+['sc-body', 'sc-cmt', 'id-match', 'name-match'].forEach(function(id) {
+  document.getElementById(id).addEventListener('change', updateSearchMode);
+});
+['sort', 'date', 'identity'].forEach(function(id) {
+  document.getElementById(id).addEventListener('change', startSearch);
+});
+var categoryTimer = null;
+document.getElementById('category').addEventListener('input', function() {
+  clearTimeout(categoryTimer);
+  categoryTimer = setTimeout(startSearch, 350);
+});
+updateSearchMode();
+
+fetch('/api/categories')
+  .then(parseJsonResponse)
+  .then(function(data) {
+    var sel = document.getElementById('category-options');
+    var counts = data.category_counts || {};
+    (data.categories || []).forEach(function(category) {
+      var opt = document.createElement('option');
+      opt.value = category;
+      if (counts[category]) opt.label = category + ' · ' + counts[category];
+      sel.appendChild(opt);
+    });
+  })
+  .catch(function() {});
+
 // ── AI Test ──
 function aiEscape(value) {
   return String(value == null ? '' : value)
@@ -406,7 +519,7 @@ function aiTest() {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({query: q})
   })
-    .then(function(r) { return r.json(); })
+    .then(parseJsonResponse)
     .then(function(d) {
       if (d.ok) {
         var answer = d.answer || {overview: d.summary || '', findings: [], caveat: ''};

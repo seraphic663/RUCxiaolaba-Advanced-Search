@@ -8,6 +8,7 @@ import os
 import socket
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -401,7 +402,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method):
         _, path = self.parse_query()
-        if dispatch(self, method, path):
+        try:
+            if dispatch(self, method, path):
+                return
+        except Exception as exc:
+            print(f"[error] {method} {path}: {exc}", flush=True)
+            traceback.print_exc()
+            self.serve_json(
+                {"ok": False, "error": "服务器处理请求失败，请稍后重试"},
+                code=500,
+            )
             return
         self.send_response(404)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
