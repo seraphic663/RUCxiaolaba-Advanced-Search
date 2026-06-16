@@ -42,7 +42,7 @@ def search(handler):
     admin_fields = None
     id_match = name_match = "exact"
     if admin:
-        allowed = {"body", "cmt", "uid", "name"}
+        allowed = {"body", "cmt", "uid", "name", "post"}
         raw_fields = params.get("admin_fields", [""])[0].strip()
         admin_fields = (
             {field for field in raw_fields.split(",") if field in allowed}
@@ -116,7 +116,12 @@ def search(handler):
 
 
 def categories(handler):
-    handler.serve_json(handler.context.search.categories())
+    params, _ = handler.parse_query()
+    try:
+        min_count = max(1, min(int(params.get("min_count", ["200"])[0]), 1000000))
+    except ValueError:
+        min_count = 200
+    handler.serve_json(handler.context.search.categories(min_count=min_count))
 
 
 def comments(handler):

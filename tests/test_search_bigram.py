@@ -117,6 +117,18 @@ class BigramSearchTest(unittest.TestCase):
         self.assertEqual([item["id"] for item in body["results"]], ["1"])
         self.assertEqual([item["id"] for item in comments["results"]], ["2"])
 
+    def test_post_id_is_explicit_admin_field(self) -> None:
+        public = self.search("2", scope="content")
+        body = self.search("2", admin=True, admin_fields={"body"})
+        uid = self.search("2", admin=True, admin_fields={"uid"}, id_match="contains")
+        post_exact = self.search("2", admin=True, admin_fields={"post"})
+        post_partial = self.search("1", admin=True, admin_fields={"post"})
+        self.assertEqual(public["results"], [])
+        self.assertEqual(body["results"], [])
+        self.assertEqual([item["id"] for item in uid["results"]], ["2"])
+        self.assertEqual([item["id"] for item in post_exact["results"]], ["2"])
+        self.assertEqual([item["id"] for item in post_partial["results"]], ["1"])
+
     def test_one_character_query_falls_back_to_like(self) -> None:
         result = self.search("猫", scope="content")
         self.assertEqual(result["search_backend"], "like")
@@ -139,10 +151,12 @@ class BigramSearchTest(unittest.TestCase):
             admin_fields={"uid"},
             id_match="contains",
         )
-        comment_exact = self.search("comment-id", admin=True, admin_fields={"uid"})
+        comment_exact_without_cmt = self.search("comment-id", admin=True, admin_fields={"uid"})
+        comment_exact = self.search("comment-id", admin=True, admin_fields={"uid", "cmt"})
         self.assertEqual([item["id"] for item in exact["results"]], ["2"])
         self.assertEqual(partial_exact["results"], [])
         self.assertEqual({item["id"] for item in partial_contains["results"]}, {"1", "2", "3"})
+        self.assertEqual(comment_exact_without_cmt["results"], [])
         self.assertEqual([item["id"] for item in comment_exact["results"]], ["2"])
 
     def test_admin_name_defaults_to_exact_and_can_use_contains(self) -> None:
@@ -154,10 +168,12 @@ class BigramSearchTest(unittest.TestCase):
             admin_fields={"name"},
             name_match="contains",
         )
-        reply_exact = self.search("回复昵称", admin=True, admin_fields={"name"})
+        reply_exact_without_cmt = self.search("回复昵称", admin=True, admin_fields={"name"})
+        reply_exact = self.search("回复昵称", admin=True, admin_fields={"name", "cmt"})
         self.assertEqual([item["id"] for item in exact["results"]], ["2"])
         self.assertEqual(partial_exact["results"], [])
         self.assertEqual([item["id"] for item in partial_contains["results"]], ["2"])
+        self.assertEqual(reply_exact_without_cmt["results"], [])
         self.assertEqual([item["id"] for item in reply_exact["results"]], ["2"])
 
     def test_public_search_never_uses_admin_identity_fields(self) -> None:

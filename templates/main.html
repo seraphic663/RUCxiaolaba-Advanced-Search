@@ -16,12 +16,12 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .header .admin-link { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: rgba(255,255,255,0.4); text-decoration: none; font-size: 0.85em; }
 .header .admin-link:hover { color: #fff; }
 /* Search */
-.search-wrap { max-width: 760px; margin: 16px auto; padding: 0 16px; }
+.search-wrap { max-width: 760px; margin: 14px auto 10px; padding: 0 16px; }
 .search-wrap input { width: 100%; padding: 12px 16px; font-size: 16px; border: 2px solid #ddd; border-radius: 12px; outline: none; transition: border-color .2s; }
 .search-wrap input:focus { border-color: #8b0012; }
 
 /* Sort bar */
-.sort-bar { max-width: 760px; margin: 0 auto 12px; padding: 0 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sort-bar { max-width: 760px; margin: 0 auto 8px; padding: 0 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .sort-bar button { padding: 6px 14px; border: 1px solid #ddd; border-radius: 16px; background: #fff; cursor: pointer; font-size: 0.85em; color: #666; transition: all .2s; }
 .sort-bar button:hover { border-color: #8b0012; color: #8b0012; }
 .sort-bar button.active { background: #8b0012; color: #fff; border-color: #8b0012; }
@@ -56,17 +56,15 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .comment-toggle-inline:hover { text-decoration: underline; }
 
 /* Comments */
-.post .comments-wrap { margin-top: 8px; border-left: 3px solid #f0f0f0; padding-left: 14px; }
-.cmt { padding: 8px 0; border-bottom: 1px solid #f5f5f5; font-size: 0.88em; }
+.post .comments-wrap { margin-top: 8px; border-left: 2px solid #eee; padding-left: 12px; }
+.cmt { padding: 7px 0; border-bottom: 1px solid #f5f5f5; font-size: 0.87em; }
 .cmt:last-child { border-bottom: none; }
 .cmt .cmt-meta { color: #999; font-size: 0.82em; margin-bottom: 3px; }
 .cmt .cmt-meta .op-tag { color: #8b0012; font-size: 0.85em; }
 .cmt .cmt-text { color: #444; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.cmt .replies { margin-left: 14px; border-left: 2px solid #eee; padding-left: 12px; margin-top: 4px; }
-.cmt .reply { padding: 5px 0; font-size: 0.95em; }
+.cmt .replies { margin-left: 10px; border-left: 1px solid #eee; padding-left: 10px; margin-top: 4px; }
+.cmt .reply { padding: 4px 0; font-size: 0.95em; }
 .loading { text-align: center; color: #999; padding: 20px; font-size: 0.9em; }
-.search-progress { display:none; height:3px; background:#e8e8e8; overflow:hidden; }
-.search-progress span { display:block; height:100%; width:0; background:#94151c; transition:width .2s ease; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #ddd; border-top-color: #8b0012; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -81,10 +79,14 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .pagination .total-pages { color: #999; font-size: 0.85em; }
 
 /* Filter bar */
-.filter-bar { max-width: 760px; margin: 0 auto 12px; padding: 0 16px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.filter-bar { max-width: 760px; margin: 0 auto 12px; padding: 0 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .filter-bar label { font-size: 0.8em; color: #888; white-space: nowrap; }
-.filter-bar select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; font-size: 0.82em; color: #333; cursor: pointer; outline: none; }
-.filter-bar select:focus { border-color: #8b0012; }
+.filter-bar select,
+.filter-bar input { padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; font-size: 0.82em; color: #333; outline: none; }
+.filter-bar select { cursor: pointer; }
+.filter-bar input { width: 150px; }
+.filter-bar select:focus,
+.filter-bar input:focus { border-color: #8b0012; }
 
 /* Empty state */
 .empty { text-align: center; color: #999; padding: 60px 20px; }
@@ -209,13 +211,11 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
   <button id="btn-score" onclick="setSort('score')">综合</button>
   <span class="count-text" id="count-text"></span>
 </div>
-<div class="search-progress" id="search-progress"><span></span></div>
 
 <div class="filter-bar">
   <label>分类:</label>
-  <select id="filter-category" onchange="doSearch()">
-    <option value="">全部</option>
-  </select>
+  <input type="text" id="filter-category" list="category-options" placeholder="全部分类 / 输入tag">
+  <datalist id="category-options"></datalist>
   <label>时间:</label>
   <select id="filter-date" onchange="doSearch()">
     <option value="1d">最近 24 小时</option>
@@ -259,6 +259,23 @@ function escapeHtml(s) {
   let d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function parseJsonResponse(response) {
+  return response.text().then(function(text) {
+    var contentType = response.headers.get('content-type') || '';
+    if (!response.ok) {
+      throw new Error('HTTP ' + response.status + ': ' + (text || response.statusText));
+    }
+    if (contentType.indexOf('application/json') < 0) {
+      throw new Error(text || '服务器返回了非 JSON 响应');
+    }
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      throw new Error('服务器返回了无法解析的数据');
+    }
+  });
 }
 
 function highlightText(text, keywords) {
@@ -403,10 +420,7 @@ function loadComments(index, postId) {
   wrap.innerHTML = '<div class="loading"><span class="spinner"></span>加载评论...</div>';
 
   fetch('/api/comments?id=' + encodeURIComponent(postId))
-    .then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    })
+    .then(parseJsonResponse)
     .then(function(data) {
       var cmts = data.comment_list || [];
       if (cmts.length === 0) {
@@ -519,20 +533,7 @@ function restorePage(page) {
   _contentState = Object.assign({}, cached.contentState);
   _commentsLoaded = Object.assign({}, cached.commentsLoaded);
   document.getElementById('count-text').textContent = cached.count;
-  updateProgress(cached.data);
   renderPagination(cached.data);
-}
-
-function updateProgress(data) {
-  var bar = document.getElementById('search-progress');
-  if (!data || data.pagination_mode !== 'cursor') {
-    bar.style.display = 'none';
-    return;
-  }
-  var pct = data.candidate_total > 0
-    ? Math.min(100, data.scanned * 100 / data.candidate_total) : 100;
-  bar.style.display = 'block';
-  bar.firstElementChild.style.width = pct.toFixed(1) + '%';
 }
 
 function getFilterParams() {
@@ -561,7 +562,7 @@ function fetchResults() {
     getFilterParams();
 
   fetch(url, { signal: searchController.signal })
-    .then(r => r.json())
+    .then(parseJsonResponse)
     .then(data => {
       paginationMode = data.pagination_mode || 'numbered';
       totalPages = data.total_pages || currentPage;
@@ -569,8 +570,7 @@ function fetchResults() {
 
       if (paginationMode === 'cursor' && !data.total_exact) {
         document.getElementById('count-text').textContent =
-          '已找到 ' + data.matched_so_far + ' 条 · 已检查 ' +
-          data.scanned + ' / ' + data.candidate_total;
+          '本页 ' + (data.results || []).length + ' 条';
       } else {
         document.getElementById('count-text').textContent =
           '共 ' + (data.total || 0) + ' 条结果';
@@ -592,7 +592,6 @@ function fetchResults() {
           matchedBefore: data.matched_so_far
         };
       }
-      updateProgress(data);
       renderPagination(data);
     })
     .catch(err => {
@@ -610,6 +609,9 @@ function renderPagination(data) {
     html += '<span class="page-info">第 ' + currentPage + ' 页</span>';
     html += '<button ' + (!data.has_more ? 'disabled' : '') +
       ' onclick="goToPage(' + (currentPage + 1) + ')">下一页 &#187;</button>';
+    if (data.total_exact) {
+      html += '<span class="total-pages">共 ' + data.total + ' 条</span>';
+    }
     pgEl.innerHTML = html;
     return;
   }
@@ -635,15 +637,22 @@ document.getElementById('q').addEventListener('input', function() {
   this._timer = setTimeout(doSearch, 250);
 });
 
-// Load category list
+var categoryTimer = null;
+document.getElementById('filter-category').addEventListener('input', function() {
+  clearTimeout(categoryTimer);
+  categoryTimer = setTimeout(doSearch, 350);
+});
+
+// Load frequent category suggestions. Rare tags can still be typed manually.
 fetch('/api/categories')
-  .then(function(r) { return r.json(); })
+  .then(parseJsonResponse)
   .then(function(data) {
-    var sel = document.getElementById('filter-category');
+    var sel = document.getElementById('category-options');
+    var counts = data.category_counts || {};
     (data.categories || []).forEach(function(c) {
       var opt = document.createElement('option');
       opt.value = c;
-      opt.textContent = c;
+      if (counts[c]) opt.label = c + ' · ' + counts[c];
       sel.appendChild(opt);
     });
   })
@@ -676,7 +685,7 @@ function checkAiStatus() {
   fetch('/api/ai/status')
     .then(function(r) {
       if (r.status === 401) { aiActivated = false; _aiUpdateBar(); return; }
-      return r.json();
+      return parseJsonResponse(r);
     })
     .then(function(d) {
       if (d && d.ok) {
@@ -698,7 +707,7 @@ function aiActivate() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({code: code})
   })
-    .then(function(r) { return r.json(); })
+    .then(parseJsonResponse)
     .then(function(d) {
       if (d.ok) {
         aiActivated = true;
@@ -729,7 +738,7 @@ function aiSearch() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({query: query})
   })
-    .then(function(r) { return r.json(); })
+    .then(parseJsonResponse)
     .then(function(d) {
       if (d.ok) {
         _aiPostData = {};
@@ -829,7 +838,7 @@ function toggleAiComments(index) {
   if (_aiCommentsLoaded[index]) return;
   wrap.innerHTML = '<div class="loading"><span class="spinner"></span>加载评论...</div>';
   fetch('/api/comments?id=' + encodeURIComponent(data.postId))
-    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(parseJsonResponse)
     .then(function(payload) {
       wrap.innerHTML = renderComments(payload.comment_list || [], []);
       _aiCommentsLoaded[index] = true;
