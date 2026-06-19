@@ -2,6 +2,8 @@
 
 中国人民大学 RUC 小喇叭匿名论坛的 SQLite 数据库爬取与搜索工具。
 
+线上地址：[https://rucxlb.up.railway.app](https://rucxlb.up.railway.app)
+
 当前版本是 DB-only 架构：
 
 - 网站只读取 `data/posts.db`
