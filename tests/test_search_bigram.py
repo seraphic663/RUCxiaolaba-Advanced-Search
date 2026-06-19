@@ -159,6 +159,27 @@ class BigramSearchTest(unittest.TestCase):
         self.assertEqual(comment_exact_without_cmt["results"], [])
         self.assertEqual([item["id"] for item in comment_exact["results"]], ["2"])
 
+    def test_admin_id_uses_body_and_comment_as_locations(self) -> None:
+        post_only = self.search(
+            "comment-id", admin=True, admin_fields={"body", "uid"}
+        )
+        comment_only = self.search(
+            "comment-id", admin=True, admin_fields={"cmt", "uid"}
+        )
+        both = self.search(
+            "comment-id", admin=True, admin_fields={"body", "cmt", "uid"}
+        )
+        self.assertEqual(post_only["results"], [])
+        self.assertEqual([item["id"] for item in comment_only["results"]], ["2"])
+        self.assertEqual([item["id"] for item in both["results"]], ["2"])
+        self.assertEqual(both["search_backend"], "like")
+
+    def test_identity_mode_does_not_or_text_content(self) -> None:
+        result = self.search(
+            "食堂", admin=True, admin_fields={"body", "cmt", "uid"}
+        )
+        self.assertEqual(result["results"], [])
+
     def test_admin_name_defaults_to_exact_and_can_use_contains(self) -> None:
         exact = self.search("测试昵称", admin=True, admin_fields={"name"})
         partial_exact = self.search("昵称", admin=True, admin_fields={"name"})
