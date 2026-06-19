@@ -405,13 +405,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if dispatch(self, method, path):
                 return
+        except (BrokenPipeError, ConnectionResetError):
+            # The client or reverse proxy gave up before a slow response was
+            # written. The request is already over; do not emit a traceback or
+            # attempt a second response on the closed socket.
+            print(f"[disconnect] {method} {path}", flush=True)
+            return
         except Exception as exc:
             print(f"[error] {method} {path}: {exc}", flush=True)
             traceback.print_exc()
-            self.serve_json(
-                {"ok": False, "error": "服务器处理请求失败，请稍后重试"},
-                code=500,
-            )
+            try:
+                self.serve_json(
+                    {"ok": False, "error": "服务器处理请求失败，请稍后重试"},
+                    code=500,
+                )
+            except (BrokenPipeError, ConnectionResetError):
+                print(f"[disconnect] {method} {path} while reporting error", flush=True)
             return
         self.send_response(404)
         self.send_header("Content-Type", "text/plain; charset=utf-8")

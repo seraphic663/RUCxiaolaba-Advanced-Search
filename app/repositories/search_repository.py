@@ -12,6 +12,7 @@ from app.repositories.connections import connect_readonly
 
 BIGRAM_TOKEN_RUN = re.compile(r"[0-9A-Za-z_\u3400-\u4dbf\u4e00-\u9fff]+")
 BIGRAM_BOUNDARY_TOKEN = "zzbigramsegmentboundaryzz"
+ADMIN_IDENTITY_FIELDS = {"uid", "name", "post"}
 
 
 def _safe_int(value, default=0) -> int:
@@ -92,6 +93,10 @@ class SearchRepository:
         args: list = []
         keywords = (request.text or "").lower().split()
         fields = set(request.admin_fields)
+        identity_mode = request.admin and bool(fields & ADMIN_IDENTITY_FIELDS)
+        has_location = bool(fields & {"body", "cmt"})
+        search_posts = "body" in fields or not has_location
+        search_comments = "cmt" in fields
         expression = (
             fts_query(keywords)
             if not use_bigram
@@ -111,7 +116,9 @@ class SearchRepository:
                 token_query = bigram_query(keyword) if use_bigram else None
                 if request.admin:
                     field_clauses: list[str] = []
-                    if "body" in fields:
+                    # body/cmt are locations when an identity field is selected.
+                    # They are text fields only for a plain text search.
+                    if "body" in fields and not identity_mode:
                         if token_query:
                             field_clauses.append(
                                 "p.id in ("
@@ -124,7 +131,7 @@ class SearchRepository:
                         else:
                             field_clauses.append("lower(p.content) like ?")
                             args.append(like)
-                    if "cmt" in fields:
+                    if "cmt" in fields and not identity_mode:
                         if token_query:
                             field_clauses.append(
                                 "p.id in ("
@@ -143,35 +150,41 @@ class SearchRepository:
                     if "uid" in fields:
                         operator = "like" if request.id_match == "contains" else "="
                         value = like if operator == "like" else keyword
-                        id_parts = [
-                            f"p.show_user_id {operator} ?",
-                            f"p.real_user_id {operator} ?",
-                        ]
-                        args.extend([value] * 2)
-                        if "cmt" in fields:
+                        id_parts = []
+                        if search_posts:
+                            id_parts.extend([
+                                f"p.show_user_id {operator} ?",
+                                f"p.real_user_id {operator} ?",
+                            ])
+                            args.extend([value] * 2)
+                        if search_comments:
                             id_parts.append(
                                 "p.id in (select post_id from comments where "
                                 f"show_user_id {operator} ? or real_user_id {operator} ? or "
                                 f"reply_show_user_id {operator} ?)"
                             )
                             args.extend([value] * 3)
-                        field_clauses.append("(" + " or ".join(id_parts) + ")")
+                        if id_parts:
+                            field_clauses.append("(" + " or ".join(id_parts) + ")")
                     if "post" in fields:
                         field_clauses.append("p.id = ?")
                         args.append(keyword)
                     if "name" in fields:
                         operator = "like" if request.name_match == "contains" else "="
                         value = like if operator == "like" else keyword
-                        name_parts = [f"lower(p.user_name) {operator} ?"]
-                        args.append(value)
-                        if "cmt" in fields:
+                        name_parts = []
+                        if search_posts:
+                            name_parts.append(f"lower(p.user_name) {operator} ?")
+                            args.append(value)
+                        if search_comments:
                             name_parts.append(
                                 "p.id in (select post_id from comments where "
                                 f"lower(show_user_name) {operator} ? or "
                                 f"lower(reply_show_user_name) {operator} ?)"
                             )
                             args.extend([value] * 2)
-                        field_clauses.append("(" + " or ".join(name_parts) + ")")
+                        if name_parts:
+                            field_clauses.append("(" + " or ".join(name_parts) + ")")
                     clauses.append("(" + " or ".join(field_clauses or ["0"]) + ")")
                 elif token_query:
                     kind_filter = (
@@ -265,10 +278,15 @@ class SearchRepository:
 
     def _plan(self, request: SearchQuery) -> tuple[bool, bool, str]:
         keywords = (request.text or "").lower().split()
+        identity_mode = request.admin and bool(
+            set(request.admin_fields) & ADMIN_IDENTITY_FIELDS
+        )
         can_use_bigram = any(
             bigram_query(keyword) is not None for keyword in keywords
         )
-        use_bigram = can_use_bigram and self.has_bigram_index()
+        use_bigram = (
+            not identity_mode and can_use_bigram and self.has_bigram_index()
+        )
         use_fts = (
             not use_bigram
             and request.scope == "all"
@@ -316,6 +334,10 @@ class SearchRepository:
         if not keywords:
             return True
         fields = set(request.admin_fields)
+        identity_mode = bool(fields & ADMIN_IDENTITY_FIELDS)
+        has_location = bool(fields & {"body", "cmt"})
+        search_posts = "body" in fields or not has_location
+        search_comments = "cmt" in fields
         content = str(row["content"] or "").lower()
         post_id = str(row["id"] or "").lower()
         user_name = str(row["user_name"] or "").lower()
@@ -337,16 +359,16 @@ class SearchRepository:
                 continue
 
             matched = False
-            if "body" in fields:
+            if "body" in fields and not identity_mode:
                 matched = keyword in content
-            if not matched and "cmt" in fields:
+            if not matched and "cmt" in fields and not identity_mode:
                 matched = any(
                     keyword in str(item["detail"] or "").lower()
                     for item in comments
                 )
             if not matched and "uid" in fields:
-                values = [post_show_id, post_real_id]
-                if "cmt" in fields:
+                values = [post_show_id, post_real_id] if search_posts else []
+                if search_comments:
                     for item in comments:
                         values.extend(
                             [
@@ -362,8 +384,8 @@ class SearchRepository:
             if not matched and "post" in fields:
                 matched = keyword == post_id
             if not matched and "name" in fields:
-                values = [user_name]
-                if "cmt" in fields:
+                values = [user_name] if search_posts else []
+                if search_comments:
                     for item in comments:
                         values.extend(
                             [
@@ -387,7 +409,8 @@ class SearchRepository:
         if not request.admin:
             return True
         fields = set(request.admin_fields)
-        exact_identity_only = fields <= {"uid", "name", "post"} and (
+        selected_identity_fields = fields & ADMIN_IDENTITY_FIELDS
+        exact_identity_only = bool(selected_identity_fields) and (
             ("uid" not in fields or request.id_match == "exact")
             and ("name" not in fields or request.name_match == "exact")
         )
@@ -498,9 +521,12 @@ class SearchRepository:
         candidate_where, candidate_args = self._candidate_where(request)
         order_by = self._order_by(request.sort_by)
         results: list[dict] = []
-        need_comments = request.scope == "all" or (
-            request.admin
-            and bool(set(request.admin_fields) & {"cmt", "uid", "name"})
+        fields = set(request.admin_fields)
+        identity_mode = request.admin and bool(fields & ADMIN_IDENTITY_FIELDS)
+        need_comments = (
+            request.scope == "all"
+            if not identity_mode
+            else "cmt" in fields
         )
         default_batch = self.SCAN_BATCH_SIZE if need_comments else 5_000
         max_batch = 900 if need_comments else 5_000
