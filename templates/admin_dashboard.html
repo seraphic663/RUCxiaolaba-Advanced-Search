@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>管理面板 — RUC小喇叭</title>
+<script>
+(function() {
+  var theme = localStorage.getItem('rucxlb-theme') || 'light';
+  document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
+})();
+</script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f5f5f5; color: #222; min-height: 100vh; }
@@ -12,6 +18,8 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .header .nav { display: flex; gap: 14px; align-items: center; font-size: 0.86em; flex-wrap: wrap; }
 .header .nav a { color: rgba(255,255,255,.78); text-decoration: none; }
 .header .nav a:hover { color: #fff; }
+.theme-toggle { width: 30px; height: 30px; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; background: transparent; color: rgba(255,255,255,.82); cursor: pointer; font-size: 17px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+.theme-toggle:hover { color: #fff; border-color: rgba(255,255,255,.65); }
 .stats { max-width: 1040px; margin: 0 auto 14px; padding: 0 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
 .stat-card { background: #fff; padding: 12px; border-radius: 8px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,.06); border: 1px solid #eee; }
 .stat-card .num { font-size: 1.55em; color: #8b0012; font-weight: bold; }
@@ -118,6 +126,145 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 .ai-evidence-list { margin-top: 10px; }
 .ai-evidence-list .result-row { cursor: default; }
 .ai-reference { margin-top: 6px; padding: 6px 9px; border-left: 3px solid #e4c3c7; background: #fafafa; color: #555; font-size: 0.84em; line-height: 1.55; }
+
+html[data-theme="light"] body { background: #f4f1e8; color: #2f2d29; }
+html[data-theme="light"] .filters,
+html[data-theme="light"] .result-row,
+html[data-theme="light"] .stat-card,
+html[data-theme="light"] .ai-card,
+html[data-theme="light"] .loading,
+html[data-theme="light"] .no-results { background: #fffdf8; border-color: #e1dbcf; }
+html[data-theme="light"] .filters input[type=text],
+html[data-theme="light"] .filters select,
+html[data-theme="light"] .ai-row input,
+html[data-theme="light"] .pagination button,
+html[data-theme="light"] .field-toggle { background: #fffdf8; border-color: #d9d3c7; }
+html[data-theme="light"] .result-row .stats-row,
+html[data-theme="light"] .cmt,
+html[data-theme="light"] .ai-caveat { border-color: #e8e2d7; }
+html[data-theme="light"] .comments-panel,
+html[data-theme="light"] .cmt .nested { border-color: #ded8cc; }
+html[data-theme="light"] .ai-debug,
+html[data-theme="light"] .ai-reference { background: #f7f3ea; }
+
+html[data-theme="dark"] { color-scheme: dark; }
+html[data-theme="dark"] body { background: #111315; color: #e8e8e8; }
+html[data-theme="dark"] .header { background: #65000d; }
+html[data-theme="dark"] .filters,
+html[data-theme="dark"] .result-row,
+html[data-theme="dark"] .stat-card,
+html[data-theme="dark"] .ai-card,
+html[data-theme="dark"] .loading,
+html[data-theme="dark"] .no-results { background: #1a1d20; border-color: #30363c; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+html[data-theme="dark"] .filters input[type=text],
+html[data-theme="dark"] .filters select,
+html[data-theme="dark"] .ai-row input,
+html[data-theme="dark"] .pagination button { background: #1b1f23; border-color: #3b4249; color: #e8e8e8; }
+html[data-theme="dark"] input::placeholder { color: #8d949b; }
+html[data-theme="dark"] .field-toggle { background: #1b1f23; border-color: #3b4249; color: #c8cdd2; }
+html[data-theme="dark"] .field-toggle:has(input:checked) { background: #9d1c2d; border-color: #9d1c2d; color: #fff; }
+html[data-theme="dark"] .search-mode-pill { background: #3a1c21; color: #f0a5af; }
+html[data-theme="dark"] .result-row .text,
+html[data-theme="dark"] .cmt .cmt-text,
+html[data-theme="dark"] .ai-response { color: #e0e3e6; }
+html[data-theme="dark"] .result-row .top .meta,
+html[data-theme="dark"] .cmt .cmt-name,
+html[data-theme="dark"] .cmt .reply-to,
+html[data-theme="dark"] .post-stats-inline,
+html[data-theme="dark"] .result-row .stats-row { color: #929aa2; }
+html[data-theme="dark"] .result-row .stats-row,
+html[data-theme="dark"] .cmt,
+html[data-theme="dark"] .ai-caveat { border-color: #30363c; }
+html[data-theme="dark"] .comments-panel,
+html[data-theme="dark"] .cmt .nested { border-color: #3b4249; }
+html[data-theme="dark"] .identity-pill.anonymous { background: #2a2e33; color: #b5bbc1; }
+html[data-theme="dark"] .identity-pill.real { background: #173823; color: #8ed1a1; }
+html[data-theme="dark"] .identity-pill.unknown { background: #40351b; color: #e4c77d; }
+html[data-theme="dark"] .ai-debug,
+html[data-theme="dark"] .ai-reference { background: #202429; color: #cdd2d7; }
+html[data-theme="dark"] mark { background: #6d5413; color: #fff2bd; }
+
+html[data-theme="light"] {
+  --ui-bg: #f7f5ee;
+  --ui-surface: #fffdf7;
+  --ui-surface-2: #f1eee5;
+  --ui-border: #ddd7ca;
+  --ui-text: #2d2b27;
+  --ui-muted: #7b766d;
+  --ui-accent: #c15f3c;
+  --ui-accent-hover: #a84f32;
+  --ui-accent-soft: #f3e2d8;
+  --ui-shadow: rgba(71, 58, 43, .08);
+}
+html[data-theme="dark"] {
+  --ui-bg: #1f1e1b;
+  --ui-surface: #292824;
+  --ui-surface-2: #32312c;
+  --ui-border: #45423b;
+  --ui-text: #eee9df;
+  --ui-muted: #aaa398;
+  --ui-accent: #d97757;
+  --ui-accent-hover: #e58a6c;
+  --ui-accent-soft: #493028;
+  --ui-shadow: rgba(0, 0, 0, .28);
+}
+html[data-theme] body { background: var(--ui-bg); color: var(--ui-text); font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+html[data-theme] .header { background: var(--ui-surface-2); color: var(--ui-text); border-bottom: 1px solid var(--ui-border); box-shadow: inset 0 3px 0 var(--ui-accent); }
+html[data-theme] .header h2 { color: var(--ui-text); font-family: Georgia, "Songti SC", "STSong", serif; font-weight: 600; }
+html[data-theme] .header .nav,
+html[data-theme] .header .nav a { color: var(--ui-muted); }
+html[data-theme] .header .nav a:hover { color: var(--ui-accent); }
+html[data-theme] .theme-toggle { border-color: var(--ui-border); color: var(--ui-muted); background: var(--ui-surface); }
+html[data-theme] .theme-toggle:hover { border-color: var(--ui-accent); color: var(--ui-accent); }
+html[data-theme] .filters,
+html[data-theme] .result-row,
+html[data-theme] .stat-card,
+html[data-theme] .ai-card,
+html[data-theme] .loading,
+html[data-theme] .no-results { background: var(--ui-surface); border-color: var(--ui-border); box-shadow: 0 1px 4px var(--ui-shadow); }
+html[data-theme] .filters input[type=text],
+html[data-theme] .filters select,
+html[data-theme] .ai-row input,
+html[data-theme] .pagination button,
+html[data-theme] .field-toggle { background: var(--ui-surface); border-color: var(--ui-border); color: var(--ui-text); }
+html[data-theme] input::placeholder { color: var(--ui-muted); }
+html[data-theme] .filters input:focus,
+html[data-theme] .filters select:focus,
+html[data-theme] .ai-row input:focus { border-color: var(--ui-accent); }
+html[data-theme] .filters button,
+html[data-theme] .ai-row button,
+html[data-theme] .pagination button.active,
+html[data-theme] .field-toggle:has(input:checked) { background: var(--ui-accent); border-color: var(--ui-accent); color: #fff; }
+html[data-theme] .filters button:hover { background: var(--ui-accent-hover); }
+html[data-theme] .search-mode-pill { background: var(--ui-accent-soft); color: var(--ui-accent); }
+html[data-theme] .result-row { border-radius: 8px; }
+html[data-theme] .result-row:hover { border-color: var(--ui-accent); box-shadow: 0 2px 8px var(--ui-shadow); }
+html[data-theme] .result-row .top .uid,
+html[data-theme] .toggle-cmts,
+html[data-theme] .cmt .cmt-uid,
+html[data-theme] .ai-card h3,
+html[data-theme] .ai-findings strong,
+html[data-theme] .ai-response .ai-cited { color: var(--ui-accent); }
+html[data-theme] .result-row .text,
+html[data-theme] .cmt .cmt-text,
+html[data-theme] .ai-response { color: var(--ui-text); }
+html[data-theme] .result-row .top .meta,
+html[data-theme] .cmt .cmt-name,
+html[data-theme] .cmt .reply-to,
+html[data-theme] .post-stats-inline,
+html[data-theme] .result-row .stats-row,
+html[data-theme] .stat-card .label,
+html[data-theme] .loading,
+html[data-theme] .no-results { color: var(--ui-muted); }
+html[data-theme] .result-row .stats-row,
+html[data-theme] .cmt,
+html[data-theme] .ai-caveat,
+html[data-theme] .comments-panel,
+html[data-theme] .cmt .nested { border-color: var(--ui-border); }
+html[data-theme] .stat-card .num { color: var(--ui-accent); }
+html[data-theme] .ai-debug,
+html[data-theme] .ai-reference { background: var(--ui-surface-2); color: var(--ui-text); }
+html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var(--ui-surface)); color: var(--ui-text); }
 </style>
 </head>
 <body>
@@ -125,6 +272,7 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
   <h2>&#128274; 管理面板</h2>
   <div class="nav">
     <span style="color:rgba(255,255,255,.72);font-size:0.8em;" id="db-info">__CSV_SOURCE__ · __TOTAL__帖</span>
+    <button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="切换深色模式" title="切换深色模式"><span class="theme-icon">☾</span></button>
     <a href="/">返回搜索</a>
     <a href="/admin?logout=1">退出</a>
   </div>
@@ -175,6 +323,28 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
 </div>
 
 <script>
+function updateThemeButton() {
+  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  document.querySelectorAll('.theme-icon').forEach(function(icon) {
+    icon.textContent = dark ? '☀' : '☾';
+  });
+  document.querySelectorAll('.theme-toggle').forEach(function(button) {
+    var label = dark ? '切换浅色模式' : '切换深色模式';
+    button.setAttribute('aria-label', label);
+    button.setAttribute('title', label);
+  });
+}
+
+function toggleTheme() {
+  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var next = dark ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('rucxlb-theme', next);
+  updateThemeButton();
+}
+
+updateThemeButton();
+
 var currentPage = 1;
 var currentKW = [];
 var commentsLoaded = {};

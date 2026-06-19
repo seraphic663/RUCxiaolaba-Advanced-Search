@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RUC小喇叭 搜索</title>
+<script>
+(function() {
+  var theme = localStorage.getItem('rucxlb-theme') || 'light';
+  document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
+})();
+</script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f5f5f5; min-height: 100vh; }
@@ -15,6 +21,10 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .header .github-link svg { width: 18px; height: 18px; fill: currentColor; flex-shrink: 0; }
 .header .admin-link { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: rgba(255,255,255,0.4); text-decoration: none; font-size: 0.85em; }
 .header .admin-link:hover { color: #fff; }
+.header-actions { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 10px; }
+.header-actions .admin-link { position: static; transform: none; }
+.theme-toggle { width: 32px; height: 32px; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; background: transparent; color: rgba(255,255,255,.82); cursor: pointer; font-size: 18px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+.theme-toggle:hover { color: #fff; border-color: rgba(255,255,255,.65); }
 /* Search */
 .search-wrap { max-width: 760px; margin: 14px auto 10px; padding: 0 16px; }
 .search-wrap input { width: 100%; padding: 12px 16px; font-size: 16px; border: 2px solid #ddd; border-radius: 12px; outline: none; transition: border-color .2s; }
@@ -149,7 +159,8 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
   .header h1 { font-size: 1.2em; }
   .header p { font-size: 0.75em; }
   .header .github-link { position: static; justify-content: center; margin-bottom: 6px; transform: none; }
-  .header .admin-link { position: static; display: block; margin-top: 6px; transform: none; }
+  .header-actions { position: static; transform: none; justify-content: center; margin-top: 6px; }
+  .header .admin-link { position: static; display: block; margin-top: 0; transform: none; }
   .search-wrap { margin: 10px auto; }
   .search-wrap input { padding: 10px 14px; font-size: 15px; }
   .sort-bar { gap: 4px; }
@@ -159,6 +170,166 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
   .pagination { gap: 4px; }
   .pagination button { padding: 7px 12px; font-size: 0.82em; }
 }
+
+html[data-theme="light"] body { background: #f4f1e8; color: #2f2d29; }
+html[data-theme="light"] .search-wrap input,
+html[data-theme="light"] .filter-bar input,
+html[data-theme="light"] .filter-bar select,
+html[data-theme="light"] .pagination .page-input,
+html[data-theme="light"] .ai-bar-invite input,
+html[data-theme="light"] .ai-bar-query input { background: #fffdf8; border-color: #d9d3c7; color: #2f2d29; }
+html[data-theme="light"] .sort-bar button,
+html[data-theme="light"] .pagination button { background: #fffdf8; border-color: #d9d3c7; }
+html[data-theme="light"] .post,
+html[data-theme="light"] .ai-bar,
+html[data-theme="light"] .ai-result > .ai-answer-card { background: #fffdf8; border-color: #e1dbcf; }
+html[data-theme="light"] .post .post-content.collapsed::after { background: linear-gradient(transparent, #fffdf8); }
+html[data-theme="light"] .post-bottom-row,
+html[data-theme="light"] .cmt,
+html[data-theme="light"] .ai-caveat { border-color: #e8e2d7; }
+html[data-theme="light"] .post .comments-wrap,
+html[data-theme="light"] .cmt .replies { border-color: #ded8cc; }
+html[data-theme="light"] .ai-comment-reference { background: #f7f3ea; }
+
+html[data-theme="dark"] { color-scheme: dark; }
+html[data-theme="dark"] body { background: #111315; color: #e8e8e8; }
+html[data-theme="dark"] .header { background: #65000d; }
+html[data-theme="dark"] .search-wrap input,
+html[data-theme="dark"] .filter-bar input,
+html[data-theme="dark"] .filter-bar select,
+html[data-theme="dark"] .pagination .page-input,
+html[data-theme="dark"] .ai-bar-invite input,
+html[data-theme="dark"] .ai-bar-query input { background: #1b1f23; border-color: #3b4249; color: #ededed; }
+html[data-theme="dark"] .search-wrap input::placeholder,
+html[data-theme="dark"] input::placeholder { color: #8d949b; }
+html[data-theme="dark"] .sort-bar button,
+html[data-theme="dark"] .pagination button { background: #1b1f23; border-color: #3b4249; color: #c8cdd2; }
+html[data-theme="dark"] .sort-bar button.active { background: #9d1c2d; border-color: #9d1c2d; color: #fff; }
+html[data-theme="dark"] .post,
+html[data-theme="dark"] .ai-bar,
+html[data-theme="dark"] .ai-result > .ai-answer-card { background: #1a1d20; border-color: #30363c; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+html[data-theme="dark"] .post:hover { box-shadow: 0 2px 10px rgba(0,0,0,.45); }
+html[data-theme="dark"] .post .post-cat { background: #3a1c21; color: #f0a5af; }
+html[data-theme="dark"] .post .post-user,
+html[data-theme="dark"] .post .post-content,
+html[data-theme="dark"] .ai-summary,
+html[data-theme="dark"] .ai-overview { color: #e8e8e8; }
+html[data-theme="dark"] .post .post-time-right,
+html[data-theme="dark"] .post .post-id,
+html[data-theme="dark"] .sort-bar .count-text,
+html[data-theme="dark"] .post-stats-inline,
+html[data-theme="dark"] .cmt .cmt-meta,
+html[data-theme="dark"] .pagination .total-pages { color: #929aa2; }
+html[data-theme="dark"] .post .post-content.collapsed::after { background: linear-gradient(transparent, #1a1d20); }
+html[data-theme="dark"] .post-bottom-row,
+html[data-theme="dark"] .cmt,
+html[data-theme="dark"] .ai-caveat { border-color: #30363c; }
+html[data-theme="dark"] .post .comments-wrap,
+html[data-theme="dark"] .cmt .replies { border-color: #3b4249; }
+html[data-theme="dark"] .cmt .cmt-text { color: #cdd2d7; }
+html[data-theme="dark"] .pagination .page-info,
+html[data-theme="dark"] .filter-bar label,
+html[data-theme="dark"] .ai-caveat,
+html[data-theme="dark"] .ai-evidence-summary,
+html[data-theme="dark"] .ai-match-info { color: #a0a7ae; }
+html[data-theme="dark"] .ai-comment-reference { background: #202429; border-color: #7f3540; color: #cdd2d7; }
+html[data-theme="dark"] mark { background: #6d5413; color: #fff2bd; }
+html[data-theme="dark"] .spinner { border-color: #3b4249; border-top-color: #d66b79; }
+
+html[data-theme="light"] {
+  --ui-bg: #f7f5ee;
+  --ui-surface: #fffdf7;
+  --ui-surface-2: #f1eee5;
+  --ui-border: #ddd7ca;
+  --ui-text: #2d2b27;
+  --ui-muted: #7b766d;
+  --ui-accent: #c15f3c;
+  --ui-accent-hover: #a84f32;
+  --ui-accent-soft: #f3e2d8;
+  --ui-shadow: rgba(71, 58, 43, .08);
+}
+html[data-theme="dark"] {
+  --ui-bg: #1f1e1b;
+  --ui-surface: #292824;
+  --ui-surface-2: #32312c;
+  --ui-border: #45423b;
+  --ui-text: #eee9df;
+  --ui-muted: #aaa398;
+  --ui-accent: #d97757;
+  --ui-accent-hover: #e58a6c;
+  --ui-accent-soft: #493028;
+  --ui-shadow: rgba(0, 0, 0, .28);
+}
+html[data-theme] body { background: var(--ui-bg); color: var(--ui-text); font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
+html[data-theme] .header { background: var(--ui-surface-2); color: var(--ui-text); border-bottom: 1px solid var(--ui-border); box-shadow: inset 0 3px 0 var(--ui-accent); }
+html[data-theme] .header h1 { color: var(--ui-text); font-family: Georgia, "Songti SC", "STSong", serif; font-weight: 600; }
+html[data-theme] .header p,
+html[data-theme] .header .github-link,
+html[data-theme] .header .admin-link { color: var(--ui-muted); }
+html[data-theme] .header .github-link:hover,
+html[data-theme] .header .admin-link:hover { color: var(--ui-accent); }
+html[data-theme] .theme-toggle { border-color: var(--ui-border); color: var(--ui-muted); background: var(--ui-surface); }
+html[data-theme] .theme-toggle:hover { border-color: var(--ui-accent); color: var(--ui-accent); }
+html[data-theme] .search-wrap input,
+html[data-theme] .filter-bar input,
+html[data-theme] .filter-bar select,
+html[data-theme] .pagination .page-input,
+html[data-theme] .ai-bar-invite input,
+html[data-theme] .ai-bar-query input { background: var(--ui-surface); border-color: var(--ui-border); color: var(--ui-text); }
+html[data-theme] input::placeholder { color: var(--ui-muted); }
+html[data-theme] .search-wrap input:focus,
+html[data-theme] .filter-bar input:focus,
+html[data-theme] .filter-bar select:focus,
+html[data-theme] .pagination .page-input:focus,
+html[data-theme] .ai-bar-invite input:focus,
+html[data-theme] .ai-bar-query input:focus { border-color: var(--ui-accent); }
+html[data-theme] .sort-bar button,
+html[data-theme] .pagination button { background: var(--ui-surface); border-color: var(--ui-border); color: var(--ui-muted); border-radius: 8px; }
+html[data-theme] .sort-bar button:hover,
+html[data-theme] .pagination button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); }
+html[data-theme] .sort-bar button.active,
+html[data-theme] .ai-bar-invite button,
+html[data-theme] .ai-bar-query button { background: var(--ui-accent); border-color: var(--ui-accent); color: #fff; }
+html[data-theme] .ai-bar-invite button:hover { background: var(--ui-accent-hover); }
+html[data-theme] .post,
+html[data-theme] .ai-bar,
+html[data-theme] .ai-result > .ai-answer-card { background: var(--ui-surface); border-color: var(--ui-border); border-radius: 8px; box-shadow: 0 1px 4px var(--ui-shadow); }
+html[data-theme] .post .post-cat { background: var(--ui-accent-soft); color: var(--ui-accent); }
+html[data-theme] .post .post-user,
+html[data-theme] .post .post-content,
+html[data-theme] .ai-summary,
+html[data-theme] .ai-overview,
+html[data-theme] .cmt .cmt-text { color: var(--ui-text); }
+html[data-theme] .post .post-content.collapsed::after { background: linear-gradient(transparent, var(--ui-surface)); }
+html[data-theme] .post .post-time-right,
+html[data-theme] .post .post-id,
+html[data-theme] .sort-bar .count-text,
+html[data-theme] .post-stats-inline,
+html[data-theme] .cmt .cmt-meta,
+html[data-theme] .pagination .page-info,
+html[data-theme] .pagination .total-pages,
+html[data-theme] .filter-bar label,
+html[data-theme] .ai-bar-hint,
+html[data-theme] .ai-bar-status,
+html[data-theme] .ai-caveat,
+html[data-theme] .ai-evidence-summary,
+html[data-theme] .ai-match-info { color: var(--ui-muted); }
+html[data-theme] .post .expand-btn,
+html[data-theme] .comment-toggle-inline,
+html[data-theme] .ai-bar-label,
+html[data-theme] .ai-findings strong,
+html[data-theme] .ai-evidence-title,
+html[data-theme] .ai-cited,
+html[data-theme] .ai-cited a,
+html[data-theme] .info a { color: var(--ui-accent); }
+html[data-theme] .post-bottom-row,
+html[data-theme] .cmt,
+html[data-theme] .ai-caveat { border-color: var(--ui-border); }
+html[data-theme] .post .comments-wrap,
+html[data-theme] .cmt .replies { border-color: var(--ui-border); }
+html[data-theme] .ai-comment-reference { background: var(--ui-surface-2); border-color: var(--ui-accent); color: var(--ui-text); }
+html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var(--ui-surface)); color: var(--ui-text); }
+html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: var(--ui-accent); }
 </style>
 </head>
 <body>
@@ -169,7 +340,10 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
   </a>
   <h1>RUC小喇叭 搜索</h1>
   <p>共 __TOTAL__ 条帖子 &nbsp;·&nbsp; 时间跨度 __EARLIEST_TIME__ ~ __LATEST_TIME__ &nbsp;·&nbsp; 数据更新于 __CRAWL_TIME__</p>
-  <a class="admin-link" href="/admin" title="管理面板">&#128274; 管理</a>
+  <div class="header-actions">
+    <button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="切换深色模式" title="切换深色模式"><span class="theme-icon">☾</span></button>
+    <a class="admin-link" href="/admin" title="管理面板">&#128274; 管理</a>
+  </div>
 </div>
 
 <!-- ═══════════════ AI 智能搜索 ═══════════════ -->
@@ -237,6 +411,26 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 </div>
 
 <script>
+function updateThemeButton() {
+  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  document.querySelectorAll('.theme-icon').forEach(function(icon) {
+    icon.textContent = dark ? '☀' : '☾';
+  });
+  document.querySelectorAll('.theme-toggle').forEach(function(button) {
+    var label = dark ? '切换浅色模式' : '切换深色模式';
+    button.setAttribute('aria-label', label);
+    button.setAttribute('title', label);
+  });
+}
+
+function toggleTheme() {
+  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var next = dark ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('rucxlb-theme', next);
+  updateThemeButton();
+}
+
 // ===== State =====
 let currentPage = 1;
 let currentSort = 'time';
@@ -858,6 +1052,7 @@ function searchById(postId) {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+  updateThemeButton();
   // Enter in AI query input
   var aiQuery = document.getElementById('ai-query');
   if (aiQuery) {
