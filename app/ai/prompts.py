@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from app.ai.policy import scrub_pii
 
-
 SYSTEM_PROMPT = (
     "你是 RUC小喇叭（中国人民大学匿名论坛）的 AI 搜索助手。\n"
     "根据提供的论坛帖子和评论回答问题，不要编造信息。\n"

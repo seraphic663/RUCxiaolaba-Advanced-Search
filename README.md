@@ -1,134 +1,127 @@
-# RUC小喇叭 高级搜索
+# RUC 小喇叭高级搜索
 
-中国人民大学 RUC 小喇叭匿名论坛的 SQLite 数据库爬取与搜索工具。
+面向 RUC 小喇叭内容的非官方 SQLite 搜索与更新工具，支持帖子、评论、分类、排序和可选 AI 问答。
 
-线上地址：[https://rucxlb.up.railway.app](https://rucxlb.up.railway.app)
+> 本项目不是中国人民大学或 RUC 小喇叭官方项目。仓库不分发真实论坛数据库，自带的演示数据库只包含虚构内容。
 
-当前版本是 DB-only 架构：
+## 功能
 
-- 网站只读取 `data/posts.db`
-- 爬虫只通过 `crawler_db.py` 写 SQLite
-- 不再使用 CSV 作为运行时数据源
+- 搜索帖子正文和评论，支持分类、日期、热度、点赞和评论数排序
+- 两字及以上关键词可使用 Bigram 索引，单字关键词回退 SQLite `LIKE`
+- 按需展开正文和评论，慢查询使用游标分页
+- 爬虫直接增量写入 SQLite，可补新帖、活跃帖和历史范围
+- 可选 AI 搜索使用独立权限库、邀请码和内容安全检查
 
-## 本地启动
+## 五分钟启动
+
+要求 Python 3.10 或更高版本。
+
+```powershell
+git clone https://github.com/seraphic663/RUCxiaolaba-Advanced-Search.git
+cd RUCxiaolaba-Advanced-Search
+
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+
+python server.py --sqlite-db demo\posts.db --bigram-db demo\bigram_index.db
+```
+
+打开 <http://127.0.0.1:8080>，可以尝试搜索“食堂”“图书馆”“SQLite”。
+
+`demo/posts.db` 和 `demo/bigram_index.db` 总计不到 200 KiB，包含 12 篇虚构帖子和 20 条虚构评论。它们只用于验证公开主页、评论搜索、分类、排序和 Bigram，不包含用户身份数据。重新生成演示数据：
+
+```powershell
+python -m tools.demo.build_demo_data
+```
+
+## 使用自己的数据库
+
+主数据库默认路径是 `data/posts.db`：
 
 ```powershell
 python server.py
 ```
 
-若存在 `data/bigram_index.db`，启动时会自动启用 Bigram 搜索；无需额外参数。
-两字及以上关键词使用 Bigram，单字关键词回退 `LIKE`。
-
-首次构建本地索引：
+也可以明确指定数据库、索引和端口：
 
 ```powershell
-python -m tools.benchmarks.benchmark_bigram_index --db-path data\posts.db --output-dir data --sample-mod 1 --only-bigram
+python server.py --sqlite-db D:\data\posts.db --bigram-db D:\data\bigram_index.db --port 8099
 ```
 
-正确性与速度对比：
-
-```powershell
-python -m tools.benchmarks.benchmark_search_backends
-```
-
-慢速单字和复杂 Admin 搜索使用按页游标扫描：先按所选排序读取候选，找到一页
-结果即返回。页面显示已检查数量，上一页会恢复已展开正文和已加载评论。
-
-游标首屏 benchmark：
-
-```powershell
-python -m tools.benchmarks.benchmark_cursor_pagination --repeats 3
-```
-
-指定端口或 DB：
-
-```powershell
-python server.py --sqlite-db data\posts.db --port 8099
-```
+Bigram 索引是可选的。未提供索引时，搜索自动回退到 SQLite FTS/`LIKE`。数据库表结构见 [数据模型](docs/architecture/data-model.md)，索引构建和性能验证见 [benchmark 说明](tools/benchmarks/README.md)。
 
 ## 更新数据
 
-配置 cookie：
+只有在你确认具备相应授权并理解数据处理责任时，才应连接真实接口。先复制配置：
 
-```text
-data/config.txt
-ys7_ysxy_session=你的cookie
-```
-
-连续 ID 全量扫描，可按日期自动确定范围：
+> 使用者必须使用本人合法取得且有权使用的 cookie，不得绕过登录、验证码、签名、限流或权限检查。持续抓取、全量扫描、公开部署或共享真实数据前，应取得平台运营方的书面授权。无法确认授权范围时，请只使用仓库自带的合成 demo。
 
 ```powershell
-python crawler_db.py scan-id-range --from-date 2026-06-01 --db-path data\posts.db
+Copy-Item data\config.example.txt data\config.txt
 ```
 
-也可明确指定范围：
+在 `data/config.txt` 中填写你有权使用的 cookie，然后执行一次小范围同步：
 
 ```powershell
-python crawler_db.py scan-id-range --start-id 5004321 --end-id 5066654 --db-path data\posts.db
+python crawler_db.py sync-latest --db-path data\posts.db --pages 20 --min-pages 3 --stop-unchanged 80
 ```
 
-补新帖：
+该命令可以从空路径创建数据库。正式运行前先阅读：
+
+- [爬虫命令、停止条件和写锁](docs/operations/crawler.md)
+- [项目如何抓取、是否获得授权、是否合法](docs/legal-and-data.md)
+
+根 README 只保留最小可运行流程，批量补历史、日期范围扫描和自动调度参数均在爬虫文档中维护。
+
+## 可选配置
+
+| 配置 | 用途 | 默认值/替代方式 |
+|---|---|---|
+| `POSTS_DB_PATH` / `SQLITE_DB` | 主数据库路径 | `data/posts.db` |
+| `BIGRAM_DB_PATH` / `BIGRAM_DB` | Bigram 索引路径 | 自动探测 `data/bigram_index.db` |
+| `HOST`, `PORT` | 监听地址和端口 | `0.0.0.0:8080` |
+| `DEEPSEEK_API_KEY` | 启用 AI 搜索 | 也可写入 `data/deepseek_key.txt` |
+| `AI_ENABLED=0` | 强制关闭 AI | 有密钥时默认启用 |
+| `AI_DB_PATH` | AI 邀请码和配额数据库 | `data/ai.db` |
+
+配置文件、cookie、密码、API key 和真实数据库均已被 `.gitignore` 排除，不应提交。AI 功能和邀请码管理见 [AI 搜索说明](docs/features/ai-search.md)。
+
+## 开发与验证
 
 ```powershell
-python crawler_db.py sync-latest --db-path data\posts.db --pages 500 --min-pages 20 --stop-unchanged 300
+python -m pip install -r requirements-dev.txt
+pytest
+ruff check .
 ```
 
-补新回复/活跃帖：
-
-```powershell
-python crawler_db.py sync-active --db-path data\posts.db --pages 500 --min-pages 20 --stop-unchanged 300
-```
-
-补历史旧页：
-
-```powershell
-python crawler_db.py scan-history --endpoint lists --db-path data\posts.db --start-page 200 --pages 500 --min-pages 20 --stop-unchanged 600
-```
-
-更多说明见 [docs/operations/crawler.md](docs/operations/crawler.md)。
+性能测试不会在普通测试中自动运行。命令、前置数据库和结果解释统一维护在 [tools/benchmarks/README.md](tools/benchmarks/README.md)。
 
 ## 项目结构
 
 ```text
-server.py                 Web 兼容启动入口
-crawler_db.py             爬虫兼容 CLI 入口
-app/                      Web、Repository、Service、AI 与 HTTP 路由
-crawler/                  API Client、规范化、扫描策略与执行服务
-storage/post_writer.py     SQLite 写入与搜索索引维护
-jobs/                     Railway 调度与运行时备份
-tools/                    迁移、审计、性能和运维工具
-tests/                    单元、集成、契约和性能测试
-data/posts.db             主数据库（不进入 Git）
-data/bigram_index.db      可重建 Bigram 搜索旁路索引（不进入 Git）
+server.py                  Web 兼容启动入口
+crawler_db.py              爬虫兼容 CLI 入口
+app/                       Web、Repository、Service、AI 与 HTTP 路由
+crawler/                   API Client、规范化、扫描策略与执行服务
+storage/post_writer.py      SQLite 写入与搜索索引维护
+demo/                      可提交的合成演示数据库
+jobs/                      调度与运行时备份
+tools/                     迁移、审计、性能和运维工具
+tests/                     单元、集成、契约和性能测试
+docs/                      架构、功能、运维和数据合规文档
 ```
 
-## Railway
+完整入口见 [文档地图](docs/index.md)。
 
-Volume 挂载：
+## 数据与授权
 
-```text
-/app/data
-```
+“能访问”不等于“可以批量抓取或公开再分发”。平台授权、个人信息处理依据、用户内容著作权和安全义务是不同问题，需要分别判断。仓库的 MIT License 只授权本项目代码和文档，不授权任何第三方论坛数据。
 
-线上 DB：
+该接口是微信小程序正常使用的内部业务 API，不是后门，但也不是面向第三方开放的公开 API。复现正常客户端请求不等于获得自动化抓取许可，使用者必须自行确认账号权限、平台规则和书面授权范围。
 
-```text
-/app/data/posts.db
-/app/data/bigram_index.db
-```
-
-启动命令：
-
-```bash
-bash start.sh
-```
-
-当前由 `start.sh` 在同一服务中启动 `jobs.scheduler`。SQLite 和 Railway
-Volume 不适合未经验证地由多个服务同时挂载写入，因此暂不拆成多个 Cron 服务。
-
-旧命令 `new`、`refresh`、`backfill`、`phase1`、`detail-fill` 仍可使用，
-但新文档统一采用语义更明确的正式命令。
+关于项目如何获取数据、当前是否具备可验证授权以及为什么不能笼统宣称“项目合法”，见 [项目数据来源、授权与合法性 QA](docs/legal-and-data.md)。该文档提供工程风险控制建议，不替代针对具体用途的法律意见。
 
 ## License
 
-MIT。
+代码和项目文档采用 [MIT License](LICENSE)。合成演示数据可随本项目使用；真实论坛内容、用户数据、平台名称和第三方素材不因本许可证获得授权。

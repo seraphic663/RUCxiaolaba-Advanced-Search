@@ -46,6 +46,9 @@ analyze_*.py
 *.db-shm
 *.db-wal
 
+# Small synthetic databases used by the documented quick start
+!demo/*.db
+
 # Python and test cache
 __pycache__/
 *.py[cod]

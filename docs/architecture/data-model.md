@@ -70,8 +70,7 @@ updated_at           本库最后更新时间
 
 ## 表：search_index
 
-用途：兼容的 FTS5 trigram 全文索引。当前两字及以上搜索优先使用独立
-`bigram_index.db`，该表仍用于无 Bigram 环境下的长词回退与 AI 检索。
+用途：兼容的 FTS5 trigram 全文索引。当前两字及以上搜索优先使用独立 `bigram_index.db`，该表仍用于无 Bigram 环境下的长词回退与 AI 检索。
 
 ```text
 post_id

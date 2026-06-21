@@ -9,7 +9,6 @@ import urllib3
 
 from crawler.config import BASE_URL, COMMUNITY_ID, HEADERS
 
-
 urllib3.disable_warnings()
 
 

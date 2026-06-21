@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from app.http.routes import admin, ai, public
 
-
 GET_ROUTES = {
     "/": public.main_page,
     "/api/search": public.search,

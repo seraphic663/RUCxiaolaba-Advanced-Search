@@ -2,6 +2,8 @@
 
 > 从 CLAUDE.md 提取，覆盖所有已知端点。Base URL: `https://ys.qimiaoyuanfen.com`，Community ID: `4`。
 
+> 本页记录通过正常小程序流量观察到的内部业务接口，仅用于理解现有代码，不代表平台将其作为第三方开放 API，也不构成调用授权。正式帖子爬虫只使用文章列表、活跃列表和文章详情接口。私信、账户资料、手机号检查及写操作端点不得在没有明确授权时调用。
+
 ## 本站搜索 API
 
 `GET /api/search` 保持原分页参数，并支持以下可选游标参数：
@@ -12,8 +14,7 @@
 | `scan_offset` | 已扫描候选位置，第一页为 `0` |
 | `matched_before` | 前面页面累计命中数量 |
 
-Bigram/trigram 等快速查询仍返回 `pagination_mode=numbered`。单字 LIKE 和复杂
-Admin 查询返回 `pagination_mode=cursor`，附带：
+Bigram/trigram 等快速查询仍返回 `pagination_mode=numbered`。单字 LIKE 和复杂 Admin 查询返回 `pagination_mode=cursor`，附带：
 
 ```json
 {
@@ -26,8 +27,7 @@ Admin 查询返回 `pagination_mode=cursor`，附带：
 }
 ```
 
-候选总数是在分类、日期、匿名/实名等非文本条件过滤后统计的。游标模式先按时间、
-点赞、评论或综合排序，再扫描关键词，因此返回页面顺序与完整查询一致。
+候选总数是在分类、日期、匿名/实名等非文本条件过滤后统计的。游标模式先按时间、点赞、评论或综合排序，再扫描关键词，因此返回页面顺序与完整查询一致。
 
 ## 认证
 

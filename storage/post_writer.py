@@ -8,26 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 import time
 from pathlib import Path
 from typing import Iterable
 
-
-BIGRAM_TOKEN_RUN = re.compile(r"[0-9A-Za-z_\u3400-\u4dbf\u4e00-\u9fff]+")
-BIGRAM_BOUNDARY_TOKEN = "zzbigramsegmentboundaryzz"
-
-
-def bigram_tokens(text: str) -> str:
-    segments: list[str] = []
-    for run in BIGRAM_TOKEN_RUN.findall(text or ""):
-        lowered = run.lower()
-        if len(lowered) == 1:
-            segments.append(lowered)
-        else:
-            segments.append(" ".join(lowered[i : i + 2] for i in range(len(lowered) - 1)))
-    return f" {BIGRAM_BOUNDARY_TOKEN} ".join(segments)
+from app.domain.search import bigram_tokens
 
 
 def safe_int(value, default=0) -> int:

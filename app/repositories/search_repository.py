@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from pathlib import Path
 
-from app.domain.search import SearchQuery
+from app.domain.search import SearchQuery, bigram_query
 from app.repositories.connections import connect_readonly
 
-
-BIGRAM_TOKEN_RUN = re.compile(r"[0-9A-Za-z_\u3400-\u4dbf\u4e00-\u9fff]+")
-BIGRAM_BOUNDARY_TOKEN = "zzbigramsegmentboundaryzz"
 ADMIN_IDENTITY_FIELDS = {"uid", "name", "post"}
 
 
@@ -26,20 +22,6 @@ def fts_query(keywords: list[str]) -> str | None:
     if not keywords or any(len(keyword) < 3 for keyword in keywords):
         return None
     return " AND ".join(f'"{keyword.replace(chr(34), chr(34) * 2)}"' for keyword in keywords)
-
-
-def bigram_query(keyword: str) -> str | None:
-    runs = [run.lower() for run in BIGRAM_TOKEN_RUN.findall(keyword or "")]
-    if sum(len(run) for run in runs) < 2:
-        return None
-    segments = []
-    for run in runs:
-        if len(run) == 1:
-            segments.append(run)
-        else:
-            segments.append(" ".join(run[i : i + 2] for i in range(len(run) - 1)))
-    phrase = f" {BIGRAM_BOUNDARY_TOKEN} ".join(segments)
-    return f'"{phrase.replace(chr(34), chr(34) * 2)}"'
 
 
 class SearchRepository:

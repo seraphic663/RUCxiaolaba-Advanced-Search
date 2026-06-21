@@ -2,8 +2,7 @@
 
 ## 状态
 
-本轮工程化重构已经实施。外部 HTTP API、SQLite schema、Railway Volume
-路径以及旧 CLI 命令保持兼容。
+本轮工程化重构已经实施。外部 HTTP API、SQLite schema、Railway Volume 路径以及旧 CLI 命令保持兼容。
 
 ## 完成内容
 
@@ -15,8 +14,7 @@
 - AI 拆为 Retriever、Policy、Prompt 和 DeepSeek Client。
 - `crawler_db.py` 改为兼容入口，实际爬虫位于 `crawler/`。
 - 爬虫拆为 API Client、Normalizer、写锁、Strategy 和 Service。
-- 正式爬虫命令改为 `sync-latest`、`sync-active`、`scan-history`、
-  `scan-id-range`、`fill-details`。
+- 正式爬虫命令改为 `sync-latest`、`sync-active`、`scan-history`、`scan-id-range`、`fill-details`。
 - 旧命令继续作为 argparse alias。
 - 生产任务移动到 `jobs/`。
 - 迁移、审计、性能和运维工具移动到 `tools/`。
@@ -44,9 +42,7 @@ BIGRAM_DB_PATH
 
 旧变量优先级保持兼容。
 
-本地未设置 Bigram 环境变量时，会自动探测 `data/bigram_index.db`；文件不存在
-则回退 `LIKE`。Railway 仍建议显式配置
-`BIGRAM_DB=/app/data/bigram_index.db`。
+本地未设置 Bigram 环境变量时，会自动探测 `data/bigram_index.db`；文件不存在则回退 `LIKE`。Railway 仍建议显式配置 `BIGRAM_DB=/app/data/bigram_index.db`。
 
 ## 测试层次
 
@@ -84,8 +80,7 @@ python crawler_db.py --help
 | `tools/migrations/add_admin_search_indexes.py` | 否 | 历史旧库补索引；索引定义已进入 `SQLitePostStore.init_schema()` |
 | `tools/migrations/rebuild_sqlite_search_index.py` | 否 | 保留，用于 FTS 损坏或缺行时重建 |
 
-后两项可以删除而不影响当前网站、爬虫和 Railway；只有再次导入未经升级的旧库时
-才可能用到。即使删除，代码仍可从 Git 历史恢复。
+后两项可以删除而不影响当前网站、爬虫和 Railway；只有再次导入未经升级的旧库时才可能用到。即使删除，代码仍可从 Git 历史恢复。
 
 ## 本轮验收记录
 
@@ -100,8 +95,7 @@ python crawler_db.py --help
 - 主库记录：544,993 帖、2,252,543 条评论。
 - 真实主库启动：主页、Admin、健康检查、分类和搜索 API 均返回 200。
 - 短词“六一”正文搜索：LIKE 后端约 1.14 秒，返回 2,701 帖。
-- 在线爬虫探测因当前网络到上游 API 的 TLS/连接中断未完成。
-  CLI 已改为在全部页面请求失败时返回非零退出，避免 Railway 误报成功。
+- 在线爬虫探测因当前网络到上游 API 的 TLS/连接中断未完成。CLI 已改为在全部页面请求失败时返回非零退出，避免 Railway 误报成功。
 
 ## 后续开发规则
 

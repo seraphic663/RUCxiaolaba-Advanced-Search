@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.repositories.ai_access_repository import AIStore, get_store
+from app.repositories.ai_access_repository import AIStore, get_store  # noqa: E402
 
 
 def cmd_generate(store: AIStore, args: argparse.Namespace) -> None:

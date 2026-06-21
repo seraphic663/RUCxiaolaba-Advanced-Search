@@ -42,9 +42,7 @@ CRAWLER_ENABLED=1
 
 不要上传 `admin_password.txt`。
 
-Bigram 文件存在且变量正确时，两字及以上搜索返回
-`"search_backend": "bigram"`；单字搜索仍返回 `"like"`。爬虫通过
-`SQLitePostStore` 同步维护主库和旁路索引。
+Bigram 文件存在且变量正确时，两字及以上搜索返回 `"search_backend": "bigram"`；单字搜索仍返回 `"like"`。爬虫通过 `SQLitePostStore` 同步维护主库和旁路索引。
 
 ## 自动更新
 
@@ -57,9 +55,7 @@ scan-history  每 24 小时
 scan-id-range 每 7 天，重扫最近 8 个自然日
 ```
 
-调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。
-更新完成后 Web 无需重启。服务部署或重启后不会立即扫描：首轮
-`sync-latest` 等待 4 小时，首轮 `sync-active` 等待 8 小时。
+调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。更新完成后 Web 无需重启。服务部署或重启后不会立即扫描：首轮 `sync-latest` 等待 4 小时，首轮 `sync-active` 等待 8 小时。
 
 API 默认每页 50 条，上限 200 条。
 
@@ -74,8 +70,7 @@ CRAWLER_PHASE1_INTERVAL=604800
 
 ## Phase 1 全量 ID 补扫
 
-Railway 每 7 天自动重扫最近 8 个自然日。执行时间保存在 Volume 的
-`.phase1_weekly_last` 标记中，服务重启不会重置周期。也可手动按日期执行：
+Railway 每 7 天自动重扫最近 8 个自然日。执行时间保存在 Volume 的 `.phase1_weekly_last` 标记中，服务重启不会重置周期。也可手动按日期执行：
 
 ```powershell
 python crawler_db.py scan-id-range --from-date 2026-06-01 --db-path data\posts.db
@@ -93,8 +88,7 @@ python crawler_db.py scan-id-range --from-date 2026-06-01 --to-date 2026-06-03 -
 python crawler_db.py scan-id-range --start-id 5004321 --end-id 5066654 --db-path data\posts.db
 ```
 
-Phase 1 每 500 个 ID 保存一次断点，重复执行相同范围会自动续扫。需要从头重扫时
-加 `--restart`。线上执行可先进入持久 SSH 会话：
+Phase 1 每 500 个 ID 保存一次断点，重复执行相同范围会自动续扫。需要从头重扫时加 `--restart`。线上执行可先进入持久 SSH 会话：
 
 ```powershell
 railway ssh --session phase1
@@ -130,8 +124,7 @@ Healthcheck Path: /healthz
 Healthcheck Timeout: 300
 ```
 
-如果 Railway 开启了应用休眠，后台调度器也会暂停。要持续自动更新，应关闭
-Serverless/App Sleeping。
+如果 Railway 开启了应用休眠，后台调度器也会暂停。要持续自动更新，应关闭 Serverless/App Sleeping。
 
 ## 日志检查
 

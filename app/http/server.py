@@ -15,9 +15,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
 
-import requests  # compatibility: tests and local tools patch server.requests
-
-_requests_compat = requests
+import requests  # noqa: F401 - compatibility: callers patch server.requests
 
 from app.ai.client import DeepSeekClient, DeepSeekSettings
 from app.ai.policy import (
@@ -31,6 +29,7 @@ from app.ai.policy import (
 from app.ai.prompts import build_prompt
 from app.config import AppConfig, choose_posts_db
 from app.http.router import dispatch
+from app.repositories.ai_access_repository import AIStore, get_store
 from app.repositories.connections import connect_readonly
 from app.repositories.post_repository import PostRepository
 from app.repositories.search_repository import bigram_query, fts_query
@@ -39,8 +38,6 @@ from app.services.ai_service import AIService
 from app.services.auth_service import AdminAuthService
 from app.services.search_service import SearchService
 from app.services.template_service import TemplateService
-from app.repositories.ai_access_repository import AIStore, get_store
-
 
 SESSION_TTL = 86400
 CSRF_TTL = 3600
