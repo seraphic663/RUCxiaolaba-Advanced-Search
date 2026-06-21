@@ -7,7 +7,6 @@ import sqlite3
 import time
 from pathlib import Path
 
-
 INDEXES = [
     "create index if not exists idx_posts_show_user_id on posts(show_user_id)",
     "create index if not exists idx_posts_real_user_id on posts(real_user_id)",

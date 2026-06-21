@@ -1,5 +1,11 @@
 """Test concurrent ID scanning speed."""
-import requests, urllib3, os, time, threading
+import os
+import threading
+import time
+
+import requests
+import urllib3
+
 urllib3.disable_warnings()
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -40,7 +46,7 @@ for n_workers in [1, 5, 10, 20]:
                 if data.get("code") == "0000" and data["data"].get("community_id") == "4":
                     with lock:
                         found[0] += 1
-            except:
+            except Exception:
                 pass
 
     t0 = time.time()

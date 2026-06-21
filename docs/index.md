@@ -30,3 +30,10 @@
 |------|-------------|
 | [is-publisher](audits/is-publisher.md) | 楼主标签是否可靠、根因、核查 SQL、修复方案 |
 | [raw-json-slimming](audits/raw-json-slimming.md) | 为什么删冗余字段、删了什么、省了多少空间 |
+
+## 数据使用与开发
+
+| 文件 | 回答什么问题 |
+|------|-------------|
+| [legal-and-data](legal-and-data.md) | 项目如何抓取、是否获得授权、是否合法以及为何不公开真实数据库 |
+| [benchmark README](../tools/benchmarks/README.md) | 如何运行搜索、游标和 Bigram 性能测试 |

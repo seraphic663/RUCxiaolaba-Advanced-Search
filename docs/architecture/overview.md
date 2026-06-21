@@ -91,5 +91,4 @@ Repositories / API Client
  SQLite / Remote API
 ```
 
-根目录入口仅用于兼容。新代码不得从 Service 或 Repository 反向导入
-`server.py`、`crawler_db.py`。
+根目录入口仅用于兼容。新代码不得从 Service 或 Repository 反向导入 `server.py`、`crawler_db.py`。

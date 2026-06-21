@@ -7,6 +7,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 else:
     import sys
+
     from crawler import cli as _implementation
 
     sys.modules[__name__] = _implementation

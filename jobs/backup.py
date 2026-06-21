@@ -14,7 +14,6 @@ import sqlite3
 import time
 from pathlib import Path
 
-
 SMALL_FILES = ("config.txt",)
 
 

@@ -1,8 +1,6 @@
 # 页面加载与搜索性能优化方案（草案 v2）
 
-> 状态说明：本文前半部分保留了优化实施前的诊断和实验推导，属于历史记录。
-> 当前结论以第 7 节及代码为准：两字及以上优先使用
-> `data/bigram_index.db`，单字回退 `LIKE`，本地存在该文件时自动启用。
+> 状态说明：本文前半部分保留了优化实施前的诊断和实验推导，属于历史记录。当前结论以第 7 节及代码为准：两字及以上优先使用 `data/bigram_index.db`，单字回退 `LIKE`，本地存在该文件时自动启用。
 
 当前可重复验收命令：
 
@@ -10,9 +8,7 @@
 python -m tools.benchmarks.benchmark_search_backends
 ```
 
-该命令将速度测试与正确性测试分开：速度使用固定首页大小并报告中位数/P95；
-正确性获取完整命中 ID 集合，比较总数、缺失 ID 和额外 ID。任何不一致默认返回
-非零退出码，适合人工验收和 CI 手动任务。
+该命令将速度测试与正确性测试分开：速度使用固定首页大小并报告中位数/P95；正确性获取完整命中 ID 集合，比较总数、缺失 ID 和额外 ID。任何不一致默认返回非零退出码，适合人工验收和 CI 手动任务。
 
 2026-06-11 本地主库基线（3 次有效样本、1 次预热）：
 
@@ -25,14 +21,11 @@ python -m tools.benchmarks.benchmark_search_backends
 | 三字全文（原 trigram） | 126-172ms | 94-147ms | 1.2-1.3x |
 | 单字 | 继续使用 LIKE | 继续使用 LIKE | 基本持平 |
 
-默认 12 个案例的完整 ID 集合全部一致：`12/12 correct`。测试过程中还修正了
-两项实现细节：两字无 Bigram 查询不再误报为 `trigram`；单字查询不再无意义地
-attach Bigram sidecar。
+默认 12 个案例的完整 ID 集合全部一致：`12/12 correct`。测试过程中还修正了两项实现细节：两字无 Bigram 查询不再误报为 `trigram`；单字查询不再无意义地 attach Bigram sidecar。
 
 ### 按页游标扫描
 
-单字 LIKE 和复杂 Admin 查询不再先计算完整命中总数。服务先按用户选择的时间、
-点赞、评论或综合排序读取候选，找到当前页需要的结果后立即返回。
+单字 LIKE 和复杂 Admin 查询不再先计算完整命中总数。服务先按用户选择的时间、点赞、评论或综合排序读取候选，找到当前页需要的结果后立即返回。
 
 ```powershell
 python -m tools.benchmarks.benchmark_cursor_pagination --repeats 3
@@ -680,8 +673,7 @@ abc：     LIKE 257， bigram 257
 2. `BIGRAM_DB_PATH` 或 `BIGRAM_DB`
 3. 本地存在的 `data/bigram_index.db`
 
-成功挂载后，两个及以上可索引字符使用 Bigram，一字搜索继续走 LIKE。
-本地默认启动：
+成功挂载后，两个及以上可索引字符使用 Bigram，一字搜索继续走 LIKE。本地默认启动：
 
 ```powershell
 python server.py

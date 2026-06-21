@@ -1,18 +1,13 @@
-"""Build sampled trigram and bigram FTS databases to estimate index size.
-
-The source database is read-only. Output databases are disposable and contain
-only sampled search rows, so the production database is never modified.
-"""
+"""Build sampled trigram/Bigram indexes and report their relative size."""
 
 from __future__ import annotations
 
 import argparse
 import sqlite3
 import time
-from datetime import datetime
 from pathlib import Path
 
-from storage.post_writer import bigram_tokens
+from storage.bigram_index import build_bigram_index, iter_source_rows
 
 
 def file_size(path: Path) -> int:
@@ -23,148 +18,69 @@ def mib(value: int) -> str:
     return f"{value / 1024 / 1024:.2f} MiB"
 
 
-def source_rows(conn: sqlite3.Connection, sample_mod: int):
-    yield from conn.execute(
-        """
-        select id, 'post', content
-        from posts
-        where rowid % ? = 0 and content != ''
-        """,
-        (sample_mod,),
-    )
-    yield from conn.execute(
-        """
-        select post_id, 'comment', detail
-        from comments
-        where rowid % ? = 0 and detail != ''
-        """,
-        (sample_mod,),
-    )
-
-
-def prepare(path: Path, schema: str) -> sqlite3.Connection:
-    path.unlink(missing_ok=True)
-    conn = sqlite3.connect(path)
-    conn.execute("pragma journal_mode=off")
-    conn.execute("pragma synchronous=off")
-    conn.execute("pragma temp_store=file")
-    conn.executescript(schema)
-    return conn
-
-
-def build(source: Path, output_dir: Path, sample_mod: int, only_bigram: bool = False) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
+def build_trigram_index(source: Path, output: Path, sample_mod: int) -> None:
+    output.unlink(missing_ok=True)
     source_conn = sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True)
-
-    trigram_path = output_dir / "sample_trigram.db"
-    bigram_path = output_dir / ("bigram_index.db" if sample_mod == 1 else "sample_bigram.db")
-    trigram = None
-    if only_bigram:
-        trigram_path.unlink(missing_ok=True)
-    else:
-        trigram = prepare(
-            trigram_path,
+    target = sqlite3.connect(output)
+    try:
+        target.execute("pragma journal_mode=off")
+        target.execute("pragma synchronous=off")
+        target.execute("pragma temp_store=file")
+        target.execute(
             """
             create virtual table search_index using fts5(
                 post_id unindexed, kind unindexed, body, tokenize='trigram'
-            );
-            """,
-        )
-    bigram = prepare(
-        bigram_path,
-        """
-        create table search_rows(
-            row_id integer primary key,
-            post_id text not null,
-            kind text not null
-        );
-        create index idx_search_rows_post_id on search_rows(post_id);
-        create table index_meta(
-            key text primary key,
-            value text not null
-        );
-        create virtual table search_bigram using fts5(
-            tokens,
-            content='',
-            contentless_delete=1,
-            tokenize='unicode61'
-        );
-        """,
-    )
-
-    count = 0
-    source_bytes = 0
-    token_bytes = 0
-    started = time.perf_counter()
-    if trigram is not None:
-        trigram.execute("begin")
-    bigram.execute("begin")
-    for post_id, kind, body in source_rows(source_conn, sample_mod):
-        body = body or ""
-        count += 1
-        source_bytes += len(body.encode("utf-8"))
-        if trigram is not None:
-            trigram.execute(
-                "insert into search_index(post_id, kind, body) values (?,?,?)",
-                (post_id, kind, body),
             )
-        tokens = bigram_tokens(body)
-        token_bytes += len(tokens.encode("utf-8"))
-        bigram.execute(
-            "insert into search_rows(row_id, post_id, kind) values (?,?,?)",
-            (count, post_id, kind),
+            """
         )
-        bigram.execute(
-            "insert into search_bigram(rowid, tokens) values (?,?)",
-            (count, tokens),
+        target.execute("begin")
+        target.executemany(
+            "insert into search_index(post_id, kind, body) values (?,?,?)",
+            iter_source_rows(source_conn, sample_mod),
         )
-        if count % 25_000 == 0:
-            print(f"[build] rows={count:,}")
+        target.commit()
+        target.execute("insert into search_index(search_index) values ('optimize')")
+        target.commit()
+        target.execute("vacuum")
+    finally:
+        target.close()
+        source_conn.close()
 
-    if trigram is not None:
-        trigram.commit()
-    bigram.executemany(
-        "insert into index_meta(key, value) values (?, ?)",
-        [
-            ("schema_version", "bigram-v1"),
-            ("source_db", str(source.resolve())),
-            ("source_db_bytes", str(source.stat().st_size)),
-            ("source_rows", str(count)),
-            ("sample_mod", str(sample_mod)),
-            ("built_at", datetime.now().isoformat(timespec="seconds")),
-        ],
+
+def build(
+    source: Path,
+    output_dir: Path,
+    sample_mod: int,
+    only_bigram: bool = False,
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    trigram_path = output_dir / "sample_trigram.db"
+    bigram_path = output_dir / (
+        "bigram_index.db" if sample_mod == 1 else "sample_bigram.db"
     )
-    bigram.commit()
-    if trigram is not None:
-        trigram.execute("insert into search_index(search_index) values ('optimize')")
-    bigram.execute("insert into search_bigram(search_bigram) values ('optimize')")
-    if trigram is not None:
-        trigram.commit()
-    bigram.commit()
-    if trigram is not None:
-        trigram.execute("vacuum")
-    bigram.execute("vacuum")
-    if trigram is not None:
-        trigram.close()
-    bigram.close()
-    source_conn.close()
+    started = time.perf_counter()
+    if only_bigram:
+        trigram_path.unlink(missing_ok=True)
+    else:
+        build_trigram_index(source, trigram_path, sample_mod)
+    stats = build_bigram_index(source, bigram_path, sample_mod=sample_mod)
 
     trigram_bytes = file_size(trigram_path)
     bigram_bytes = file_size(bigram_path)
-    total_rows = count * sample_mod
+    total_rows = stats.rows * sample_mod
     print("\nRESULT")
     print(f"sample_mod={sample_mod}")
-    print(f"sample_rows={count:,}")
+    print(f"sample_rows={stats.rows:,}")
     print(f"estimated_full_rows={total_rows:,}")
-    print(f"sample_source_text={mib(source_bytes)}")
-    print(f"sample_bigram_text={mib(token_bytes)}")
-    if trigram is not None:
+    print(f"sample_source_text={mib(stats.source_bytes)}")
+    print(f"sample_bigram_text={mib(stats.token_bytes)}")
+    if not only_bigram:
         print(f"sample_trigram_db={mib(trigram_bytes)}")
     print(f"sample_bigram_db={mib(bigram_bytes)}")
-    if trigram is not None:
+    if not only_bigram:
         print(f"estimated_full_trigram={mib(trigram_bytes * sample_mod)}")
     print(f"estimated_full_bigram={mib(bigram_bytes * sample_mod)}")
-    if trigram is not None:
+    if not only_bigram:
         print(f"bigram_vs_trigram={bigram_bytes / max(1, trigram_bytes):.2f}x")
     print(f"elapsed={time.perf_counter() - started:.1f}s")
 

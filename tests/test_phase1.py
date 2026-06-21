@@ -14,8 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import crawler_db
-from storage.post_writer import SQLitePostStore
+import crawler_db  # noqa: E402
+from storage.post_writer import SQLitePostStore  # noqa: E402
 
 
 def args_for(db_path: Path, config_path: Path, **overrides) -> argparse.Namespace:

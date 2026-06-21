@@ -16,7 +16,6 @@ from pathlib import Path
 
 from app.services.search_service import SearchService
 
-
 DEFAULT_QUERIES = ("食堂", "选课", "六一", "图书馆", "校园卡", "猫")
 
 

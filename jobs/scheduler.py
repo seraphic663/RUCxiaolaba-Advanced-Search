@@ -10,7 +10,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = os.environ.get("SQLITE_DB", "/app/data/posts.db")
 CONFIG_PATH = os.environ.get("CRAWLER_CONFIG", "/app/data/config.txt")

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-
 PII_PATTERNS = [
     (re.compile(r"1[3-9]\d{9}"), "<PHONE>"),
     (re.compile(r"\d{3}-\d{4}-\d{4}"), "<PHONE>"),

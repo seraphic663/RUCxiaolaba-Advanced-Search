@@ -1,5 +1,7 @@
 # 爬虫指南
 
+> 合规边界：本爬虫复现小程序客户端对内部业务 API 的正常请求，不绕过认证，但该接口不是面向第三方开放的公开 API。只能使用本人合法取得且有权使用的 cookie；不得规避登录、验证码、签名、限流或权限检查。持续抓取、全量扫描、公开部署或共享真实数据前，应取得平台运营方的书面授权。无法确认授权范围时，不要连接真实接口。
+
 ## 前置条件
 
 Cookie 存放在 `data/config.txt`：
@@ -9,6 +11,8 @@ ys7_ysxy_session=你的cookie
 ```
 
 获取方式：微信小程序抓包，复制请求头中的 `ys7_ysxy_session` 值。
+
+抓包仅用于取得本人当前登录会话中的 cookie，不得截获他人流量、收集他人 cookie 或将 cookie 提交到仓库。认证失败、限流或平台要求停止时必须停止任务，不得通过更换账号、代理或提高并发规避限制。
 
 ## API 端点
 
@@ -113,7 +117,6 @@ CRAWLER_BACKFILL_INTERVAL=86400
 CRAWLER_PHASE1_INTERVAL=604800
 ```
 
-`CRAWLER_ENABLED=1` 时调度器随 `start.sh` 启动。部署重启后首轮
-`sync-latest` 等 4 小时、`sync-active` 等 8 小时，避免部署风暴。
+`CRAWLER_ENABLED=1` 时调度器随 `start.sh` 启动。部署重启后首轮 `sync-latest` 等 4 小时、`sync-active` 等 8 小时，避免部署风暴。
 
 旧命令名仍作为兼容别名保留。

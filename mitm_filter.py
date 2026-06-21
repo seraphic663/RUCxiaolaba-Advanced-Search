@@ -1,9 +1,9 @@
 """mitmproxy addon: highlight mini-program API requests, pass everything through."""
-from mitmproxy import http
-from mitmproxy import ctx
 import json
 import os
 import re
+
+from mitmproxy import ctx, http
 
 # Patterns that look like mini-program API calls
 API_PATTERNS = [

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+
 from crawler.client import MiniProgramClient, load_cookie
 from crawler.config import (
     DEFAULT_CONFIG,
