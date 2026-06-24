@@ -14,8 +14,9 @@ class SearchService:
         self,
         posts_db: str | Path,
         bigram_db: str | Path | None = None,
+        symbol_db: str | Path | None = None,
     ):
-        self.repository = SearchRepository(posts_db, bigram_db)
+        self.repository = SearchRepository(posts_db, bigram_db, symbol_db)
 
     def search(
         self,

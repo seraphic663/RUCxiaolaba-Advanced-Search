@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_TEMPLATES_DIR = PROJECT_ROOT / "templates"
 DEFAULT_BIGRAM_DB = DEFAULT_DATA_DIR / "bigram_index.db"
+DEFAULT_SYMBOL_DB = DEFAULT_DATA_DIR / "symbol_index.db"
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -65,6 +66,18 @@ def choose_bigram_db(
     return DEFAULT_BIGRAM_DB if DEFAULT_BIGRAM_DB.exists() else None
 
 
+def choose_symbol_db(
+    explicit_path: str | Path | None = None,
+) -> Path | None:
+    """Use an explicit/env symbol sidecar, otherwise auto-detect the local default."""
+    if explicit_path is not None:
+        return Path(explicit_path) if str(explicit_path).strip() else None
+    env_path = os.environ.get("SYMBOL_INDEX_DB_PATH") or os.environ.get("SYMBOL_INDEX_DB")
+    if env_path:
+        return Path(env_path)
+    return DEFAULT_SYMBOL_DB if DEFAULT_SYMBOL_DB.exists() else None
+
+
 @dataclass(frozen=True)
 class AppConfig:
     project_root: Path
@@ -72,6 +85,7 @@ class AppConfig:
     templates_dir: Path
     posts_db: Path
     bigram_db: Path | None
+    symbol_db: Path | None
     ai_db: Path
     admin_password_file: Path
     ai_key_file: Path
@@ -97,6 +111,7 @@ class AppConfig:
         *,
         posts_db: str | Path | None = None,
         bigram_db: str | Path | None = None,
+        symbol_db: str | Path | None = None,
     ) -> "AppConfig":
         ai_db = os.environ.get("AI_DB_PATH", str(DEFAULT_DATA_DIR / "ai.db"))
         return cls(
@@ -105,6 +120,7 @@ class AppConfig:
             templates_dir=DEFAULT_TEMPLATES_DIR,
             posts_db=choose_posts_db(posts_db),
             bigram_db=choose_bigram_db(bigram_db),
+            symbol_db=choose_symbol_db(symbol_db),
             ai_db=Path(ai_db),
             admin_password_file=DEFAULT_DATA_DIR / "admin_password.txt",
             ai_key_file=DEFAULT_DATA_DIR / "deepseek_key.txt",

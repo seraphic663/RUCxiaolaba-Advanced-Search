@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import server
 from storage.post_writer import bigram_tokens
+from storage.symbol_index import build_symbol_index
 
 
 class BigramSearchTest(unittest.TestCase):
@@ -18,6 +19,7 @@ class BigramSearchTest(unittest.TestCase):
         root = Path(self.tmp.name)
         self.posts_db = root / "posts.db"
         self.bigram_db = root / "bigram.db"
+        self.symbol_db = root / "symbol.db"
 
         conn = sqlite3.connect(self.posts_db)
         conn.executescript(
@@ -53,14 +55,20 @@ class BigramSearchTest(unittest.TestCase):
                 ("1", "食堂今天开门", "", "甲", "u1", "0", "2026-06-01", 0, 0, 0, 0, 0),
                 ("2", "普通正文", "", "测试昵称", "u2", "real-2", "2026-06-02", 1, 0, 0, 0, 0),
                 ("3", "只有单字猫", "", "丙", "u3", "0", "2026-06-03", 0, 0, 0, 0, 0),
+                ("4", "♀找搭子", "", "丁", "u4", "0", "2026-06-04", 0, 0, 0, 0, 0),
             ],
         )
         conn.execute(
             "insert into comments values (?,?,?,?,?,?,?)",
             ("2", "食堂座位很多", "comment-id", "comment-real", "reply-id", "评论者", "回复昵称"),
         )
+        conn.execute(
+            "insert into comments values (?,?,?,?,?,?,?)",
+            ("2", "评论里♀找室友", "comment-symbol", "0", "", "符号评论者", ""),
+        )
         conn.commit()
         conn.close()
+        build_symbol_index(self.posts_db, self.symbol_db)
 
         sidecar = sqlite3.connect(self.bigram_db)
         sidecar.executescript(
@@ -99,6 +107,7 @@ class BigramSearchTest(unittest.TestCase):
         with (
             patch.object(server, "SQLITE_DB", str(self.posts_db)),
             patch.object(server, "BIGRAM_DB", str(self.bigram_db)),
+            patch.object(server, "SYMBOL_DB", str(self.symbol_db)),
         ):
             return server.api_search_sqlite(query, "time", 1, 50, **kwargs)
 
@@ -155,7 +164,7 @@ class BigramSearchTest(unittest.TestCase):
         comment_exact = self.search("comment-id", admin=True, admin_fields={"uid", "cmt"})
         self.assertEqual([item["id"] for item in exact["results"]], ["2"])
         self.assertEqual(partial_exact["results"], [])
-        self.assertEqual({item["id"] for item in partial_contains["results"]}, {"1", "2", "3"})
+        self.assertEqual({item["id"] for item in partial_contains["results"]}, {"1", "2", "3", "4"})
         self.assertEqual(comment_exact_without_cmt["results"], [])
         self.assertEqual([item["id"] for item in comment_exact["results"]], ["2"])
 
@@ -200,6 +209,32 @@ class BigramSearchTest(unittest.TestCase):
     def test_public_search_never_uses_admin_identity_fields(self) -> None:
         result = self.search("u2", admin=False, admin_fields={"uid"})
         self.assertEqual(result["results"], [])
+
+    def test_symbol_mixed_query_uses_symbol_index(self) -> None:
+        content = self.search("♀找", scope="content")
+        all_scope = self.search("♀找", scope="all")
+        self.assertEqual(content["search_backend"], "symbol")
+        self.assertEqual([item["id"] for item in content["results"]], ["4"])
+        self.assertEqual({item["id"] for item in all_scope["results"]}, {"2", "4"})
+
+    def test_admin_symbol_query_respects_body_comment_locations(self) -> None:
+        body = self.search("♀找", admin=True, admin_fields={"body"})
+        comments = self.search("♀找", admin=True, admin_fields={"cmt"})
+        both = self.search("♀找", admin=True, admin_fields={"body", "cmt"})
+        self.assertEqual([item["id"] for item in body["results"]], ["4"])
+        self.assertEqual([item["id"] for item in comments["results"]], ["2"])
+        self.assertEqual({item["id"] for item in both["results"]}, {"2", "4"})
+
+    def test_short_symbol_query_without_index_is_limited_in_cursor_mode(self) -> None:
+        with (
+            patch.object(server, "SQLITE_DB", str(self.posts_db)),
+            patch.object(server, "BIGRAM_DB", str(self.bigram_db)),
+            patch.object(server, "SYMBOL_DB", ""),
+        ):
+            result = server._search_service().search_cursor("♀找", "time", 1, 2, scope="all")
+        self.assertEqual(result["search_backend"], "scan-like")
+        self.assertEqual(result["query_kind"], "symbol_mixed")
+        self.assertIn("limited", result)
 
 
 if __name__ == "__main__":

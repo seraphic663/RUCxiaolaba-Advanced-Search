@@ -462,7 +462,10 @@ function doSearch() {
     })
     .catch(e => {
       if (e.name === 'AbortError') return;
-      document.getElementById('results').innerHTML = '<div class="no-results">搜索出错: ' + e + '</div>';
+      var message = e && e.message && e.message.indexOf('HTTP ') === 0
+        ? e.message
+        : '搜索超时或连接中断，请缩小搜索范围；特殊符号/单字搜索可能较慢。';
+      document.getElementById('results').innerHTML = '<div class="no-results">' + message + '</div>';
     });
 }
 
