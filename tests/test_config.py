@@ -43,5 +43,37 @@ class BigramConfigTest(unittest.TestCase):
                 self.assertEqual(config.choose_bigram_db(), remote)
 
 
+class SymbolConfigTest(unittest.TestCase):
+    def test_local_default_is_auto_detected_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "symbol_index.db"
+            path.touch()
+            with (
+                patch.object(config, "DEFAULT_SYMBOL_DB", path),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                self.assertEqual(config.choose_symbol_db(), path)
+
+    def test_missing_local_default_falls_back_to_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "symbol_index.db"
+            with (
+                patch.object(config, "DEFAULT_SYMBOL_DB", path),
+                patch.dict(os.environ, {}, clear=True),
+            ):
+                self.assertIsNone(config.choose_symbol_db())
+
+    def test_environment_overrides_local_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "symbol_index.db"
+            remote = Path(tmp) / "railway-symbol.db"
+            local.touch()
+            with (
+                patch.object(config, "DEFAULT_SYMBOL_DB", local),
+                patch.dict(os.environ, {"SYMBOL_INDEX_DB": str(remote)}, clear=True),
+            ):
+                self.assertEqual(config.choose_symbol_db(), remote)
+
+
 if __name__ == "__main__":
     unittest.main()

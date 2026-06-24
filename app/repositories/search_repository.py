@@ -5,10 +5,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from app.domain.search import SearchQuery, bigram_query
+from app.domain.search import SearchQuery, bigram_query, query_kind, symbol_tokens
 from app.repositories.connections import connect_readonly
 
 ADMIN_IDENTITY_FIELDS = {"uid", "name", "post"}
+SHORT_QUERY_KINDS = {"single_char", "symbol_only", "symbol_mixed"}
 
 
 def _safe_int(value, default=0) -> int:
@@ -31,14 +32,17 @@ class SearchRepository:
         self,
         posts_db: str | Path,
         bigram_db: str | Path | None = None,
+        symbol_db: str | Path | None = None,
     ):
         self.posts_db = Path(posts_db)
         self.bigram_db = Path(bigram_db) if bigram_db else None
+        self.symbol_db = Path(symbol_db) if symbol_db else None
 
-    def connect(self, *, include_bigram: bool = False):
+    def connect(self, *, include_bigram: bool = False, include_symbol: bool = False):
         return connect_readonly(
             self.posts_db,
             self.bigram_db if include_bigram else None,
+            self.symbol_db if include_symbol else None,
         )
 
     def has_search_index(self) -> bool:
@@ -64,12 +68,88 @@ class SearchRepository:
         except sqlite3.Error:
             return False
 
+    def has_symbol_index(self) -> bool:
+        if not self.symbol_db or not self.symbol_db.exists():
+            return False
+        try:
+            with self.connect(include_symbol=True) as conn:
+                row = conn.execute(
+                    "select value from symbol.index_meta "
+                    "where key='schema_version'"
+                ).fetchone()
+            return row is not None and row[0] == "symbol-v1"
+        except sqlite3.Error:
+            return False
+
+    @staticmethod
+    def _symbol_candidate_subquery(tokens: list[str], kinds: list[str]) -> tuple[str, list]:
+        token_placeholders = ",".join("?" for _ in tokens)
+        kind_placeholders = ",".join("?" for _ in kinds)
+        sql = (
+            "select post_id from symbol.symbol_rows "
+            f"where token in ({token_placeholders}) "
+            f"and kind in ({kind_placeholders}) "
+            "group by post_id "
+            "having count(distinct token) = ?"
+        )
+        return sql, [*tokens, *kinds, len(tokens)]
+
+    def _symbol_text_clauses(
+        self,
+        request: SearchQuery,
+    ) -> tuple[list[str], list]:
+        tokens = symbol_tokens(request.text)
+        if not tokens:
+            return [], []
+        fields = set(request.admin_fields)
+        identity_mode = request.admin and bool(fields & ADMIN_IDENTITY_FIELDS)
+        has_location = bool(fields & {"body", "cmt"})
+        search_posts = (
+            True if not request.admin else ("body" in fields or not has_location)
+        )
+        search_comments = (
+            request.scope == "all" if not request.admin else ("cmt" in fields)
+        )
+        if identity_mode:
+            return [], []
+
+        clauses: list[str] = []
+        args: list = []
+        symbol_only = query_kind(request.text) == "symbol_only"
+        like = f"%{(request.text or '').lower()}%"
+        if search_posts:
+            subquery, subargs = self._symbol_candidate_subquery(tokens, ["post"])
+            if symbol_only:
+                clauses.append(f"p.id in ({subquery})")
+            else:
+                clauses.append(f"(p.id in ({subquery}) and lower(p.content) like ?)")
+            args.extend(subargs)
+            if not symbol_only:
+                args.append(like)
+        if search_comments:
+            subquery, subargs = self._symbol_candidate_subquery(tokens, ["comment"])
+            if symbol_only:
+                clauses.append(f"p.id in ({subquery})")
+            else:
+                clauses.append(
+                    "p.id in ("
+                    "select distinct c.post_id from comments c "
+                    f"join ({subquery}) s on s.post_id = c.post_id "
+                    "where lower(c.detail) like ?"
+                    ")"
+                )
+            args.extend(subargs)
+            if not symbol_only:
+                args.append(like)
+        return clauses, args
+
     def _where(
         self,
         request: SearchQuery,
         *,
         use_fts: bool,
         use_bigram: bool,
+        use_symbol: bool,
     ) -> tuple[str, list]:
         clauses: list[str] = []
         args: list = []
@@ -79,6 +159,14 @@ class SearchRepository:
         has_location = bool(fields & {"body", "cmt"})
         search_posts = "body" in fields or not has_location
         search_comments = "cmt" in fields
+        symbol_clauses, symbol_args = (
+            self._symbol_text_clauses(request) if use_symbol else ([], [])
+        )
+        if symbol_clauses:
+            clauses.append("(" + " or ".join(symbol_clauses) + ")")
+            args.extend(symbol_args)
+            keywords = []
+
         expression = (
             fts_query(keywords)
             if not use_bigram
@@ -258,19 +346,30 @@ class SearchRepository:
         }
         return order_map.get(sort_by, order_map["time"])
 
-    def _plan(self, request: SearchQuery) -> tuple[bool, bool, str]:
+    def _plan(self, request: SearchQuery) -> tuple[bool, bool, bool, str]:
         keywords = (request.text or "").lower().split()
+        kind = query_kind(request.text)
         identity_mode = request.admin and bool(
             set(request.admin_fields) & ADMIN_IDENTITY_FIELDS
+        )
+        use_symbol = (
+            not identity_mode
+            and kind in {"symbol_only", "symbol_mixed"}
+            and self.has_symbol_index()
+            and bool(symbol_tokens(request.text))
         )
         can_use_bigram = any(
             bigram_query(keyword) is not None for keyword in keywords
         )
         use_bigram = (
-            not identity_mode and can_use_bigram and self.has_bigram_index()
+            not use_symbol
+            and not identity_mode
+            and can_use_bigram
+            and self.has_bigram_index()
         )
         use_fts = (
-            not use_bigram
+            not use_symbol
+            and not use_bigram
             and request.scope == "all"
             and bool(request.text)
             and self.has_search_index()
@@ -280,12 +379,14 @@ class SearchRepository:
             and not request.admin
             and fts_query(keywords) is not None
         )
-        if use_bigram:
+        if use_symbol:
+            backend = "symbol"
+        elif use_bigram:
             terms = [bigram_query(keyword) is not None for keyword in keywords]
             backend = "bigram" if terms and all(terms) else "hybrid"
         else:
             backend = "trigram" if used_fts else "like"
-        return use_bigram, use_fts, backend
+        return use_bigram, use_fts, use_symbol, backend
 
     @staticmethod
     def _comments_by_post(conn, post_ids: list[str]) -> dict[str, list]:
@@ -424,11 +525,11 @@ class SearchRepository:
             }
 
         order_by = self._order_by(request.sort_by)
-        use_bigram, use_fts, backend = self._plan(request)
+        use_bigram, use_fts, use_symbol, backend = self._plan(request)
         where_sql, args = self._where(
-            request, use_fts=use_fts, use_bigram=use_bigram
+            request, use_fts=use_fts, use_bigram=use_bigram, use_symbol=use_symbol
         )
-        with self.connect(include_bigram=use_bigram) as conn:
+        with self.connect(include_bigram=use_bigram, include_symbol=use_symbol) as conn:
             total = conn.execute(
                 f"select count(*) from posts p{where_sql}", args
             ).fetchone()[0]
@@ -475,7 +576,7 @@ class SearchRepository:
         batch_size: int | None = None,
     ) -> dict:
         """Return one sorted page, stopping once enough LIKE matches are found."""
-        use_bigram, use_fts, backend = self._plan(request)
+        use_bigram, use_fts, use_symbol, backend = self._plan(request)
         if not self._should_cursor_scan(request, backend):
             result = self.search(request)
             result.update(
@@ -516,14 +617,20 @@ class SearchRepository:
             request.limit,
             min(batch_size or default_batch, max_batch),
         )
-
         with self.connect() as conn:
             candidate_total = conn.execute(
                 f"select count(*) from posts p{candidate_where}",
                 candidate_args,
             ).fetchone()[0]
             cursor = min(scan_offset, candidate_total)
-            while cursor < candidate_total and len(results) < request.limit:
+            short_query = query_kind(request.text) in SHORT_QUERY_KINDS
+            scan_limit = 10_000 if short_query else None
+            stop_at = (
+                min(candidate_total, scan_offset + scan_limit)
+                if scan_limit is not None
+                else candidate_total
+            )
+            while cursor < stop_at and len(results) < request.limit:
                 rows = conn.execute(
                     f"""
                     select p.id, p.content, p.category_name, p.user_name,
@@ -579,6 +686,8 @@ class SearchRepository:
             "has_more": has_more,
             "next_offset": cursor if has_more else None,
             "total_exact": not has_more,
+            "limited": bool(scan_limit is not None and has_more),
+            "query_kind": query_kind(request.text),
         }
 
     def _search_cursor_without_text(

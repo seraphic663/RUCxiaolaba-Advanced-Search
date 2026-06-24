@@ -52,6 +52,7 @@ DATA_DIR = str(APP_CONFIG.data_dir)
 TEMPLATES_DIR = str(APP_CONFIG.templates_dir)
 SQLITE_DB = str(APP_CONFIG.posts_db)
 BIGRAM_DB = str(APP_CONFIG.bigram_db or "")
+SYMBOL_DB = str(APP_CONFIG.symbol_db or "")
 AI_DB_PATH = str(APP_CONFIG.ai_db)
 PASSWORD_FILE = str(APP_CONFIG.admin_password_file)
 AI_KEY_FILE = str(APP_CONFIG.ai_key_file)
@@ -102,11 +103,11 @@ def get_password() -> str:
 
 
 def sqlite_connect():
-    return connect_readonly(SQLITE_DB, BIGRAM_DB or None)
+    return connect_readonly(SQLITE_DB, BIGRAM_DB or None, SYMBOL_DB or None)
 
 
 def _search_service() -> SearchService:
-    return SearchService(SQLITE_DB, BIGRAM_DB or None)
+    return SearchService(SQLITE_DB, BIGRAM_DB or None, SYMBOL_DB or None)
 
 
 def sqlite_overview():
@@ -131,6 +132,10 @@ def sqlite_has_search_index():
 
 def sqlite_has_bigram_index():
     return _search_service().repository.has_bigram_index()
+
+
+def sqlite_has_symbol_index():
+    return _search_service().repository.has_symbol_index()
 
 
 def api_search_sqlite(
@@ -295,7 +300,7 @@ def build_context() -> ApplicationContext:
         posts_db=SQLITE_DB,
         admin_password=get_password(),
         posts=PostRepository(SQLITE_DB),
-        search=SearchService(SQLITE_DB, BIGRAM_DB or None),
+        search=SearchService(SQLITE_DB, BIGRAM_DB or None, SYMBOL_DB or None),
         admin=AdminService(SQLITE_DB),
         auth=AdminAuthService(SESSION_TTL, CSRF_TTL),
         templates=TemplateService(TEMPLATES_DIR),
@@ -440,7 +445,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def main(argv=None):
-    global SQLITE_DB, BIGRAM_DB, APP_CONFIG
+    global SQLITE_DB, BIGRAM_DB, SYMBOL_DB, APP_CONFIG
     parser = argparse.ArgumentParser(description="Run RUC Xiaolaba search server")
     parser.add_argument(
         "--db",
@@ -456,6 +461,14 @@ def main(argv=None):
             "BIGRAM_DB, or data/bigram_index.db when present"
         ),
     )
+    parser.add_argument(
+        "--symbol-db",
+        default=None,
+        help=(
+            "sidecar symbol database; defaults to SYMBOL_INDEX_DB_PATH, "
+            "SYMBOL_INDEX_DB, or data/symbol_index.db when present"
+        ),
+    )
     parser.add_argument("--port", type=int, default=APP_CONFIG.port)
     parser.add_argument("--host", default=APP_CONFIG.host)
     args = parser.parse_args(argv)
@@ -463,9 +476,11 @@ def main(argv=None):
     APP_CONFIG = AppConfig.from_env(
         posts_db=args.sqlite_db,
         bigram_db=args.bigram_db,
+        symbol_db=args.symbol_db,
     )
     SQLITE_DB = str(APP_CONFIG.posts_db)
     BIGRAM_DB = str(APP_CONFIG.bigram_db or "")
+    SYMBOL_DB = str(APP_CONFIG.symbol_db or "")
     Handler.context = build_context()
 
     overview = sqlite_overview()
@@ -493,6 +508,11 @@ def main(argv=None):
         print(f"  Search:  bigram sidecar ({BIGRAM_DB}, {status})")
     else:
         print("  Search:  LIKE fallback (data/bigram_index.db not found)")
+    if SYMBOL_DB:
+        status = "ready" if sqlite_has_symbol_index() else "invalid"
+        print(f"  Search:  symbol sidecar ({SYMBOL_DB}, {status})")
+    else:
+        print("  Search:  symbol fallback (data/symbol_index.db not found)")
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     return 0
 

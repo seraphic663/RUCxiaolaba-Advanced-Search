@@ -790,7 +790,7 @@ function fetchResults() {
     })
     .catch(err => {
       if (err.name === 'AbortError') return;
-      resultsEl.innerHTML = '<div class="empty"><div class="text">加载失败，请重试</div></div>';
+      resultsEl.innerHTML = '<div class="empty"><div class="text">搜索超时或连接中断，请缩小搜索范围；特殊符号/单字搜索可能较慢。</div></div>';
     });
 }
 
