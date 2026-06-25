@@ -38,7 +38,14 @@ def search(handler):
     if scope not in ("all", "content"):
         scope = "content"
 
+    admin_required = params.get("admin_required", ["0"])[0] == "1"
     admin = handler.is_admin()
+    if admin_required and not admin:
+        handler.serve_json(
+            {"ok": False, "error": "管理员登录已失效，请重新登录"},
+            code=401,
+        )
+        return
     admin_fields = None
     id_match = name_match = "exact"
     if admin:
@@ -130,7 +137,15 @@ def comments(handler):
     if not post_id:
         handler.serve_json({"error": "Missing post id"}, code=400)
         return
-    result = handler.context.search.comments(post_id, admin=handler.is_admin())
+    admin_required = params.get("admin_required", ["0"])[0] == "1"
+    admin = handler.is_admin()
+    if admin_required and not admin:
+        handler.serve_json(
+            {"ok": False, "error": "管理员登录已失效，请重新登录"},
+            code=401,
+        )
+        return
+    result = handler.context.search.comments(post_id, admin=admin)
     if result is None:
         handler.serve_json({"error": "Post not found"}, code=404)
         return
