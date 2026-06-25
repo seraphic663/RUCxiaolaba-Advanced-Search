@@ -34,9 +34,7 @@ class BigramSearchTest(unittest.TestCase):
                 create_time text,
                 comment_count integer,
                 star_count integer,
-                trace_count integer,
-                views integer,
-                hot integer
+                trace_count integer
             );
             create table comments(
                 post_id text,
@@ -50,12 +48,12 @@ class BigramSearchTest(unittest.TestCase):
             """
         )
         conn.executemany(
-            "insert into posts values (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "insert into posts values (?,?,?,?,?,?,?,?,?,?)",
             [
-                ("1", "食堂今天开门", "", "甲", "u1", "0", "2026-06-01", 0, 0, 0, 0, 0),
-                ("2", "普通正文", "", "测试昵称", "u2", "real-2", "2026-06-02", 1, 0, 0, 0, 0),
-                ("3", "只有单字猫", "", "丙", "u3", "0", "2026-06-03", 0, 0, 0, 0, 0),
-                ("4", "♀找搭子", "", "丁", "u4", "0", "2026-06-04", 0, 0, 0, 0, 0),
+                ("1", "食堂今天开门", "", "甲", "u1", "0", "2026-06-01", 0, 0, 0),
+                ("2", "普通正文", "", "测试昵称", "u2", "real-2", "2026-06-02", 1, 0, 0),
+                ("3", "只有单字猫", "", "丙", "u3", "0", "2026-06-03", 0, 0, 0),
+                ("4", "♀找搭子", "", "丁", "u4", "0", "2026-06-04", 0, 0, 0),
             ],
         )
         conn.execute(

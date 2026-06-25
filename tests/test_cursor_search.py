@@ -22,7 +22,7 @@ class CursorSearchTest(unittest.TestCase):
                 id text primary key, content text, category_name text,
                 user_name text, show_user_id text, real_user_id text,
                 create_time text, comment_count integer, star_count integer,
-                trace_count integer, views integer, hot integer
+                trace_count integer
             );
             create table comments(
                 post_id text, detail text, show_user_id text,
@@ -32,13 +32,13 @@ class CursorSearchTest(unittest.TestCase):
             """
         )
         rows = [
-            ("1", "猫 一", "A", "甲", "u1", "0", "2026-01-01", 0, 3, 0, 0, 0),
-            ("2", "普通 二", "A", "乙", "u2", "0", "2026-01-02", 1, 9, 0, 0, 0),
-            ("3", "猫 三", "B", "丙", "u3", "0", "2026-01-03", 0, 5, 0, 0, 0),
-            ("4", "普通 四", "A", "丁", "u4", "0", "2026-01-04", 1, 7, 0, 0, 0),
-            ("5", "猫 五", "A", "戊", "u5", "0", "2026-01-05", 0, 1, 0, 0, 0),
+            ("1", "猫 一", "A", "甲", "u1", "0", "2026-01-01", 0, 3, 0),
+            ("2", "普通 二", "A", "乙", "u2", "0", "2026-01-02", 1, 9, 0),
+            ("3", "猫 三", "B", "丙", "u3", "0", "2026-01-03", 0, 5, 0),
+            ("4", "普通 四", "A", "丁", "u4", "0", "2026-01-04", 1, 7, 0),
+            ("5", "猫 五", "A", "戊", "u5", "0", "2026-01-05", 0, 1, 0),
         ]
-        conn.executemany("insert into posts values (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        conn.executemany("insert into posts values (?,?,?,?,?,?,?,?,?,?)", rows)
         conn.executemany(
             "insert into comments values (?,?,?,?,?,?,?)",
             [

@@ -199,7 +199,7 @@ class CrawlerService:
                             )
                         )
                         existing = store.get_post_counts(post_id)
-                        if existing is not None and existing[0] == comment_count:
+                        if existing is not None and existing == comment_count:
                             stats["unchanged"] += 1
                             progress.unchanged()
                             continue

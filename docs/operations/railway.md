@@ -115,6 +115,27 @@ git push origin main
 
 Railway 从 GitHub 自动重新部署。代码文件不要上传到 Volume。
 
+## 运行库瘦身迁移
+
+需要删除旧字段或重建主库 schema 时，不要在线上原地 `ALTER/VACUUM`。先暂停爬虫，SSH 进 Railway，在 Volume 内生成替换库：
+
+```bash
+python -m tools.operations.compact_runtime_db plan --db /app/data/posts.db --bigram /app/data/bigram_index.db --symbol /app/data/symbol_index.db
+python -m tools.operations.compact_runtime_db migrate --db /app/data/posts.db --out /app/data/posts.next.db
+python -m tools.operations.compact_runtime_db rebuild-sidecars --db /app/data/posts.next.db --bigram-out /app/data/bigram_index.next.db --symbol-out /app/data/symbol_index.next.db
+python -m tools.operations.compact_runtime_db verify --db /app/data/posts.next.db --bigram /app/data/bigram_index.next.db --symbol /app/data/symbol_index.next.db
+python -m tools.operations.compact_runtime_db swap --db /app/data/posts.db --next /app/data/posts.next.db
+python -m tools.operations.compact_runtime_db swap-sidecars --bigram /app/data/bigram_index.db --bigram-next /app/data/bigram_index.next.db --symbol /app/data/symbol_index.db --symbol-next /app/data/symbol_index.next.db
+```
+
+`swap` 会把旧库改名为 `posts.before-时间.db`，再把 `posts.next.db` 放到 `/app/data/posts.db`。执行后重启 Railway 服务，让已有 SQLite 连接重新打开。若上线后异常，用输出的备份路径回滚：
+
+```bash
+python -m tools.operations.compact_runtime_db rollback --db /app/data/posts.db --backup /app/data/posts.before-YYYYMMDD-HHMMSS.db
+```
+
+Bigram 与 symbol sidecar 仍保持独立文件；迁移时从 `posts.next.db` 重建 `.next.db` sidecar，验证通过后与主库一起切换。
+
 ## Railway 设置
 
 ```text

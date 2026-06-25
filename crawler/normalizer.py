@@ -23,13 +23,10 @@ def normalize_detail(
         "category_name": data.get("category_name", ""),
         "user_name": data.get("show_user_name", ""),
         "show_user_id": data.get("show_user_id", ""),
-        "show_user_head": data.get("show_user_head", ""),
         "real_user_id": data.get("real_user_id", 0),
         "create_time": data.get("create_time", ""),
         "comment_count": safe_int(data.get("count_comment")),
         "star_count": safe_int(data.get("count_star")),
         "trace_count": safe_int(data.get("count_trace")),
-        "views": safe_int(data.get("views")),
-        "hot": safe_int(data.get("hot")),
     }
     return post, comments

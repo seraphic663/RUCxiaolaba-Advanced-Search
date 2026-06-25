@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -27,14 +26,11 @@ def main() -> int:
         "category_name": "日常投稿",
         "user_name": "某同学test",
         "show_user_id": "u-1",
-        "show_user_head": "https://example.invalid/head.jpg",
         "real_user_id": "0",
         "create_time": "2026-06-02 12:00:00",
         "comment_count": 9,
         "star_count": 2,
         "trace_count": 3,
-        "views": 4,
-        "hot": 5,
     }
     comments = [
         {
@@ -42,7 +38,6 @@ def main() -> int:
             "detail": "我可以拍毕业照",
             "show_user_name": "某同学A",
             "show_user_id": "u-2",
-            "show_user_head": "https://example.invalid/comment-head.jpg",
             "real_user_id": 0,
             "create_time": "2026-06-02 12:01:00",
             "reply_comment_list": [
@@ -54,6 +49,17 @@ def main() -> int:
                     "real_user_id": 0,
                     "reply_show_user_name": "某同学A",
                     "create_time": "2026-06-02 12:02:00",
+                    "reply_comment_list": [
+                        {
+                            "id": "r2",
+                            "detail": "收到",
+                            "show_user_name": "某同学A",
+                            "show_user_id": "u-2",
+                            "real_user_id": 0,
+                            "reply_show_user_name": "某同学test",
+                            "create_time": "2026-06-02 12:03:00",
+                        }
+                    ],
                 }
             ],
         }
@@ -68,10 +74,11 @@ def main() -> int:
     con = sqlite3.connect(path)
     try:
         assert con.execute("select count(*) from posts").fetchone()[0] == 1
-        assert con.execute("select count(*) from comments").fetchone()[0] == 2
+        assert con.execute("select count(*) from comments").fetchone()[0] == 3
         assert con.execute("select comment_count from posts where id='9001'").fetchone()[0] == 9
-        row = con.execute("select reply_comment_list from comments where comment_id='c1'").fetchone()[0]
-        assert json.loads(row)["reply_comment_list"][0]["detail"] == "私信你了"
+        assert not con.execute("select 1 from pragma_table_info('comments') where name='reply_comment_list'").fetchone()
+        parent = con.execute("select parent_comment_id from comments where comment_id='r2'").fetchone()[0]
+        assert parent == "r1"
         assert not con.execute("select 1 from pragma_table_info('posts') where name='comments_json'").fetchone()
         total = con.execute(
             "select count(distinct post_id) from search_index where body match ?",

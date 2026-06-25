@@ -1,6 +1,6 @@
 # raw_json 冗余字段精简
 
-> 状态: **已完成**。生产 schema 已精简为 `comments.reply_comment_list`，原始 raw_json 不再保留。
+> 状态: **已完成，后续继续瘦身**。生产 schema 已移除原始 `raw_json`；新 schema 进一步移除 `comments.reply_comment_list`，依靠 `parent_comment_id` 递归表达评论树。
 
 ## 结论
 
@@ -18,10 +18,10 @@
 | 冗余时间 | 2 | show_create_time, update_time |
 | 帖子级聚合 | 2 | count_comment, count_star |
 | 嵌套数据 | 1 | count_star, count_trace |
-| **唯一保留** | **1** | **reply_comment_list**（嵌套回复，无法从结构化列重建） |
+| 历史保留 | 1 | reply_comment_list，曾作为嵌套回复安全网 |
 
 精简后 DB 从 ~3.8GB 降到 ~2.0GB，省了 46%。
 
-## 当前保守策略
+## 当前策略
 
-`reply_comment_list` 仍保留，因为 `flatten_comments()` 只扁平化两层。如果后续修正为递归处理所有层级，这个字段也可以删。
+`flatten_comments()` 递归扁平化所有层级后，`reply_comment_list` 不再作为数据库列保留。展示层由后端按 `parent_comment_id` 递归组装 `children`。
