@@ -174,6 +174,19 @@ class HTTPContractTest(unittest.TestCase):
         self.assertNotIn("real_user_id", comments["comment_list"][0])
         self.assertEqual(comments["comment_list"][1]["show_user_name"], "某同学")
 
+    def test_admin_required_api_returns_401_without_session(self):
+        status, payload = self.get_json(
+            f"/api/search?q={quote('食堂')}&admin_required=1"
+        )
+        self.assertEqual(status, 401)
+        self.assertFalse(payload["ok"])
+        self.assertIn("管理员登录已失效", payload["error"])
+
+        status, payload = self.get_json("/api/comments?id=100&admin_required=1")
+        self.assertEqual(status, 401)
+        self.assertFalse(payload["ok"])
+        self.assertIn("管理员登录已失效", payload["error"])
+
     def test_main_page_and_ai_disabled_contract(self):
         with urlopen(self.base + "/", timeout=5) as response:
             content = response.read().decode("utf-8")

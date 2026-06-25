@@ -25,6 +25,24 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .header-actions .admin-link { position: static; transform: none; }
 .theme-toggle { width: 32px; height: 32px; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; background: transparent; color: rgba(255,255,255,.82); cursor: pointer; font-size: 18px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
 .theme-toggle:hover { color: #fff; border-color: rgba(255,255,255,.65); }
+.settings-toggle { width: 32px; height: 32px; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; background: transparent; color: rgba(255,255,255,.82); cursor: pointer; font-size: 17px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
+.settings-toggle:hover { color: #fff; border-color: rgba(255,255,255,.65); }
+.settings-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.28); z-index: 50; display: none; align-items: flex-start; justify-content: flex-end; padding: 72px 18px 18px; }
+.settings-backdrop.open { display: flex; }
+.settings-panel { width: min(360px, 94vw); background: #fff; color: #222; border: 1px solid #eee; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.2); padding: 16px; }
+.settings-panel h3 { font-size: 1em; margin-bottom: 12px; color: #8b0012; }
+.settings-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid #f0f0f0; font-size: .9em; }
+.settings-row:first-of-type { border-top: none; }
+.settings-row label { color: #555; }
+.settings-row select { min-width: 112px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 7px; background: #fff; color: #222; }
+.settings-row input[type=checkbox] { width: 18px; height: 18px; accent-color: #8b0012; }
+.settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.settings-actions button { padding: 7px 13px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+.settings-actions button.primary { border-color: #8b0012; background: #8b0012; color: #fff; }
+html.compact-mode .post { padding: 12px 14px; margin-bottom: 7px; }
+html.compact-mode .post .post-content { line-height: 1.62; }
+html.compact-mode .cmt { padding-top: 4px; padding-bottom: 4px; }
+html.hide-stats .post-stats-inline { display: none; }
 /* Search */
 .search-wrap { max-width: 760px; margin: 14px auto 10px; padding: 0 16px; }
 .search-wrap input { width: 100%; padding: 12px 16px; font-size: 16px; border: 2px solid #ddd; border-radius: 12px; outline: none; transition: border-color .2s; }
@@ -41,8 +59,9 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .results { max-width: 760px; margin: 0 auto; padding: 0 16px; }
 
 /* Post card */
-.post { background: #fff; border-radius: 12px; padding: 16px 18px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); transition: box-shadow .2s; }
+.post { background: #fff; border-radius: 12px; padding: 16px 18px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); transition: box-shadow .2s, border-color .2s, background .2s; border: 1px solid transparent; }
 .post:hover { box-shadow: 0 2px 8px rgba(0,0,0,.1); }
+.post.expanded { border-color: #e4b3bb; background: #fffafa; }
 .post .post-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 2px; }
 .post .post-header .left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .post .post-cat { background: #fff0f0; color: #8b0012; padding: 2px 8px; border-radius: 4px; font-size: 0.78em; white-space: nowrap; }
@@ -60,20 +79,22 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 
 /* Bottom row: stats + comment toggle on same line */
 .post-bottom-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0f0f0; flex-wrap: wrap; }
+.post-bottom-row.has-comments { cursor: pointer; }
+.post-bottom-row.has-comments:hover .comment-toggle-inline { text-decoration: underline; }
 .post-stats-inline { display: flex; gap: 12px; font-size: 0.82em; color: #999; }
 .post-stats-inline span { cursor: default; }
 .comment-toggle-inline { color: #8b0012; cursor: pointer; font-size: 0.85em; user-select: none; white-space: nowrap; }
 .comment-toggle-inline:hover { text-decoration: underline; }
 
 /* Comments */
-.post .comments-wrap { margin-top: 8px; border-left: 2px solid #eee; padding-left: 12px; }
-.cmt { padding: 7px 0; border-bottom: 1px solid #f5f5f5; font-size: 0.87em; }
+.post .comments-wrap { margin-top: 8px; border-left: 2px solid #eee; padding-left: 12px; cursor: default; }
+.cmt { --indent: 0px; position: relative; margin-left: var(--indent); padding: 7px 0 7px 10px; border-bottom: 1px solid #f5f5f5; border-left: 2px solid #eee; font-size: 0.87em; }
 .cmt:last-child { border-bottom: none; }
 .cmt .cmt-meta { color: #999; font-size: 0.82em; margin-bottom: 3px; }
 .cmt .cmt-meta .op-tag { color: #8b0012; font-size: 0.85em; }
+.cmt .depth-tag { display: inline-block; min-width: 24px; margin-right: 5px; color: #b46b76; font-size: 0.8em; }
 .cmt .cmt-text { color: #444; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.cmt .replies { margin-left: 10px; border-left: 1px solid #eee; padding-left: 10px; margin-top: 4px; }
-.cmt .reply { padding: 4px 0; font-size: 0.95em; }
+.cmt .replies { margin-top: 4px; }
 .loading { text-align: center; color: #999; padding: 20px; font-size: 0.9em; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid #ddd; border-top-color: #8b0012; border-radius: 50%; animation: spin .6s linear infinite; vertical-align: middle; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -270,6 +291,15 @@ html[data-theme] .header .github-link:hover,
 html[data-theme] .header .admin-link:hover { color: var(--ui-accent); }
 html[data-theme] .theme-toggle { border-color: var(--ui-border); color: var(--ui-muted); background: var(--ui-surface); }
 html[data-theme] .theme-toggle:hover { border-color: var(--ui-accent); color: var(--ui-accent); }
+html[data-theme] .settings-toggle { border-color: var(--ui-border); color: var(--ui-muted); background: var(--ui-surface); }
+html[data-theme] .settings-toggle:hover { border-color: var(--ui-accent); color: var(--ui-accent); }
+html[data-theme] .settings-panel { background: var(--ui-surface); color: var(--ui-text); border-color: var(--ui-border); box-shadow: 0 12px 32px var(--ui-shadow); }
+html[data-theme] .settings-panel h3 { color: var(--ui-accent); }
+html[data-theme] .settings-row { border-color: var(--ui-border); }
+html[data-theme] .settings-row label { color: var(--ui-text); }
+html[data-theme] .settings-row select,
+html[data-theme] .settings-actions button { background: var(--ui-surface); border-color: var(--ui-border); color: var(--ui-text); }
+html[data-theme] .settings-actions button.primary { background: var(--ui-accent); border-color: var(--ui-accent); color: #fff; }
 html[data-theme] .search-wrap input,
 html[data-theme] .filter-bar input,
 html[data-theme] .filter-bar select,
@@ -294,6 +324,7 @@ html[data-theme] .ai-bar-invite button:hover { background: var(--ui-accent-hover
 html[data-theme] .post,
 html[data-theme] .ai-bar,
 html[data-theme] .ai-result > .ai-answer-card { background: var(--ui-surface); border-color: var(--ui-border); border-radius: 8px; box-shadow: 0 1px 4px var(--ui-shadow); }
+html[data-theme] .post.expanded { border-color: var(--ui-accent); background: color-mix(in srgb, var(--ui-accent-soft) 28%, var(--ui-surface)); }
 html[data-theme] .post .post-cat { background: var(--ui-accent-soft); color: var(--ui-accent); }
 html[data-theme] .post .post-user,
 html[data-theme] .post .post-content,
@@ -316,6 +347,7 @@ html[data-theme] .ai-evidence-summary,
 html[data-theme] .ai-match-info { color: var(--ui-muted); }
 html[data-theme] .post .expand-btn,
 html[data-theme] .comment-toggle-inline,
+html[data-theme] .cmt .depth-tag,
 html[data-theme] .ai-bar-label,
 html[data-theme] .ai-findings strong,
 html[data-theme] .ai-evidence-title,
@@ -342,7 +374,38 @@ html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: va
   <p>共 __TOTAL__ 条帖子 &nbsp;·&nbsp; 时间跨度 __EARLIEST_TIME__ ~ __LATEST_TIME__ &nbsp;·&nbsp; 数据更新于 __CRAWL_TIME__</p>
   <div class="header-actions">
     <button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="切换深色模式" title="切换深色模式"><span class="theme-icon">☾</span></button>
+    <button class="settings-toggle" type="button" onclick="openSettings()" aria-label="界面设置" title="界面设置">⚙</button>
     <a class="admin-link" href="/admin" title="管理面板">&#128274; 管理</a>
+  </div>
+</div>
+
+<div class="settings-backdrop" id="settings-backdrop" onclick="if(event.target===this)closeSettings()">
+  <div class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <h3 id="settings-title">界面设置</h3>
+    <div class="settings-row">
+      <label for="set-page-size">每页数量</label>
+      <select id="set-page-size"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select>
+    </div>
+    <div class="settings-row">
+      <label for="set-truncate-len">正文折叠字数</label>
+      <select id="set-truncate-len"><option value="100">100</option><option value="140">140</option><option value="200">200</option><option value="0">不折叠</option></select>
+    </div>
+    <div class="settings-row">
+      <label for="set-comment-limit">评论默认显示</label>
+      <select id="set-comment-limit"><option value="20">前 20 条</option><option value="50">前 50 条</option><option value="0">全部</option></select>
+    </div>
+    <div class="settings-row">
+      <label for="set-show-stats">显示点赞/评论数</label>
+      <input type="checkbox" id="set-show-stats">
+    </div>
+    <div class="settings-row">
+      <label for="set-compact-mode">紧凑模式</label>
+      <input type="checkbox" id="set-compact-mode">
+    </div>
+    <div class="settings-actions">
+      <button type="button" onclick="closeSettings()">取消</button>
+      <button type="button" class="primary" onclick="saveSettings()">保存</button>
+    </div>
   </div>
 </div>
 
@@ -431,6 +494,71 @@ function toggleTheme() {
   updateThemeButton();
 }
 
+const SETTINGS_KEY = 'rucxlb-ui-settings';
+const DEFAULT_SETTINGS = {
+  pageSize: 50,
+  truncateLen: 140,
+  commentLimit: 50,
+  showStats: true,
+  compactMode: false
+};
+
+function loadSettings() {
+  try {
+    var raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    return Object.assign({}, DEFAULT_SETTINGS, raw);
+  } catch (e) {
+    return Object.assign({}, DEFAULT_SETTINGS);
+  }
+}
+
+let uiSettings = loadSettings();
+
+function normalizeSettings(settings) {
+  settings.pageSize = [20, 50, 100].indexOf(Number(settings.pageSize)) >= 0 ? Number(settings.pageSize) : 50;
+  settings.truncateLen = [0, 100, 140, 200].indexOf(Number(settings.truncateLen)) >= 0 ? Number(settings.truncateLen) : 140;
+  settings.commentLimit = [0, 20, 50].indexOf(Number(settings.commentLimit)) >= 0 ? Number(settings.commentLimit) : 50;
+  settings.showStats = settings.showStats !== false;
+  settings.compactMode = settings.compactMode === true;
+  return settings;
+}
+
+function applySettings() {
+  uiSettings = normalizeSettings(uiSettings);
+  PAGE_SIZE = uiSettings.pageSize;
+  TRUNCATE_LEN = uiSettings.truncateLen;
+  document.documentElement.classList.toggle('compact-mode', uiSettings.compactMode);
+  document.documentElement.classList.toggle('hide-stats', !uiSettings.showStats);
+}
+
+function openSettings() {
+  uiSettings = normalizeSettings(loadSettings());
+  document.getElementById('set-page-size').value = String(uiSettings.pageSize);
+  document.getElementById('set-truncate-len').value = String(uiSettings.truncateLen);
+  document.getElementById('set-comment-limit').value = String(uiSettings.commentLimit);
+  document.getElementById('set-show-stats').checked = uiSettings.showStats;
+  document.getElementById('set-compact-mode').checked = uiSettings.compactMode;
+  document.getElementById('settings-backdrop').classList.add('open');
+}
+
+function closeSettings() {
+  document.getElementById('settings-backdrop').classList.remove('open');
+}
+
+function saveSettings() {
+  uiSettings = normalizeSettings({
+    pageSize: Number(document.getElementById('set-page-size').value),
+    truncateLen: Number(document.getElementById('set-truncate-len').value),
+    commentLimit: Number(document.getElementById('set-comment-limit').value),
+    showStats: document.getElementById('set-show-stats').checked,
+    compactMode: document.getElementById('set-compact-mode').checked
+  });
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(uiSettings));
+  applySettings();
+  closeSettings();
+  doSearch();
+}
+
 // ===== State =====
 let currentPage = 1;
 let currentSort = 'time';
@@ -440,8 +568,9 @@ let paginationMode = 'numbered';
 let cursorPages = [{ offset: 0, matchedBefore: 0 }];
 let pageCache = {};
 let searchController = null;
-const PAGE_SIZE = 50;
-const TRUNCATE_LEN = 140;
+let PAGE_SIZE = 50;
+let TRUNCATE_LEN = 140;
+applySettings();
 
 // ===== Format helpers =====
 function formatTime(t) {
@@ -485,6 +614,7 @@ function highlightText(text, keywords) {
 
 // ===== Truncation =====
 function truncateContent(text) {
+  if (TRUNCATE_LEN <= 0) return { truncated: false, preview: text, full: text };
   if (text.length <= TRUNCATE_LEN) return { truncated: false, preview: text, full: text };
   return { truncated: true, preview: text.substring(0, TRUNCATE_LEN) + '...', full: text };
 }
@@ -512,7 +642,8 @@ function renderPost(post, index, keywords) {
   // ---- Content ----
   let truncatedClass = tc.truncated ? ' collapsed' : '';
   let displayText = tc.truncated ? tc.preview : fullContent;
-  let contentHtml = '<div class="post-content' + truncatedClass + '" id="content-' + index + '">' +
+  let contentClick = tc.truncated ? ' onclick="event.stopPropagation(); toggleContent(' + index + ')"' : '';
+  let contentHtml = '<div class="post-content' + truncatedClass + '" id="content-' + index + '"' + contentClick + '>' +
     highlightText(displayText, keywords) +
   '</div>';
 
@@ -520,15 +651,16 @@ function renderPost(post, index, keywords) {
   let expandBarHtml = '';
   if (tc.truncated) {
     expandBarHtml = '<div class="expand-bar" id="expbar-' + index + '">' +
-      '<span class="expand-btn" id="expbtn-' + index + '" onclick="toggleContent(' + index + ')">&#9654; 展开全文 (' + fullContent.length + '字)</span>' +
+      '<span class="expand-btn" id="expbtn-' + index + '" onclick="event.stopPropagation(); toggleContent(' + index + ')">&#9654; 展开全文 (' + fullContent.length + '字)</span>' +
     '</div>';
   }
 
   // ---- Bottom row: comment toggle (left) + stats (right) ----
-  let bottomRowHtml = '<div class="post-bottom-row">';
+  let bottomRowHtml = '<div class="post-bottom-row' + (post.comments > 0 ? ' has-comments' : '') + '"' +
+    (post.comments > 0 ? ' onclick="toggleComments(' + index + ')"' : '') + '>';
 
   if (post.comments > 0) {
-    bottomRowHtml += '<span class="comment-toggle-inline" id="cmt-btn-' + index + '" onclick="toggleComments(' + index + ')">&#9654; 展开 ' + post.comments + ' 条评论</span>';
+    bottomRowHtml += '<span class="comment-toggle-inline" id="cmt-btn-' + index + '" onclick="event.stopPropagation(); toggleComments(' + index + ')">&#9654; 展开 ' + post.comments + ' 条评论</span>';
   } else {
     bottomRowHtml += '<span></span>';  // spacer
   }
@@ -540,7 +672,7 @@ function renderPost(post, index, keywords) {
   '</div>';
 
   // ---- Comments container ----
-  let cmtContainer = '<div class="comments-wrap" id="cmts-' + index + '" style="display:none"></div>';
+  let cmtContainer = '<div class="comments-wrap" id="cmts-' + index + '" style="display:none" onclick="event.stopPropagation()"></div>';
 
   return '<div class="post" id="post-' + index + '">' +
     hdrHtml + contentHtml + expandBarHtml + bottomRowHtml + cmtContainer +
@@ -587,19 +719,22 @@ var _commentsLoaded = {};  // index -> bool
 function toggleComments(index) {
   var wrap = document.getElementById('cmts-' + index);
   var btn = document.getElementById('cmt-btn-' + index);
+  var postEl = document.getElementById('post-' + index);
   var data = _postData[index];
-  if (!wrap || !btn || !data) return;
+  if (!wrap || !data || data.commentCount <= 0) return;
 
   var isVisible = wrap.style.display === 'block';
 
   if (isVisible) {
     // Hide
     wrap.style.display = 'none';
-    btn.textContent = '▶ 展开 ' + data.commentCount + ' 条评论';
+    if (postEl) postEl.classList.remove('expanded');
+    if (btn) btn.textContent = '▶ 展开 ' + data.commentCount + ' 条评论';
   } else {
     // Show
     wrap.style.display = 'block';
-    btn.textContent = '▼ 收起评论';
+    if (postEl) postEl.classList.add('expanded');
+    if (btn) btn.textContent = '▼ 收起评论';
 
     if (!_commentsLoaded[index]) {
       loadComments(index, data.postId);
@@ -630,6 +765,9 @@ function loadComments(index, postId) {
 }
 
 function renderComments(cmts, keywords) {
+  var limit = uiSettings.commentLimit || 0;
+  var hiddenTopLevel = limit > 0 && cmts.length > limit ? cmts.length - limit : 0;
+  var visibleCmts = hiddenTopLevel > 0 ? cmts.slice(0, limit) : cmts;
   function renderLevel(items, depth) {
     var levelParts = [];
     for (var i = 0; i < items.length; i++) {
@@ -638,16 +776,19 @@ function renderComments(cmts, keywords) {
       var txt = highlightText(c.detail || '', keywords);
       var isOp = c.is_publisher == 1;
       var opTag = isOp ? ' <span class="op-tag">楼主</span>' : '';
-      var replyTo = c.reply_show_user_name ? ' 回复 ' + escapeHtml(c.reply_show_user_name) : '';
+      var replyTo = c.reply_show_user_name ? ' → ' + escapeHtml(c.reply_show_user_name) : '';
       var replies = c.children || c.reply_comment_list || [];
       var nested = replies.length > 0
         ? '<div class="replies">' + renderLevel(replies, depth + 1) + '</div>'
         : '';
       var marker = depth === 0 ? '<b style="color:#8b0012;">#' + num + '</b> ' : '';
-      var cls = depth === 0 ? 'cmt' : 'reply';
+      var visualDepth = Math.min(depth, 4);
+      var depthLabel = '';
+      if (depth === 1) depthLabel = '<span class="depth-tag">回复</span>';
+      else if (depth > 1) depthLabel = '<span class="depth-tag">L' + (depth + 1) + (depth >= 4 ? '+' : '') + '</span>';
       levelParts.push(
-        '<div class="' + cls + '">' +
-          '<div class="cmt-meta">' + marker + escapeHtml(c.show_user_name || '?') + replyTo + opTag + '</div>' +
+        '<div class="cmt" data-depth="' + depth + '" style="--indent:' + (visualDepth * 14) + 'px">' +
+          '<div class="cmt-meta">' + marker + depthLabel + escapeHtml(c.show_user_name || '?') + replyTo + opTag + '</div>' +
           '<div class="cmt-text">' + txt + '</div>' +
           nested +
         '</div>'
@@ -655,7 +796,11 @@ function renderComments(cmts, keywords) {
     }
     return levelParts.join('');
   }
-  return renderLevel(cmts, 0);
+  var html = renderLevel(visibleCmts, 0);
+  if (hiddenTopLevel > 0) {
+    html += '<div class="loading">已显示前 ' + limit + ' 条顶层评论，另有 ' + hiddenTopLevel + ' 条可在设置中改为全部显示</div>';
+  }
+  return html;
 }
 
 // ===== Search & Pagination =====
