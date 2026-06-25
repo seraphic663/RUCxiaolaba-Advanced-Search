@@ -6,7 +6,6 @@ older full schema by filling posts.comments_json when that column exists.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import time
@@ -31,54 +30,58 @@ def comment_time(item: dict) -> str:
     return str(item.get("create_time") or item.get("show_create_time") or item.get("update_time") or "")
 
 
-def slim_raw(item: dict) -> str:
-    """Keep only reply_comment_list from the full API comment object.
-
-    The 14 structured columns already capture every meaningful field
-    (detail, user IDs, timestamps, etc.).  reply_comment_list is the
-    only nested structure that cannot be fully reconstructed from the
-    flat comments table alone.
-    """
-    slim: dict = {}
-    rcl = item.get("reply_comment_list")
-    if rcl:
-        slim["reply_comment_list"] = rcl
-    return json.dumps(slim, ensure_ascii=False, separators=(",", ":"))
-
-
-def comment_row(post_id: str, parent_id: str, comment_id: str, item: dict, updated_at: str, row_key: str) -> tuple:
-    return (
-        row_key,
-        comment_id,
-        post_id,
-        parent_id,
-        str(item.get("detail") or ""),
-        str(item.get("show_user_name") or ""),
-        str(item.get("show_user_id") or ""),
-        str(item.get("real_user_id") or "0"),
-        str(item.get("reply_show_user_name") or ""),
-        str(item.get("reply_show_user_id") or ""),
-        safe_int(item.get("is_publisher")),
-        comment_time(item),
-        slim_raw(item),
-        updated_at,
-    )
+def comment_row(
+    post_id: str,
+    parent_id: str,
+    comment_id: str,
+    item: dict,
+    updated_at: str,
+    row_key: str,
+) -> dict:
+    return {
+        "row_key": row_key,
+        "comment_id": comment_id,
+        "post_id": post_id,
+        "parent_comment_id": parent_id,
+        "detail": str(item.get("detail") or ""),
+        "show_user_name": str(item.get("show_user_name") or ""),
+        "show_user_id": str(item.get("show_user_id") or ""),
+        "real_user_id": str(item.get("real_user_id") or "0"),
+        "reply_show_user_name": str(item.get("reply_show_user_name") or ""),
+        "reply_show_user_id": str(item.get("reply_show_user_id") or ""),
+        "is_publisher": safe_int(item.get("is_publisher")),
+        "create_time": comment_time(item),
+        "updated_at": updated_at,
+    }
 
 
-def flatten_comments(post_id: str, comments: Iterable[dict], updated_at: str) -> list[tuple]:
-    rows: list[tuple] = []
+def flatten_comments(
+    post_id: str,
+    comments: Iterable[dict],
+    updated_at: str,
+    *,
+    parent_id: str = "",
+    parent_key: str | None = None,
+) -> list[dict]:
+    rows: list[dict] = []
+    base_key = parent_key or post_id
     for idx, item in enumerate(comments or []):
         if not isinstance(item, dict):
             continue
-        cid = str(item.get("id") or f"{post_id}-c-{idx}")
-        rows.append(comment_row(post_id, "", cid, item, updated_at, f"{post_id}:{cid}"))
+        cid = str(item.get("id") or f"{base_key}-c-{idx}")
+        row_key = f"{base_key}:{cid}"
+        rows.append(comment_row(post_id, parent_id, cid, item, updated_at, row_key))
         replies = item.get("reply_comment_list") or []
         if isinstance(replies, list):
-            for ridx, reply in enumerate(replies):
-                if not isinstance(reply, dict):
-                    continue
-                rid = str(reply.get("id") or f"{cid}-r-{ridx}")
-                rows.append(comment_row(post_id, cid, rid, reply, updated_at, f"{post_id}:{cid}:{rid}"))
+            rows.extend(
+                flatten_comments(
+                    post_id,
+                    replies,
+                    updated_at,
+                    parent_id=cid,
+                    parent_key=row_key,
+                )
+            )
     return rows
 
 
@@ -114,6 +117,7 @@ class SQLitePostStore:
             self.conn.execute("pragma bigram.synchronous=normal")
             self._has_bigram_index = True
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
+        self._comment_columns = self._columns("comments") if self._table_exists("comments") else set()
         self._has_search_index = self._table_exists("search_index")
 
     def close(self) -> None:
@@ -144,14 +148,11 @@ class SQLitePostStore:
                 category_name text not null,
                 user_name text not null,
                 show_user_id text not null,
-                show_user_head text not null,
                 real_user_id text not null,
                 create_time text not null,
                 comment_count integer not null,
                 star_count integer not null,
                 trace_count integer not null,
-                views integer not null,
-                hot integer not null,
                 updated_at text not null
             );
 
@@ -168,7 +169,6 @@ class SQLitePostStore:
                 reply_show_user_id text not null,
                 is_publisher integer not null,
                 create_time text not null,
-                reply_comment_list text not null,
                 updated_at text not null
             );
 
@@ -179,8 +179,6 @@ class SQLitePostStore:
             );
 
             create index if not exists idx_posts_create_time on posts(create_time);
-            create index if not exists idx_posts_hot on posts(hot desc, id desc);
-            create index if not exists idx_posts_views on posts(views desc, id desc);
             create index if not exists idx_posts_stars on posts(star_count desc, id desc);
             create index if not exists idx_posts_category on posts(category_name);
             create index if not exists idx_posts_show_user_id on posts(show_user_id);
@@ -188,6 +186,7 @@ class SQLitePostStore:
             create index if not exists idx_posts_user_name_lower on posts(lower(user_name));
             create index if not exists idx_comments_post_id on comments(post_id);
             create index if not exists idx_comments_create_time on comments(create_time);
+            create index if not exists idx_comments_post_time on comments(post_id, create_time, row_key);
             create index if not exists idx_comments_show_user_id on comments(show_user_id);
             create index if not exists idx_comments_real_user_id on comments(real_user_id);
             create index if not exists idx_comments_reply_show_user_id on comments(reply_show_user_id);
@@ -208,6 +207,7 @@ class SQLitePostStore:
             )
         self.conn.commit()
         self._post_columns = self._columns("posts")
+        self._comment_columns = self._columns("comments")
         self._has_search_index = True
 
     def upsert_post(self, post: dict, comments: list[dict] | None = None, commit: bool = True) -> None:
@@ -222,18 +222,24 @@ class SQLitePostStore:
             "category_name": str(post.get("category_name") or post.get("category") or ""),
             "user_name": str(post.get("user_name") or post.get("user") or ""),
             "show_user_id": str(post.get("show_user_id") or ""),
-            "show_user_head": str(post.get("show_user_head") or ""),
             "real_user_id": str(post.get("real_user_id") or "0"),
             "create_time": str(post.get("create_time") or post.get("time") or ""),
             "comment_count": safe_int(post.get("comment_count", post.get("comments", 0))),
             "star_count": safe_int(post.get("star_count", post.get("stars", 0))),
             "trace_count": safe_int(post.get("trace_count", post.get("trace", 0))),
-            "views": safe_int(post.get("views")),
-            "hot": safe_int(post.get("hot")),
             "updated_at": updated_at,
         }
-        if "comments_json" in self._post_columns:
-            values["comments_json"] = json.dumps(comments or [], ensure_ascii=False, separators=(",", ":"))
+        values.update(
+            {
+                key: value
+                for key, value in {
+                    "show_user_head": str(post.get("show_user_head") or ""),
+                    "views": safe_int(post.get("views")),
+                    "hot": safe_int(post.get("hot")),
+                }.items()
+                if key in self._post_columns
+            }
+        )
 
         columns = [col for col in values if col in self._post_columns]
         placeholders = ",".join("?" for _ in columns)
@@ -268,9 +274,29 @@ class SQLitePostStore:
         rows = flatten_comments(post_id, comments, updated_at)
         self.conn.execute("delete from comments where post_id=?", (post_id,))
         if rows:
+            columns = [
+                col
+                for col in [
+                    "row_key",
+                    "comment_id",
+                    "post_id",
+                    "parent_comment_id",
+                    "detail",
+                    "show_user_name",
+                    "show_user_id",
+                    "real_user_id",
+                    "reply_show_user_name",
+                    "reply_show_user_id",
+                    "is_publisher",
+                    "create_time",
+                    "updated_at",
+                ]
+                if col in self._comment_columns
+            ]
+            placeholders = ",".join("?" for _ in columns)
             self.conn.executemany(
-                "insert into comments values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                rows,
+                f"insert into comments({','.join(columns)}) values ({placeholders})",
+                ([row[col] for col in columns] for row in rows),
             )
         if comment_count is None:
             comment_count = len(rows)
@@ -297,7 +323,11 @@ class SQLitePostStore:
             rows = self.conn.execute("select detail from comments where post_id=? and detail != ''", (post_id,)).fetchall()
             bodies = [row[0] for row in rows]
         else:
-            bodies = [row[4] for row in flatten_comments(post_id, comments, now_text()) if row[4]]
+            bodies = [
+                row["detail"]
+                for row in flatten_comments(post_id, comments, now_text())
+                if row["detail"]
+            ]
         self.conn.executemany(
             "insert into search_index(post_id, kind, body) values (?,?,?)",
             ((post_id, "comment", body) for body in bodies),
@@ -337,9 +367,9 @@ class SQLitePostStore:
             comment_bodies = [row[0] for row in rows]
         else:
             comment_bodies = [
-                row[4]
+                row["detail"]
                 for row in flatten_comments(post_id, comments, now_text())
-                if row[4]
+                if row["detail"]
             ]
 
         bodies = []
@@ -359,14 +389,14 @@ class SQLitePostStore:
             self.conn.commit()
 
 
-    def get_post_counts(self, post_id: str) -> tuple[int, int] | None:
+    def get_post_counts(self, post_id: str) -> int | None:
         row = self.conn.execute(
-            "select comment_count, views from posts where id=?",
+            "select comment_count from posts where id=?",
             (str(post_id),),
         ).fetchone()
         if row is None:
             return None
-        return safe_int(row[0]), safe_int(row[1])
+        return safe_int(row[0])
 
     def set_state(self, key: str, value: str, commit: bool = True) -> None:
         self.conn.execute(

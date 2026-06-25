@@ -42,9 +42,7 @@ class HTTPContractTest(unittest.TestCase):
                 create_time text,
                 comment_count integer,
                 star_count integer,
-                trace_count integer,
-                views integer,
-                hot integer
+                trace_count integer
             );
             create table comments(
                 row_key text primary key,
@@ -63,7 +61,7 @@ class HTTPContractTest(unittest.TestCase):
             """
         )
         conn.execute(
-            "insert into posts values (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "insert into posts values (?,?,?,?,?,?,?,?,?,?)",
             (
                 "100",
                 "食堂今天开门",
@@ -75,8 +73,6 @@ class HTTPContractTest(unittest.TestCase):
                 2,
                 2,
                 3,
-                4,
-                5,
             ),
         )
         conn.execute(

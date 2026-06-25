@@ -510,8 +510,6 @@ class SearchRepository:
             "comments": _safe_int(row["comment_count"]),
             "stars": _safe_int(row["star_count"]),
             "trace": _safe_int(row["trace_count"]),
-            "views": _safe_int(row["views"]),
-            "hot": _safe_int(row["hot"]),
         }
 
     def search(self, request: SearchQuery) -> dict:
@@ -540,7 +538,7 @@ class SearchRepository:
                 f"""
                 select p.id, p.content, p.category_name, p.user_name,
                        p.create_time, p.comment_count, p.star_count,
-                       p.trace_count, p.views, p.hot,
+                       p.trace_count,
                        p.show_user_id, p.real_user_id
                 from posts p
                 {where_sql}
@@ -635,7 +633,7 @@ class SearchRepository:
                     f"""
                     select p.id, p.content, p.category_name, p.user_name,
                            p.create_time, p.comment_count, p.star_count,
-                           p.trace_count, p.views, p.hot,
+                           p.trace_count,
                            p.show_user_id, p.real_user_id
                     from posts p
                     {candidate_where}
@@ -713,7 +711,7 @@ class SearchRepository:
                 f"""
                 select p.id, p.content, p.category_name, p.user_name,
                        p.create_time, p.comment_count, p.star_count,
-                       p.trace_count, p.views, p.hot,
+                       p.trace_count,
                        p.show_user_id, p.real_user_id
                 from posts p
                 {candidate_where}
@@ -805,14 +803,18 @@ class SearchRepository:
 
         top: list[dict] = []
         by_id: dict[str, dict] = {}
+        parents: dict[str, str] = {}
         for row in rows:
+            children: list[dict] = []
             item = {
+                "comment_id": row["comment_id"],
                 "detail": row["detail"],
                 "show_user_name": row["show_user_name"],
                 "create_time": row["create_time"],
                 "is_publisher": row["is_publisher"],
                 "reply_show_user_name": row["reply_show_user_name"],
-                "reply_comment_list": [],
+                "children": children,
+                "reply_comment_list": children,
             }
             if admin:
                 item["show_user_id"] = row["show_user_id"]
@@ -824,15 +826,18 @@ class SearchRepository:
                 and post["user_name"]
             ):
                 item["show_user_name"] = post["user_name"]
-            if row["parent_comment_id"]:
-                parent = by_id.get(row["parent_comment_id"])
-                if parent is not None:
-                    parent["reply_comment_list"].append(item)
-                else:
-                    top.append(item)
-            else:
+            comment_id = str(row["comment_id"] or "")
+            parent_id = str(row["parent_comment_id"] or "")
+            by_id[comment_id] = item
+            parents[comment_id] = parent_id
+
+        for comment_id, item in by_id.items():
+            parent_id = parents.get(comment_id, "")
+            parent = by_id.get(parent_id) if parent_id else None
+            if parent is None:
                 top.append(item)
-                by_id[row["comment_id"]] = item
+            else:
+                parent["children"].append(item)
         return {
             "post_id": post_id,
             "comment_count": post["comment_count"],

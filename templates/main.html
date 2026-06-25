@@ -630,43 +630,32 @@ function loadComments(index, postId) {
 }
 
 function renderComments(cmts, keywords) {
-  var htmlParts = [];
-  for (var i = 0; i < cmts.length; i++) {
-    var c = cmts[i];
-    var num = i + 1;
-    var txt = highlightText(c.detail || '', keywords);
-    var isOp = c.is_publisher == 1;
-    var opTag = isOp ? ' <span class="op-tag">楼主</span>' : '';
-
-    // Render nested replies
-    var replyHtml = '';
-    var replies = c.reply_comment_list || [];
-    if (replies.length > 0) {
-      var replyParts = [];
-      for (var j = 0; j < replies.length; j++) {
-        var rp = replies[j];
-        var rt = highlightText(rp.detail || '', keywords);
-        var replyTo = rp.reply_show_user_name ? ' 回复 ' + escapeHtml(rp.reply_show_user_name) : '';
-        replyParts.push(
-          '<div class="reply">' +
-            '<div class="cmt-meta">' + escapeHtml(rp.show_user_name || '?') + replyTo + '</div>' +
-            '<div class="cmt-text">' + rt + '</div>' +
-          '</div>'
-        );
-      }
-      replyHtml = '<div class="replies">' + replyParts.join('') + '</div>';
+  function renderLevel(items, depth) {
+    var levelParts = [];
+    for (var i = 0; i < items.length; i++) {
+      var c = items[i];
+      var num = i + 1;
+      var txt = highlightText(c.detail || '', keywords);
+      var isOp = c.is_publisher == 1;
+      var opTag = isOp ? ' <span class="op-tag">楼主</span>' : '';
+      var replyTo = c.reply_show_user_name ? ' 回复 ' + escapeHtml(c.reply_show_user_name) : '';
+      var replies = c.children || c.reply_comment_list || [];
+      var nested = replies.length > 0
+        ? '<div class="replies">' + renderLevel(replies, depth + 1) + '</div>'
+        : '';
+      var marker = depth === 0 ? '<b style="color:#8b0012;">#' + num + '</b> ' : '';
+      var cls = depth === 0 ? 'cmt' : 'reply';
+      levelParts.push(
+        '<div class="' + cls + '">' +
+          '<div class="cmt-meta">' + marker + escapeHtml(c.show_user_name || '?') + replyTo + opTag + '</div>' +
+          '<div class="cmt-text">' + txt + '</div>' +
+          nested +
+        '</div>'
+      );
     }
-
-    htmlParts.push(
-      '<div class="cmt">' +
-        '<div class="cmt-meta"><b style="color:#8b0012;">#' + num + '</b> ' +
-        escapeHtml(c.show_user_name || '?') + opTag + '</div>' +
-        '<div class="cmt-text">' + txt + '</div>' +
-        replyHtml +
-      '</div>'
-    );
+    return levelParts.join('');
   }
-  return htmlParts.join('');
+  return renderLevel(cmts, 0);
 }
 
 // ===== Search & Pagination =====

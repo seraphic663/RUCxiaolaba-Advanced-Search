@@ -34,14 +34,11 @@ content         标题 + 正文拼接后的搜索内容
 category_name   分类/tag
 user_name       展示昵称
 show_user_id    匿名展示 ID
-show_user_head  头像 URL，当前 UI 基本不用
 real_user_id    真实用户 ID，0 通常表示匿名
 create_time     发帖时间
 comment_count   评论数
 star_count      点赞数
 trace_count     蹲蹲数
-views           浏览数
-hot             小程序原始 hot 字段
 updated_at      本库最后更新时间
 ```
 
@@ -64,7 +61,6 @@ reply_show_user_name 被回复人展示昵称
 reply_show_user_id   被回复人展示 ID
 is_publisher         是否楼主
 create_time          评论时间
-reply_comment_list   从旧原始评论 JSON 中保留的嵌套回复列表安全网
 updated_at           本库最后更新时间
 ```
 
@@ -92,18 +88,18 @@ body     正文或评论文本
 
 ## 为什么不再保留 posts.comments_json
 
-旧 CSV/完整 DB 里曾经在帖子表保存完整嵌套评论 JSON。现在已改成：
+旧 CSV/完整 DB 里曾经在帖子表保存完整嵌套评论 JSON。当前主模型是：
 
 ```text
 comments 表结构化字段
-comments.reply_comment_list 仅保留嵌套回复列表
+comments.parent_comment_id 表示评论树层级
 ```
 
-这样可以减少重复存储，同时保留当前搜索、评论展示、admin 检索所需字段。
+这样可以减少重复存储，同时保留当前搜索、评论展示、admin 检索所需字段。API 展示时递归组装 `children`，并暂时提供 `reply_comment_list` 兼容字段给旧前端逻辑。
 
 代价：
 
-- 这不是 API 全字段无损归档；评论头像、图片、会话态字段等原始字段已不再保留。
+- 这不是 API 全字段无损归档；评论头像、图片、会话态字段、浏览数和 hot 等原始字段已不再保留。
 - 如果以后要恢复新的原始 API 字段，可能需要重新爬取或从旧备份恢复。
 - 当前网站功能不依赖完整整包 JSON。
 
@@ -113,12 +109,11 @@ comments.reply_comment_list 仅保留嵌套回复列表
 
 ```text
 posts.create_time
-posts.hot
-posts.views
 posts.star_count
 posts.category_name
 comments.post_id
 comments.create_time
+comments(post_id, create_time, row_key)
 search_index FTS5
 ```
 

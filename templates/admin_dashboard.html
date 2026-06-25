@@ -509,31 +509,23 @@ function renderResults(data) {
 
 function renderComments(panel, comments) {
   if (!comments || comments.length === 0) return '无评论';
-  var h = '';
-  comments.forEach(function(c) {
-    h += '<div class="cmt">';
-    h += '<span class="cmt-uid">' + (c.show_user_id||'?') + '</span> ';
-    h += identityPill(c.real_user_id, '回复', c.hasOwnProperty('real_user_id'));
-    h += '<span class="cmt-name">' + (c.show_user_name||'?') + '</span>';
-    if (c.is_publisher == 1) h += ' <span style="color:#8b0012">楼主</span>';
-    if (c.reply_show_user_id) h += '<span class="reply-to">→ ' + (c.reply_show_user_name||c.reply_show_user_id||'?') + '</span>';
-    h += '<div class="cmt-text">' + highlight(c.detail||'') + '</div>';
-    if (c.reply_comment_list && c.reply_comment_list.length > 0) {
-      h += '<div class="nested">';
-      c.reply_comment_list.forEach(function(nr) {
-        h += '<div class="cmt">';
-        h += '<span class="cmt-uid">' + (nr.show_user_id||'?') + '</span> ';
-        h += identityPill(nr.real_user_id, '回复', nr.hasOwnProperty('real_user_id'));
-        h += '<span class="cmt-name">' + (nr.show_user_name||'?') + '</span>';
-        if (nr.reply_show_user_id) h += '<span class="reply-to">→ ' + (nr.reply_show_user_name||nr.reply_show_user_id||'?') + '</span>';
-        h += '<div class="cmt-text">' + highlight(nr.detail||'') + '</div>';
-        h += '</div>';
-      });
+  function renderLevel(items) {
+    var h = '';
+    items.forEach(function(c) {
+      var children = c.children || c.reply_comment_list || [];
+      h += '<div class="cmt">';
+      h += '<span class="cmt-uid">' + (c.show_user_id||'?') + '</span> ';
+      h += identityPill(c.real_user_id, '回复', c.hasOwnProperty('real_user_id'));
+      h += '<span class="cmt-name">' + (c.show_user_name||'?') + '</span>';
+      if (c.is_publisher == 1) h += ' <span style="color:#8b0012">楼主</span>';
+      if (c.reply_show_user_id) h += '<span class="reply-to">→ ' + (c.reply_show_user_name||c.reply_show_user_id||'?') + '</span>';
+      h += '<div class="cmt-text">' + highlight(c.detail||'') + '</div>';
+      if (children.length > 0) h += '<div class="nested">' + renderLevel(children) + '</div>';
       h += '</div>';
-    }
-    h += '</div>';
-  });
-  return h;
+    });
+    return h;
+  }
+  return renderLevel(comments);
 }
 
 function identityPill(realUserId, label, known) {
