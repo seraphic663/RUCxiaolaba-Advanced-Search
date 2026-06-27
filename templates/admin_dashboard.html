@@ -133,47 +133,20 @@ mark { background: #fff0b3; color: #111; padding: 0 2px; border-radius: 2px; }
   .control-grid { grid-template-columns: minmax(340px, .95fr) minmax(300px, 1fr); }
   .match-group { grid-column: 1 / -1; }
 }
-/* ── AI Test ── */
-.ai-section { max-width: 1040px; margin: 0 auto 14px; padding: 0 16px; }
-.ai-card { background: #fff; padding: 14px; border-radius: 8px; border: 1px solid #eee; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
-.ai-card h3 { font-size: 0.95em; color: #8b0012; margin-bottom: 8px; }
-.ai-row { display: flex; gap: 8px; }
-.ai-row input { flex: 1; padding: 7px 11px; border: 2px solid #ddd; border-radius: 8px; font-size: 13px; outline: none; }
-.ai-row input:focus { border-color: #8b0012; }
-.ai-row button { padding: 7px 18px; border: none; border-radius: 8px; background: #8b0012; color: #fff; cursor: pointer; font-size: 13px; white-space: nowrap; height: 34px; }
-.ai-row button:disabled { background: #ccc; cursor: not-allowed; }
-.ai-response { margin-top: 10px; line-height: 1.7; font-size: 0.9em; white-space: pre-wrap; word-break: break-word; display: none; }
-.ai-response.active { display: block; }
-.ai-response .ai-cited { margin-top: 8px; font-size: 0.85em; color: #8b0012; }
-.ai-debug { margin-top: 8px; font-size: 0.78em; color: #666; background: #f8f8f8; padding: 8px; border-radius: 6px; display: none; }
-.ai-debug.active { display: block; }
-.ai-findings { padding-left: 20px; margin-top: 8px; }
-.ai-findings li { margin: 6px 0; line-height: 1.6; }
-.ai-findings strong { color: #8b0012; }
-.ai-caveat { color: #777; font-size: 0.86em; border-top: 1px solid #eee; padding-top: 7px; margin-top: 8px; }
-.ai-evidence-list { margin-top: 10px; }
-.ai-evidence-list .result-row { cursor: default; }
-.ai-reference { margin-top: 6px; padding: 6px 9px; border-left: 3px solid #e4c3c7; background: #fafafa; color: #555; font-size: 0.84em; line-height: 1.55; }
-
 html[data-theme="light"] body { background: #f4f1e8; color: #2f2d29; }
 html[data-theme="light"] .filters,
 html[data-theme="light"] .result-row,
 html[data-theme="light"] .stat-card,
-html[data-theme="light"] .ai-card,
 html[data-theme="light"] .loading,
 html[data-theme="light"] .no-results { background: #fffdf8; border-color: #e1dbcf; }
 html[data-theme="light"] .filters input[type=text],
 html[data-theme="light"] .filters select,
-html[data-theme="light"] .ai-row input,
 html[data-theme="light"] .pagination button,
 html[data-theme="light"] .field-toggle { background: #fffdf8; border-color: #d9d3c7; }
 html[data-theme="light"] .result-row .stats-row,
-html[data-theme="light"] .cmt,
-html[data-theme="light"] .ai-caveat { border-color: #e8e2d7; }
+html[data-theme="light"] .cmt { border-color: #e8e2d7; }
 html[data-theme="light"] .comments-panel,
 html[data-theme="light"] .cmt .nested { border-color: #ded8cc; }
-html[data-theme="light"] .ai-debug,
-html[data-theme="light"] .ai-reference { background: #f7f3ea; }
 
 html[data-theme="dark"] { color-scheme: dark; }
 html[data-theme="dark"] body { background: #111315; color: #e8e8e8; }
@@ -181,35 +154,29 @@ html[data-theme="dark"] .header { background: #65000d; }
 html[data-theme="dark"] .filters,
 html[data-theme="dark"] .result-row,
 html[data-theme="dark"] .stat-card,
-html[data-theme="dark"] .ai-card,
 html[data-theme="dark"] .loading,
 html[data-theme="dark"] .no-results { background: #1a1d20; border-color: #30363c; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
 html[data-theme="dark"] .filters input[type=text],
 html[data-theme="dark"] .filters select,
-html[data-theme="dark"] .ai-row input,
 html[data-theme="dark"] .pagination button { background: #1b1f23; border-color: #3b4249; color: #e8e8e8; }
 html[data-theme="dark"] input::placeholder { color: #8d949b; }
 html[data-theme="dark"] .field-toggle { background: #1b1f23; border-color: #3b4249; color: #c8cdd2; }
 html[data-theme="dark"] .field-toggle:has(input:checked) { background: #9d1c2d; border-color: #9d1c2d; color: #fff; }
 html[data-theme="dark"] .search-mode-pill { background: #3a1c21; color: #f0a5af; }
 html[data-theme="dark"] .result-row .text,
-html[data-theme="dark"] .cmt .cmt-text,
-html[data-theme="dark"] .ai-response { color: #e0e3e6; }
+html[data-theme="dark"] .cmt .cmt-text { color: #e0e3e6; }
 html[data-theme="dark"] .result-row .top .meta,
 html[data-theme="dark"] .cmt .cmt-name,
 html[data-theme="dark"] .cmt .reply-to,
 html[data-theme="dark"] .post-stats-inline,
 html[data-theme="dark"] .result-row .stats-row { color: #929aa2; }
 html[data-theme="dark"] .result-row .stats-row,
-html[data-theme="dark"] .cmt,
-html[data-theme="dark"] .ai-caveat { border-color: #30363c; }
+html[data-theme="dark"] .cmt { border-color: #30363c; }
 html[data-theme="dark"] .comments-panel,
 html[data-theme="dark"] .cmt .nested { border-color: #3b4249; }
 html[data-theme="dark"] .identity-pill.anonymous { background: #2a2e33; color: #b5bbc1; }
 html[data-theme="dark"] .identity-pill.real { background: #173823; color: #8ed1a1; }
 html[data-theme="dark"] .identity-pill.unknown { background: #40351b; color: #e4c77d; }
-html[data-theme="dark"] .ai-debug,
-html[data-theme="dark"] .ai-reference { background: #202429; color: #cdd2d7; }
 html[data-theme="dark"] mark { background: #6d5413; color: #fff2bd; }
 
 html[data-theme="light"] {
@@ -256,20 +223,16 @@ html[data-theme] .settings-actions button.primary { background: var(--ui-accent)
 html[data-theme] .filters,
 html[data-theme] .result-row,
 html[data-theme] .stat-card,
-html[data-theme] .ai-card,
 html[data-theme] .loading,
 html[data-theme] .no-results { background: var(--ui-surface); border-color: var(--ui-border); box-shadow: 0 1px 4px var(--ui-shadow); }
 html[data-theme] .filters input[type=text],
 html[data-theme] .filters select,
-html[data-theme] .ai-row input,
 html[data-theme] .pagination button,
 html[data-theme] .field-toggle { background: var(--ui-surface); border-color: var(--ui-border); color: var(--ui-text); }
 html[data-theme] input::placeholder { color: var(--ui-muted); }
 html[data-theme] .filters input:focus,
-html[data-theme] .filters select:focus,
-html[data-theme] .ai-row input:focus { border-color: var(--ui-accent); }
+html[data-theme] .filters select:focus { border-color: var(--ui-accent); }
 html[data-theme] .filters button,
-html[data-theme] .ai-row button,
 html[data-theme] .pagination button.active,
 html[data-theme] .field-toggle:has(input:checked) { background: var(--ui-accent); border-color: var(--ui-accent); color: #fff; }
 html[data-theme] .filters button:hover { background: var(--ui-accent-hover); }
@@ -279,13 +242,9 @@ html[data-theme] .result-row.expanded { border-color: var(--ui-accent); backgrou
 html[data-theme] .result-row:hover { border-color: var(--ui-accent); box-shadow: 0 2px 8px var(--ui-shadow); }
 html[data-theme] .result-row .top .uid,
 html[data-theme] .toggle-cmts,
-html[data-theme] .cmt .cmt-uid,
-html[data-theme] .ai-card h3,
-html[data-theme] .ai-findings strong,
-html[data-theme] .ai-response .ai-cited { color: var(--ui-accent); }
+html[data-theme] .cmt .cmt-uid { color: var(--ui-accent); }
 html[data-theme] .result-row .text,
-html[data-theme] .cmt .cmt-text,
-html[data-theme] .ai-response { color: var(--ui-text); }
+html[data-theme] .cmt .cmt-text { color: var(--ui-text); }
 html[data-theme] .result-row .text.collapsed::after { background: linear-gradient(transparent, var(--ui-surface)); }
 html[data-theme] .text-expand-btn,
 html[data-theme] .cmt .depth-tag { color: var(--ui-accent); }
@@ -299,12 +258,9 @@ html[data-theme] .loading,
 html[data-theme] .no-results { color: var(--ui-muted); }
 html[data-theme] .result-row .stats-row,
 html[data-theme] .cmt,
-html[data-theme] .ai-caveat,
 html[data-theme] .comments-panel,
 html[data-theme] .cmt .nested { border-color: var(--ui-border); }
 html[data-theme] .stat-card .num { color: var(--ui-accent); }
-html[data-theme] .ai-debug,
-html[data-theme] .ai-reference { background: var(--ui-surface-2); color: var(--ui-text); }
 html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var(--ui-surface)); color: var(--ui-text); }
 </style>
 </head>
@@ -380,19 +336,6 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
 
 <div id="results"><div class="loading">输入关键词后点击搜索</div></div>
 <div class="pagination" id="pager"></div>
-
-<!-- ═══════════════ AI 测试（Admin Only） ═══════════════ -->
-<div class="ai-section">
-  <div class="ai-card">
-    <h3>🤖 AI 搜索测试（管理员 · 含证据统计）</h3>
-    <div class="ai-row">
-      <input type="text" id="ai-query" placeholder="自然语言问题，如：最近大家对食堂怎么看？">
-      <button id="ai-btn" onclick="aiTest()">AI 搜索</button>
-    </div>
-    <div class="ai-response" id="ai-resp"></div>
-    <div class="ai-debug" id="ai-debug"></div>
-  </div>
-</div>
 
 <script>
 function updateThemeButton() {
@@ -877,93 +820,6 @@ fetch('/api/categories')
   })
   .catch(function() {});
 
-// ── AI Test ──
-function aiEscape(value) {
-  return String(value == null ? '' : value)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function aiTest() {
-  var q = document.getElementById('ai-query').value.trim();
-  if (!q) return;
-  var btn = document.getElementById('ai-btn');
-  var resp = document.getElementById('ai-resp');
-  var debug = document.getElementById('ai-debug');
-  btn.disabled = true; btn.textContent = '搜索中...';
-  resp.classList.remove('active'); debug.classList.remove('active');
-
-  fetch('/api/ai/search', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({query: q})
-  })
-    .then(parseJsonResponse)
-    .then(function(d) {
-      if (d.ok) {
-        var answer = d.answer || {overview: d.summary || '', findings: [], caveat: ''};
-        var html = '<div>' + aiEscape(answer.overview || '') + '</div>';
-        if (answer.findings && answer.findings.length) {
-          html += '<ol class="ai-findings">' + answer.findings.map(function(item) {
-            return '<li><strong>' + aiEscape(item.title || '相关发现') + '</strong>：' +
-              aiEscape(item.detail || '') + '</li>';
-          }).join('') + '</ol>';
-        }
-        if (answer.caveat) html += '<div class="ai-caveat">说明：' + aiEscape(answer.caveat) + '</div>';
-        html += renderAdminAiEvidence(d.evidence_posts || []);
-        resp.innerHTML = html;
-        resp.classList.add('active');
-
-        if (d._debug) {
-          var s = d.evidence_stats || d._debug.evidence_stats || {};
-          var dbg = '<strong>⏱ ' + d.elapsed_s + 's · 🔤 in:' + d._debug.tokens_in + ' out:' + d._debug.tokens_out + '</strong><br>';
-          dbg += '候选帖子 ' + (s.candidate_posts || 0) +
-            ' · 回答上下文 ' + (s.context_posts || 0) +
-            ' · 正文命中 ' + (s.body_matched_posts || 0) +
-            ' · 评论命中帖子 ' + (s.comment_matched_posts || 0) +
-            ' · 相关评论 ' + (s.matched_comments || 0) +
-            ' · 实际引用 ' + (s.cited_posts || 0);
-          debug.innerHTML = dbg;
-          debug.classList.add('active');
-        }
-      } else {
-        resp.innerHTML = '<span style="color:#e94560">' + aiEscape(d.error || 'AI 错误') + '</span>';
-        resp.classList.add('active');
-      }
-    })
-    .catch(function(err) {
-      resp.innerHTML = '<span style="color:#e94560">网络错误: ' + aiEscape(err.message) + '</span>';
-      resp.classList.add('active');
-    })
-    .finally(function() {
-      btn.disabled = false; btn.textContent = 'AI 搜索';
-    });
-}
-
-function renderAdminAiEvidence(posts) {
-  if (!posts.length) return '<div class="ai-caveat">本次回答没有可验证的引用帖子。</div>';
-  return '<div class="ai-evidence-list">' + posts.map(function(p) {
-    var refs = (p.matched_comments || []).map(function(c) {
-      return '<div class="ai-reference"><b>' + aiEscape(c.user_name || '?') + '</b> · ' +
-        aiEscape(c.time || '') + '<br>' + aiEscape(c.detail || '') + '</div>';
-    }).join('');
-    return '<div class="result-row">' +
-      '<div class="top"><span><span class="post-cat">' + aiEscape(p.category || '?') +
-      '</span> ' + aiEscape(p.user || '?') + ' <span class="meta">#' + aiEscape(p.id) +
-      '</span></span><span class="meta">' + aiEscape(p.time || '') + '</span></div>' +
-      '<div class="text">' + aiEscape(p.content || '') + '</div>' +
-      refs +
-      '<div class="stats-row"><span>正文命中 ' + aiEscape((p.body_match_terms || []).join('、') || '无') +
-      ' · 相关评论 ' + (p.comment_match_count || 0) + ' 条</span>' +
-      '<span class="post-stats-inline"><span>❤ ' + (p.stars || 0) +
-      '</span><span>💬 ' + (p.comments || 0) + '</span></span></div></div>';
-  }).join('') + '</div>';
-}
-
-// Enter key in AI input
-document.getElementById('ai-query').addEventListener('keydown', function(e) {
-  if (e.key === 'Enter') { e.preventDefault(); aiTest(); }
-});
 </script>
 </body>
 </html>

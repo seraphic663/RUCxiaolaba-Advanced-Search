@@ -65,3 +65,4 @@ upstream_test_*/
 .tmp/
 tmp/
 temp/
+AGENTS.md

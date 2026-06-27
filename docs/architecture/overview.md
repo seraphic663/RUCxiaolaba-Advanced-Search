@@ -16,10 +16,9 @@
 server.py                     Web 兼容启动入口
 crawler_db.py                 爬虫兼容 CLI 入口
 app/config.py                 集中配置和路径解析
-app/repositories/             SQLite 读取、搜索和 AI 权限数据
-app/services/                 搜索、Admin、鉴权、模板和 AI 编排
-app/http/routes/              公开、Admin、AI 路由
-app/ai/                       检索、审核、模型客户端、提示词和证据校验
+app/repositories/             SQLite 读取与搜索
+app/services/                 搜索、Admin、鉴权和模板
+app/http/routes/              公开与 Admin 路由
 crawler/client.py             小程序 API Client
 crawler/normalizer.py         API 数据标准化
 crawler/service.py            爬取执行与断点状态

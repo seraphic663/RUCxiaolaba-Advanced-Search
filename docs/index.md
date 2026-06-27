@@ -21,7 +21,6 @@
 
 | 文件 | 回答什么问题 |
 |------|-------------|
-| [ai-search](features/ai-search.md) | AI 搜索的设计方案、实际实现、安全模型 |
 | [search-performance](features/search-performance.md) | 搜索性能实测数据与优化方向（草案） |
 
 ## audits/ — 专项审计

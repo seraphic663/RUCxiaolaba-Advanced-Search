@@ -121,9 +121,8 @@ SQLite 的 LIKE 不能走 B-tree 索引——前后都有 `%` 通配符时，唯
 | ① | **搜索全部走 FTS**，LIKE 仅作短词兜底 | 改造 ~80 行，风险中 | 搜索 **1-10s → 10-50ms**（100-1000x） | **必须做** |
 | ② | **COUNT 轻量化**：空搜索复用缓存，有词走 FTS 估算 | ~25 行，风险低 | COUNT **1-10s → 0-5ms** | **应该做** |
 | ③ | **首页 `/api/init` 合并**：3 个 API 调合成 1 个 | ~40 行前后端，风险低 | 省 2 次 HTTP 往返 | **应该做**（配合 ①） |
-| ④ | AI 审核与检索并行执行 | ~10 行，风险低 | 单个请求省 0.5-30s | 可以做 |
-| ⑤ | SQLite 只读连接线程复用 | ~15 行，风险低 | 省 0.3ms/请求（< 1%） | 锦上添花 |
-| ⑥ | 搜索结果 LRU 缓存 | ~20 行，风险低 | 热门搜索 ~0ms | 锦上添花 |
+| ④ | SQLite 只读连接线程复用 | ~15 行，风险低 | 省 0.3ms/请求（< 1%） | 锦上添花 |
+| ⑤ | 搜索结果 LRU 缓存 | ~20 行，风险低 | 热门搜索 ~0ms | 锦上添花 |
 
 ---
 
@@ -283,10 +282,9 @@ SELECT count(DISTINCT post_id) FROM search_index WHERE body MATCH '"食堂"'
 ```
 GET /api/search?q=     → COUNT + SELECT（当前 ~1s）
 GET /api/categories    → GROUP BY（~10ms）
-GET /api/ai/status     → session 验证（~2ms）
 ```
 
-3 次 TCP 握手 + 3 次 HTTP 请求-响应 + 3 次服务端处理。最慢的 `/api/search` 决定总耗时。
+多次 HTTP 请求-响应和服务端处理里，最慢的 `/api/search` 决定总耗时。
 
 #### 方案
 
@@ -305,7 +303,7 @@ def _handle_api_init(self):
     })
 ```
 
-前端改为：`DOMContentLoaded` 时只调这一个接口，拿到数据后一次性渲染搜索列表 + 分类下拉 + 统计信息。AI 状态仍独立请求（依赖 cookie）。
+前端改为：`DOMContentLoaded` 时只调这一个接口，拿到数据后一次性渲染搜索列表 + 分类下拉 + 统计信息。
 
 **代价**：
 
@@ -315,58 +313,13 @@ def _handle_api_init(self):
 | 风险 | 低。新接口不破坏旧接口，旧搜索路径完全保留 |
 | 兼容 | `/api/search` 等接口不变，分页搜索继续走老路径 |
 
-**收益**：首页数据从 3 个 HTTP 往返 → 1 个。用户感知延迟从 `max(搜索, 分类, AI状态)` → `一个合并请求`。如果方案 ① 把搜索降到毫秒级，这个合并请求就是 ~15ms。
+**收益**：首页数据从多次 HTTP 往返 → 1 个。用户感知延迟从 `max(搜索, 分类)` → `一个合并请求`。如果方案 ① 把搜索降到毫秒级，这个合并请求就是 ~15ms。
 
-独立于方案 ① 的收益：即使搜索仍是 1s，合并也能省掉分类和 AI 状态的额外往返时间（约 50-100ms 网络延迟）。
-
----
-
-### 方案 ④：AI 审核与检索并行（P2，可以做）
-
-#### 现状
-
-AI 搜索（`_handle_ai_search`）的处理链路是**串行**的：
-
-```
-安全审核 API ──→ 数据库检索 ──→ DeepSeek 生成
-  0.5-30s        0.1-2s         3-120s
-```
-
-审核和检索之间**没有数据依赖**——两者都只需要用户的原始 query。可以并发执行：
-
-```
-安全审核 API ──┐
-               ├──→ DeepSeek 生成
-数据库检索 ────┘
-```
-
-```python
-from concurrent.futures import ThreadPoolExecutor
-
-with ThreadPoolExecutor(max_workers=2) as ex:
-    fut_mod = ex.submit(_moderate_ai_query, query)
-    fut_ret = ex.submit(retrieve_ai, query, SQLITE_DB)
-
-    allowed, reason = fut_mod.result()
-    if not allowed:
-        return reject  # 检索白做了，但审核不通过的概率低
-
-    retrieved = fut_ret.result()
-```
-
-**代价**：
-
-| 维度 | 评估 |
-|------|------|
-| 代码改动 | ~10 行，包在 `_handle_ai_search` 里 |
-| 风险 | 低。检索可能白跑（审核不通过时），但发生概率极低且检索本身成本几乎为零 |
-| 注意事项 | `ThreadPoolExecutor` 创建的线程不在 HTTP 请求线程内，需要确保 `retrieve_ai` 不依赖 thread-local 状态 |
-
-**收益**：单次 AI 搜索省 `min(审核耗时, 检索耗时)`，通常 1-2 秒，审核模型慢时省 30 秒。但 AI 搜索本身是慢操作（DeepSeek 生成要 3-120 秒），这点优化被生成阶段的时间稀释了。对用户体验有改善但不显著。
+独立于方案 ① 的收益：即使搜索仍是 1s，合并也能省掉分类的额外往返时间（约 50-100ms 网络延迟）。
 
 ---
 
-### 方案 ⑤：SQLite 只读连接线程复用（P3，锦上添花）
+### 方案 ④：SQLite 只读连接线程复用（P3，锦上添花）
 
 实测开一次新连接的成本：
 
@@ -400,7 +353,7 @@ def get_read_conn():
 
 ---
 
-### 方案 ⑥：搜索结果缓存（P3，锦上添花）
+### 方案 ⑤：搜索结果缓存（P3，锦上添花）
 
 ```python
 _cache: dict[tuple, tuple[float, dict]] = {}  # key → (expiry, result)
@@ -453,9 +406,8 @@ Phase 2（锦上添花，30 分钟）：
            ▼
 Phase 3（有余力再做，30 分钟）：
   ┌─────────────────────────────────────────┐
-  │ 方案 ④ AI 审核并行                        │
-  │ 方案 ⑤ 连接复用                           │
-  │ 方案 ⑥ 搜索缓存                           │
+  │ 方案 ④ 连接复用                           │
+  │ 方案 ⑤ 搜索缓存                           │
   │                                          │
   │ 预期：边际提升，聊胜于无                    │
   └─────────────────────────────────────────┘

@@ -86,24 +86,9 @@ class AppConfig:
     posts_db: Path
     bigram_db: Path | None
     symbol_db: Path | None
-    ai_db: Path
     admin_password_file: Path
-    ai_key_file: Path
     host: str
     port: int
-    ai_enabled_setting: str
-    ai_model: str
-    ai_fallback_model: str
-    ai_moderation_model: str
-    ai_base_url: str
-    ai_max_concurrent: int
-    ai_prompt_char_limit: int
-    ai_context_post_limit: int
-    ai_max_output_tokens: int
-    ai_request_timeout: int
-    ai_network_retries: int
-    ai_moderation_timeout: int
-    ai_moderation_retries: int
 
     @classmethod
     def from_env(
@@ -113,7 +98,6 @@ class AppConfig:
         bigram_db: str | Path | None = None,
         symbol_db: str | Path | None = None,
     ) -> "AppConfig":
-        ai_db = os.environ.get("AI_DB_PATH", str(DEFAULT_DATA_DIR / "ai.db"))
         return cls(
             project_root=PROJECT_ROOT,
             data_dir=DEFAULT_DATA_DIR,
@@ -121,26 +105,7 @@ class AppConfig:
             posts_db=choose_posts_db(posts_db),
             bigram_db=choose_bigram_db(bigram_db),
             symbol_db=choose_symbol_db(symbol_db),
-            ai_db=Path(ai_db),
             admin_password_file=DEFAULT_DATA_DIR / "admin_password.txt",
-            ai_key_file=DEFAULT_DATA_DIR / "deepseek_key.txt",
             host=os.environ.get("HOST", "0.0.0.0"),
             port=_env_int("PORT", 8080),
-            ai_enabled_setting=os.environ.get("AI_ENABLED", "").strip(),
-            ai_model=os.environ.get("AI_MODEL", "deepseek-v4-pro"),
-            ai_fallback_model=os.environ.get(
-                "AI_FALLBACK_MODEL", "deepseek-v4-flash"
-            ),
-            ai_moderation_model=os.environ.get(
-                "AI_MODERATION_MODEL", "deepseek-v4-flash"
-            ),
-            ai_base_url=os.environ.get("AI_BASE_URL", "https://api.deepseek.com"),
-            ai_max_concurrent=_env_int("AI_MAX_CONCURRENT", 1),
-            ai_prompt_char_limit=_env_int("AI_PROMPT_CHAR_LIMIT", 6000),
-            ai_context_post_limit=_env_int("AI_CONTEXT_POST_LIMIT", 16),
-            ai_max_output_tokens=_env_int("AI_MAX_OUTPUT_TOKENS", 1024),
-            ai_request_timeout=_env_int("AI_REQUEST_TIMEOUT", 120),
-            ai_network_retries=_env_int("AI_NETWORK_RETRIES", 1),
-            ai_moderation_timeout=_env_int("AI_MODERATION_TIMEOUT", 30),
-            ai_moderation_retries=_env_int("AI_MODERATION_RETRIES", 2),
         )

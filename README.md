@@ -1,6 +1,6 @@
 # RUC 小喇叭高级搜索
 
-面向 RUC 小喇叭内容的非官方 SQLite 搜索与更新工具，支持帖子、评论、分类、排序和可选 AI 问答。
+面向 RUC 小喇叭内容的非官方 SQLite 搜索与更新工具，支持帖子、评论、分类和排序。
 
 > 本项目不是中国人民大学或 RUC 小喇叭官方项目。仓库不分发真实论坛数据库，自带的演示数据库只包含虚构内容。
 
@@ -10,7 +10,6 @@
 - 两字及以上关键词可使用 Bigram 索引，单字关键词回退 SQLite `LIKE`
 - 按需展开正文和评论，慢查询使用游标分页
 - 爬虫直接增量写入 SQLite，可补新帖、活跃帖和历史范围
-- 可选 AI 搜索使用独立权限库、邀请码和内容安全检查
 
 ## 五分钟启动
 
@@ -24,10 +23,10 @@ py -3.10 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 
-python server.py --sqlite-db demo\posts.db --bigram-db demo\bigram_index.db
+python server.py --sqlite-db demo\posts.db --bigram-db demo\bigram_index.db --port 8099
 ```
 
-打开 <http://127.0.0.1:8080>，可以尝试搜索“食堂”“图书馆”“SQLite”。
+打开 <http://127.0.0.1:8099>，可以尝试搜索“食堂”“图书馆”“SQLite”。demo 使用独立端口，避免误连到已在 8080 运行的真实数据库服务。
 
 `demo/posts.db` 和 `demo/bigram_index.db` 总计不到 200 KiB，包含 12 篇虚构帖子和 20 条虚构评论。它们只用于验证公开主页、评论搜索、分类、排序和 Bigram，不包含用户身份数据。重新生成演示数据：
 
@@ -81,11 +80,8 @@ python crawler_db.py sync-latest --db-path data\posts.db --pages 20 --min-pages 
 | `POSTS_DB_PATH` / `SQLITE_DB` | 主数据库路径 | `data/posts.db` |
 | `BIGRAM_DB_PATH` / `BIGRAM_DB` | Bigram 索引路径 | 自动探测 `data/bigram_index.db` |
 | `HOST`, `PORT` | 监听地址和端口 | `0.0.0.0:8080` |
-| `DEEPSEEK_API_KEY` | 启用 AI 搜索 | 也可写入 `data/deepseek_key.txt` |
-| `AI_ENABLED=0` | 强制关闭 AI | 有密钥时默认启用 |
-| `AI_DB_PATH` | AI 邀请码和配额数据库 | `data/ai.db` |
 
-配置文件、cookie、密码、API key 和真实数据库均已被 `.gitignore` 排除，不应提交。AI 功能和邀请码管理见 [AI 搜索说明](docs/features/ai-search.md)。
+配置文件、cookie、密码和真实数据库均已被 `.gitignore` 排除，不应提交。
 
 ## 开发与验证
 
@@ -102,7 +98,7 @@ ruff check .
 ```text
 server.py                  Web 兼容启动入口
 crawler_db.py              爬虫兼容 CLI 入口
-app/                       Web、Repository、Service、AI 与 HTTP 路由
+app/                       Web、Repository、Service 与 HTTP 路由
 crawler/                   API Client、规范化、扫描策略与执行服务
 storage/post_writer.py      SQLite 写入与搜索索引维护
 demo/                      可提交的合成演示数据库
