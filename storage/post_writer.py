@@ -178,6 +178,22 @@ class SQLitePostStore:
                 updated_at text not null
             );
 
+            create table if not exists crawler_queue (
+                post_id text primary key,
+                source text not null,
+                priority integer not null,
+                list_create_time text not null,
+                list_update_time text not null,
+                list_comment_count integer not null,
+                db_comment_count integer,
+                status text not null,
+                reason text not null,
+                attempts integer not null,
+                last_error text not null,
+                created_at text not null,
+                updated_at text not null
+            );
+
             create index if not exists idx_posts_create_time on posts(create_time);
             create index if not exists idx_posts_stars on posts(star_count desc, id desc);
             create index if not exists idx_posts_category on posts(category_name);
@@ -192,6 +208,7 @@ class SQLitePostStore:
             create index if not exists idx_comments_reply_show_user_id on comments(reply_show_user_id);
             create index if not exists idx_comments_show_user_name_lower on comments(lower(show_user_name));
             create index if not exists idx_comments_reply_user_name_lower on comments(lower(reply_show_user_name));
+            create index if not exists idx_crawler_queue_status_priority on crawler_queue(status, priority, updated_at);
             """
         )
         if not self._table_exists("search_index"):
@@ -209,6 +226,32 @@ class SQLitePostStore:
         self._post_columns = self._columns("posts")
         self._comment_columns = self._columns("comments")
         self._has_search_index = True
+
+    def ensure_crawler_queue(self) -> None:
+        self.conn.execute(
+            """
+            create table if not exists crawler_queue (
+                post_id text primary key,
+                source text not null,
+                priority integer not null,
+                list_create_time text not null,
+                list_update_time text not null,
+                list_comment_count integer not null,
+                db_comment_count integer,
+                status text not null,
+                reason text not null,
+                attempts integer not null,
+                last_error text not null,
+                created_at text not null,
+                updated_at text not null
+            )
+            """
+        )
+        self.conn.execute(
+            "create index if not exists idx_crawler_queue_status_priority "
+            "on crawler_queue(status, priority, updated_at)"
+        )
+        self.conn.commit()
 
     def upsert_post(self, post: dict, comments: list[dict] | None = None, commit: bool = True) -> None:
         updated_at = now_text()
@@ -397,6 +440,127 @@ class SQLitePostStore:
         if row is None:
             return None
         return safe_int(row[0])
+
+    def post_exists(self, post_id: str) -> bool:
+        row = self.conn.execute(
+            "select 1 from posts where id=?",
+            (str(post_id),),
+        ).fetchone()
+        return row is not None
+
+    def enqueue_crawler_candidate(
+        self,
+        *,
+        post_id: str,
+        source: str,
+        priority: int,
+        list_create_time: str,
+        list_update_time: str,
+        list_comment_count: int,
+        db_comment_count: int | None,
+        reason: str,
+        commit: bool = True,
+    ) -> None:
+        self.ensure_crawler_queue()
+        now = now_text()
+        existing = self.conn.execute(
+            "select source, priority, reason, status from crawler_queue where post_id=?",
+            (str(post_id),),
+        ).fetchone()
+        if existing is None:
+            self.conn.execute(
+                """
+                insert into crawler_queue(
+                    post_id, source, priority, list_create_time,
+                    list_update_time, list_comment_count, db_comment_count,
+                    status, reason, attempts, last_error, created_at, updated_at
+                ) values (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    str(post_id),
+                    source,
+                    priority,
+                    list_create_time,
+                    list_update_time,
+                    list_comment_count,
+                    db_comment_count,
+                    "pending",
+                    reason,
+                    0,
+                    "",
+                    now,
+                    now,
+                ),
+            )
+        else:
+            sources = set(filter(None, str(existing["source"]).split(",")))
+            sources.add(source)
+            reasons = set(filter(None, str(existing["reason"]).split("|")))
+            reasons.add(reason)
+            status = existing["status"]
+            if status in {"failed", "skipped"}:
+                status = "pending"
+            self.conn.execute(
+                """
+                update crawler_queue
+                set source=?, priority=min(priority, ?),
+                    list_create_time=case when ? != '' then ? else list_create_time end,
+                    list_update_time=case when ? != '' then ? else list_update_time end,
+                    list_comment_count=?, db_comment_count=?,
+                    status=?, reason=?, updated_at=?
+                where post_id=?
+                """,
+                (
+                    ",".join(sorted(sources)),
+                    priority,
+                    list_create_time,
+                    list_create_time,
+                    list_update_time,
+                    list_update_time,
+                    list_comment_count,
+                    db_comment_count,
+                    status,
+                    "|".join(sorted(reasons)),
+                    now,
+                    str(post_id),
+                ),
+            )
+        if commit:
+            self.conn.commit()
+
+    def next_crawler_queue_items(self, limit: int) -> list[sqlite3.Row]:
+        self.ensure_crawler_queue()
+        return self.conn.execute(
+            """
+            select * from crawler_queue
+            where status='pending'
+            order by priority asc, updated_at asc, cast(post_id as integer) desc
+            limit ?
+            """,
+            (max(1, int(limit)),),
+        ).fetchall()
+
+    def mark_crawler_queue_item(
+        self,
+        post_id: str,
+        *,
+        status: str,
+        last_error: str = "",
+        increment_attempts: bool = True,
+        commit: bool = True,
+    ) -> None:
+        self.ensure_crawler_queue()
+        attempts_sql = "attempts + 1" if increment_attempts else "attempts"
+        self.conn.execute(
+            f"""
+            update crawler_queue
+            set status=?, last_error=?, attempts={attempts_sql}, updated_at=?
+            where post_id=?
+            """,
+            (status, last_error, now_text(), str(post_id)),
+        )
+        if commit:
+            self.conn.commit()
 
     def set_state(self, key: str, value: str, commit: bool = True) -> None:
         self.conn.execute(

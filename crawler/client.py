@@ -20,6 +20,15 @@ class RemoteAPIError(RuntimeError):
     pass
 
 
+RATE_LIMIT_MARKERS = (
+    "刷的太久",
+    "休息一下",
+    "操作频繁",
+    "稍后再试",
+    "访问频繁",
+)
+
+
 def load_cookie(config_path: str | Path) -> str:
     path = Path(config_path)
     if not path.exists():
@@ -60,7 +69,10 @@ class MiniProgramClient:
             return None, "cookie_expired"
         if code == "0102":
             return None, "not_found"
-        return None, f"code={code} {payload.get('message', '')}"
+        message = str(payload.get("message", ""))
+        if any(marker in message for marker in RATE_LIMIT_MARKERS):
+            return None, f"rate_limited:{message}"
+        return None, f"code={code} {message}"
 
     def list_page(self, endpoint: str, page: int):
         return self.get(
