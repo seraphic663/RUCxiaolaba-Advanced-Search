@@ -121,9 +121,6 @@ class HTTPContractTest(unittest.TestCase):
             admin=AdminService(self.db_path),
             auth=AdminAuthService(),
             templates=TemplateService(templates),
-            ai=None,
-            ai_enabled=False,
-            ai_store=None,
         )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(
@@ -187,13 +184,10 @@ class HTTPContractTest(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertIn("管理员登录已失效", payload["error"])
 
-    def test_main_page_and_ai_disabled_contract(self):
+    def test_main_page_contract(self):
         with urlopen(self.base + "/", timeout=5) as response:
             content = response.read().decode("utf-8")
         self.assertIn("RUC", content)
-        status, payload = self.get_json("/api/ai/status")
-        self.assertEqual(status, 503)
-        self.assertFalse(payload["ok"])
 
     def test_admin_login_contract(self):
         opener = build_opener(HTTPCookieProcessor(CookieJar()))

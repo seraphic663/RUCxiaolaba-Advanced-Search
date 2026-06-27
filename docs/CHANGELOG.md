@@ -19,20 +19,20 @@
 ## 2026-06-11：删除过渡层与生成文件
 
 - 删除 `scripts/` 薄包装层，运维命令统一使用 `python -m jobs...` 或 `python -m tools...`。
-- 删除 `ai_retriever.py`、`storage/ai_store.py`、`storage/sqlite_store.py` 兼容模块，测试和文档统一引用正式模块。
+- 删除旧检索兼容模块、`storage/sqlite_store.py` 兼容模块，测试和文档统一引用正式模块。
 - 删除未被调用的爬虫 ID 范围模型和页面策略常量，保留实际使用的停止策略。
 - 清理 Python/test 缓存和空临时日志，不改动正式数据库与本地运行配置。
 
 ## 2026-06-11：工程化模块重构
 
 - 保留 `server.py`、`crawler_db.py` 兼容入口，实际实现迁入包结构。
-- Web 拆分为配置、Repository、Service、HTTP Routes 和 AI 子模块。
+- Web 拆分为配置、Repository、Service 和 HTTP Routes。
 - 爬虫拆分为 API Client、Normalizer、写锁、扫描策略、Service 和 CLI。
 - 正式爬虫命令统一为 `sync-latest`、`sync-active`、`scan-history`、`scan-id-range`、`fill-details`，旧命令保留兼容。
 - 生产任务迁入 `jobs/`，迁移、审计、性能和运维工具迁入 `tools/`。
 - `scripts/` 改为兼容包装器，Railway 调度改为 `python -m jobs.scheduler`。
-- 新增 HTTP、CLI、爬虫停止机制和 AI 楼主标记契约测试。
-- 修复 `is_publisher=2` 被 AI 路径错误视为楼主的问题。
+- 新增 HTTP、CLI 和爬虫停止机制契约测试。
+- 修复 `is_publisher=2` 在展示路径中被错误视为楼主的问题。
 - 爬虫在所有页面请求失败时改为非零退出，避免 Scheduler 误报成功。
 
 ## 2026-06-03：DB-only 收敛与文档补齐

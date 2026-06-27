@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-from app.http.routes import admin, ai, public
+from app.http.routes import admin, public
 
 GET_ROUTES = {
     "/": public.main_page,
     "/api/search": public.search,
     "/api/comments": public.comments,
     "/api/categories": public.categories,
-    "/api/ai/status": ai.status,
     "/healthz": public.health,
     "/admin": admin.get,
 }
 
 POST_ROUTES = {
     "/admin": admin.post,
-    "/api/ai/activate": ai.activate,
-    "/api/ai/search": ai.search,
 }
 
 

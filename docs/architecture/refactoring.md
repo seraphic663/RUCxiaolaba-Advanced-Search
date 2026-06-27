@@ -8,10 +8,9 @@
 
 - `server.py` 改为兼容启动器，实际应用位于 `app/`。
 - 配置集中到 `app/config.py`。
-- SQLite 读取拆为 Post、Search 和 AI Access Repository。
-- 搜索、Admin、鉴权、模板和 AI 编排拆为 Service。
-- HTTP 路由拆为 Public、Admin、AI 三组。
-- AI 拆为 Retriever、Policy、Prompt 和 DeepSeek Client。
+- SQLite 读取拆为 Post 和 Search Repository。
+- 搜索、Admin、鉴权和模板拆为 Service。
+- HTTP 路由拆为 Public 和 Admin 两组。
 - `crawler_db.py` 改为兼容入口，实际爬虫位于 `crawler/`。
 - 爬虫拆为 API Client、Normalizer、写锁、Strategy 和 Service。
 - 正式爬虫命令改为 `sync-latest`、`sync-active`、`scan-history`、`scan-id-range`、`fill-details`。
@@ -19,14 +18,12 @@
 - 生产任务移动到 `jobs/`。
 - 迁移、审计、性能和运维工具移动到 `tools/`。
 - 运维命令直接使用 `python -m jobs...` 或 `python -m tools...`，不再维护 `scripts/` 包装层。
-- 修复 `is_publisher=2` 在 AI 提示词和证据界面中被错误视为楼主的问题。
 
 ## 保持不变
 
 - `python server.py`
 - `python crawler_db.py ...`
 - `/`、`/admin`、`/api/search`、`/api/comments`、`/api/categories`
-- AI 激活、状态和搜索 URL
 - `data/posts.db`
 - `/app/data/posts.db`
 - `SQLITE_DB` 与 `BIGRAM_DB` 旧环境变量
