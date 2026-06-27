@@ -78,6 +78,282 @@ class CrawlerService:
             return None
         return normalize_detail(str(post_id), data)
 
+    @staticmethod
+    def article_time(article: dict, key: str) -> str:
+        return str(
+            article.get(key)
+            or article.get("create_time")
+            or article.get("update_time")
+            or ""
+        )
+
+    @staticmethod
+    def page_signature(articles: list[dict]) -> str:
+        return ",".join(str(item.get("id") or "") for item in articles)
+
+    @staticmethod
+    def is_rate_limited(error: str | None) -> bool:
+        return bool(error and error.startswith("rate_limited:"))
+
+    def fetch_detail_with_error(
+        self,
+        client: MiniProgramClient,
+        post_id: str,
+    ) -> tuple[tuple[dict, list[dict]] | None, str | None]:
+        data, error = self._article(client, post_id)
+        if error or not data:
+            return None, error or "empty_detail"
+        parsed = normalize_detail(str(post_id), data)
+        if parsed is None:
+            return None, "foreign_or_invalid"
+        return parsed, None
+
+    def discover_queue(
+        self,
+        *,
+        command: str,
+        endpoint: str,
+        since: str,
+        max_pages: int,
+        old_page_threshold: int,
+        stop_on_repeat: bool,
+        dry_run: bool,
+        min_delay: float,
+        max_delay: float,
+    ) -> dict:
+        client = self.client()
+        stats = {
+            "endpoint": endpoint,
+            "pages": 0,
+            "seen": 0,
+            "queued": 0,
+            "existing": 0,
+            "comment_changed": 0,
+            "errors": 0,
+            "repeat_stop": False,
+            "old_page_stop": False,
+        }
+        seen_signatures: dict[str, int] = {}
+        old_pages = 0
+        with database_write_lock(self.db_path, self.lock_timeout):
+            with SQLitePostStore(self.db_path) as store:
+                if self.init_schema:
+                    store.init_schema()
+                else:
+                    store.ensure_crawler_queue()
+                for page in range(1, max_pages + 1):
+                    time.sleep(random.uniform(min_delay, max_delay))
+                    data, error = self._list_page(client, endpoint, page)
+                    if error:
+                        stats["errors"] += 1
+                        print(f"[{command}] page={page} err={error}", flush=True)
+                        if error == "cookie_expired" or self.is_rate_limited(error):
+                            raise RuntimeError(error)
+                        continue
+                    articles = data.get("list", []) if data else []
+                    if not articles:
+                        print(f"[{command}] page={page} empty stop", flush=True)
+                        break
+                    signature = self.page_signature(articles)
+                    if stop_on_repeat and signature in seen_signatures:
+                        stats["repeat_stop"] = True
+                        print(
+                            f"[{command}] page={page} repeats page="
+                            f"{seen_signatures[signature]} stop",
+                            flush=True,
+                        )
+                        break
+                    seen_signatures[signature] = page
+                    stats["pages"] += 1
+                    stats["seen"] += len(articles)
+                    page_queued = page_existing = page_changed = 0
+                    page_has_since = False
+                    for article in articles:
+                        post_id = str(article.get("id") or "")
+                        if not post_id:
+                            continue
+                        create_time = self.article_time(article, "create_time")
+                        update_time = self.article_time(article, "update_time")
+                        comment_count = safe_int(
+                            article.get(
+                                "comment_count",
+                                article.get("count_comment", 0),
+                            )
+                        )
+                        db_comment_count = store.get_post_counts(post_id)
+                        missing = db_comment_count is None
+                        create_after_since = create_time >= since
+                        update_after_since = update_time >= since
+                        comment_changed = (
+                            db_comment_count is not None
+                            and db_comment_count != comment_count
+                        )
+                        if create_after_since or update_after_since:
+                            page_has_since = True
+                        reason = ""
+                        priority = 99
+                        if endpoint == "lists":
+                            if missing and create_after_since:
+                                reason = "new_post"
+                                priority = 10
+                        else:
+                            if comment_changed:
+                                reason = "comment_changed"
+                                priority = 0
+                                stats["comment_changed"] += 1
+                                page_changed += 1
+                            elif missing and create_after_since:
+                                reason = "active_missing"
+                                priority = 20
+                            elif update_after_since:
+                                reason = "active_updated"
+                                priority = 30
+                        if reason:
+                            page_queued += 1
+                            stats["queued"] += 1
+                            if not dry_run:
+                                store.enqueue_crawler_candidate(
+                                    post_id=post_id,
+                                    source=endpoint,
+                                    priority=priority,
+                                    list_create_time=create_time,
+                                    list_update_time=update_time,
+                                    list_comment_count=comment_count,
+                                    db_comment_count=db_comment_count,
+                                    reason=reason,
+                                    commit=False,
+                                )
+                        else:
+                            stats["existing"] += 1
+                            page_existing += 1
+                    if not dry_run:
+                        store.conn.commit()
+                    if endpoint == "lists" and not page_has_since:
+                        old_pages += 1
+                    else:
+                        old_pages = 0
+                    print(
+                        f"[{command}:{endpoint}] page={page} "
+                        f"articles={len(articles)} queued={page_queued} "
+                        f"existing={page_existing} changed={page_changed} "
+                        f"old_pages={old_pages}",
+                        flush=True,
+                    )
+                    if endpoint == "lists" and old_pages >= old_page_threshold:
+                        stats["old_page_stop"] = True
+                        print(
+                            f"[{command}] stop old_pages={old_pages}",
+                            flush=True,
+                        )
+                        break
+                if not dry_run:
+                    store.set_state(
+                        f"crawler_{command.replace('-', '_')}",
+                        json.dumps(stats, ensure_ascii=False),
+                        commit=True,
+                    )
+        print(
+            f"[{command}] done {json.dumps(stats, ensure_ascii=False)} "
+            f"dry_run={dry_run}",
+            flush=True,
+        )
+        return stats
+
+    def trickle_fill(
+        self,
+        *,
+        limit: int,
+        dry_run: bool,
+        min_delay: float,
+        max_delay: float,
+        stop_after_misses: int,
+    ) -> dict:
+        client = self.client()
+        stats = {
+            "limit": limit,
+            "selected": 0,
+            "written": 0,
+            "misses": 0,
+            "rate_limited": False,
+        }
+        consecutive_misses = 0
+        with database_write_lock(self.db_path, self.lock_timeout):
+            with SQLitePostStore(self.db_path) as store:
+                if self.init_schema:
+                    store.init_schema()
+                else:
+                    store.ensure_crawler_queue()
+                items = store.next_crawler_queue_items(limit)
+                stats["selected"] = len(items)
+                for item in items:
+                    post_id = str(item["post_id"])
+                    time.sleep(random.uniform(min_delay, max_delay))
+                    parsed, error = self.fetch_detail_with_error(client, post_id)
+                    if error:
+                        stats["misses"] += 1
+                        consecutive_misses += 1
+                        status = "failed"
+                        if self.is_rate_limited(error):
+                            stats["rate_limited"] = True
+                            status = "pending"
+                        if not dry_run:
+                            store.mark_crawler_queue_item(
+                                post_id,
+                                status=status,
+                                last_error=error,
+                                increment_attempts=True,
+                                commit=False,
+                            )
+                            store.conn.commit()
+                        print(
+                            f"[trickle-fill] miss #{post_id} err={error}",
+                            flush=True,
+                        )
+                        if stats["rate_limited"]:
+                            raise RuntimeError(error)
+                        if consecutive_misses >= stop_after_misses:
+                            raise RuntimeError(
+                                f"too many consecutive detail misses: "
+                                f"{consecutive_misses}"
+                            )
+                        continue
+                    consecutive_misses = 0
+                    post, comments = parsed
+                    if dry_run:
+                        print(
+                            f"[trickle-fill] dry #{post_id} "
+                            f"c={post['comment_count']} {post['content'][:50]}",
+                            flush=True,
+                        )
+                    else:
+                        store.upsert_post(post, comments, commit=False)
+                        store.mark_crawler_queue_item(
+                            post_id,
+                            status="done",
+                            last_error="",
+                            increment_attempts=True,
+                            commit=False,
+                        )
+                        store.conn.commit()
+                    stats["written"] += 1
+                    print(
+                        f"[trickle-fill] ok #{post_id} "
+                        f"written={stats['written']}/{stats['selected']}",
+                        flush=True,
+                    )
+                if not dry_run:
+                    store.set_state(
+                        "crawler_trickle_fill",
+                        json.dumps(stats, ensure_ascii=False),
+                        commit=True,
+                    )
+        print(
+            f"[trickle-fill] done {json.dumps(stats, ensure_ascii=False)} "
+            f"dry_run={dry_run}",
+            flush=True,
+        )
+        return stats
+
     def fill_details(
         self,
         ids: list[str],

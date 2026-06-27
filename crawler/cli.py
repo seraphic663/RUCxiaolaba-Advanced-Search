@@ -82,6 +82,32 @@ def command_incremental(args) -> int:
     return 0
 
 
+def command_discover(args) -> int:
+    _service(args).discover_queue(
+        command=args.command,
+        endpoint=args.endpoint,
+        since=args.since,
+        max_pages=args.max_pages,
+        old_page_threshold=args.old_page_threshold,
+        stop_on_repeat=args.stop_on_repeat,
+        dry_run=args.dry_run,
+        min_delay=args.min_delay,
+        max_delay=args.max_delay,
+    )
+    return 0
+
+
+def command_trickle_fill(args) -> int:
+    _service(args).trickle_fill(
+        limit=args.limit,
+        dry_run=args.dry_run,
+        min_delay=args.min_delay,
+        max_delay=args.max_delay,
+        stop_after_misses=args.stop_after_misses,
+    )
+    return 0
+
+
 def command_new(args) -> int:
     args.endpoint = "lists"
     return command_incremental(args)
@@ -208,6 +234,54 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow page 1 for explicit rechecks",
     )
+
+    discover_latest = sub.add_parser(
+        "discover-latest",
+        help="scan lists pages into the crawler queue without fetching details",
+    )
+    add_common(discover_latest)
+    discover_latest.set_defaults(
+        func=command_discover,
+        endpoint="lists",
+        stop_on_repeat=True,
+        canonical_command="discover-latest",
+    )
+    discover_latest.add_argument("--since", required=True)
+    discover_latest.add_argument("--max-pages", type=int, default=180)
+    discover_latest.add_argument("--old-page-threshold", type=int, default=5)
+    discover_latest.add_argument("--dry-run", action="store_true")
+    discover_latest.add_argument("--min-delay", type=float, default=0.1)
+    discover_latest.add_argument("--max-delay", type=float, default=0.3)
+
+    discover_active = sub.add_parser(
+        "discover-active",
+        help="scan lists2 pages into the crawler queue without fetching details",
+    )
+    add_common(discover_active)
+    discover_active.set_defaults(
+        func=command_discover,
+        endpoint="lists2",
+        stop_on_repeat=True,
+        canonical_command="discover-active",
+    )
+    discover_active.add_argument("--since", required=True)
+    discover_active.add_argument("--max-pages", type=int, default=120)
+    discover_active.add_argument("--old-page-threshold", type=int, default=5)
+    discover_active.add_argument("--dry-run", action="store_true")
+    discover_active.add_argument("--min-delay", type=float, default=0.1)
+    discover_active.add_argument("--max-delay", type=float, default=0.3)
+
+    trickle = sub.add_parser(
+        "trickle-fill",
+        help="slowly fetch pending crawler queue details with rate-limit fuse",
+    )
+    add_common(trickle)
+    trickle.add_argument("--limit", type=int, default=40)
+    trickle.add_argument("--dry-run", action="store_true")
+    trickle.add_argument("--min-delay", type=float, default=5.0)
+    trickle.add_argument("--max-delay", type=float, default=10.0)
+    trickle.add_argument("--stop-after-misses", type=int, default=3)
+    trickle.set_defaults(func=command_trickle_fill, canonical_command="trickle-fill")
 
     detail = sub.add_parser(
         "fill-details",
