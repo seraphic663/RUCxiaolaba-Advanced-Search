@@ -298,6 +298,53 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(post["list_source"], "lists")
         self.assertIn("newer stub", post["content"])
 
+    def test_list_stub_noops_when_existing_snapshot_is_unchanged(self):
+        article = {
+            "id": "151",
+            "detail": "same stub",
+            "create_time": "2026-06-25 00:05:00",
+            "update_time": "2026-06-25 00:06:00",
+            "count_comment": 2,
+            "count_star": 3,
+            "count_trace": 4,
+        }
+        with SQLitePostStore(self.db) as store:
+            changed = store.upsert_list_stub(article, source="lists")
+            self.assertTrue(changed)
+            store.conn.execute(
+                "update posts set updated_at='sentinel' where id='151'"
+            )
+            store.conn.commit()
+            changed = store.upsert_list_stub(article, source="lists")
+            row = store.conn.execute(
+                "select updated_at from posts where id='151'"
+            ).fetchone()
+        self.assertFalse(changed)
+        self.assertEqual(row["updated_at"], "sentinel")
+
+    def test_enqueue_crawler_candidate_noops_when_candidate_is_unchanged(self):
+        with SQLitePostStore(self.db) as store:
+            kwargs = {
+                "post_id": "152",
+                "source": "lists",
+                "priority": 10,
+                "list_create_time": "2026-06-25 00:05:00",
+                "list_update_time": "2026-06-25 00:06:00",
+                "list_comment_count": 2,
+                "db_comment_count": None,
+                "reason": "new_post",
+            }
+            store.enqueue_crawler_candidate(**kwargs)
+            store.conn.execute(
+                "update crawler_queue set updated_at='sentinel' where post_id='152'"
+            )
+            store.conn.commit()
+            store.enqueue_crawler_candidate(**kwargs)
+            row = store.conn.execute(
+                "select updated_at from crawler_queue where post_id='152'"
+            ).fetchone()
+        self.assertEqual(row["updated_at"], "sentinel")
+
     def test_discover_active_stops_on_repeated_page_signature(self):
         with SQLitePostStore(self.db) as store:
             store.upsert_post(
