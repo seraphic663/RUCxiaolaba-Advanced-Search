@@ -457,7 +457,13 @@ class SQLitePostStore:
         }
         columns = [col for col in values if col in self._post_columns]
         existing = self.conn.execute(
-            "select crawl_status from posts where id=?",
+            """
+            select crawl_status, content, category_name, user_name,
+                   show_user_id, real_user_id, create_time,
+                   comment_count, star_count, trace_count,
+                   list_update_time, list_source
+            from posts where id=?
+            """,
             (post_id,),
         ).fetchone()
         if existing is None:
@@ -472,54 +478,82 @@ class SQLitePostStore:
         else:
             status = str(existing["crawl_status"] or "full")
             if status == "full":
-                self.conn.execute(
-                    """
-                    update posts
-                    set comment_count=?, star_count=?, trace_count=?,
-                        list_update_time=?, list_source=?, updated_at=?
-                    where id=?
-                    """,
+                metadata_changed = any(
                     (
-                        values["comment_count"],
-                        values["star_count"],
-                        values["trace_count"],
-                        list_update_time,
-                        source,
-                        now,
-                        post_id,
-                    ),
+                        safe_int(existing["comment_count"]) != values["comment_count"],
+                        safe_int(existing["star_count"]) != values["star_count"],
+                        safe_int(existing["trace_count"]) != values["trace_count"],
+                        str(existing["list_update_time"] or "") != list_update_time,
+                        str(existing["list_source"] or "") != source,
+                    )
                 )
+                if metadata_changed:
+                    self.conn.execute(
+                        """
+                        update posts
+                        set comment_count=?, star_count=?, trace_count=?,
+                            list_update_time=?, list_source=?, updated_at=?
+                        where id=?
+                        """,
+                        (
+                            values["comment_count"],
+                            values["star_count"],
+                            values["trace_count"],
+                            list_update_time,
+                            source,
+                            now,
+                            post_id,
+                        ),
+                    )
                 changed = False
             else:
-                self.conn.execute(
-                    """
-                    update posts
-                    set content=?, category_name=?, user_name=?,
-                        show_user_id=?, real_user_id=?, create_time=?,
-                        comment_count=?, star_count=?, trace_count=?,
-                        crawl_status='list_only', list_update_time=?,
-                        list_source=?, updated_at=?
-                    where id=?
-                    """,
+                content_changed = str(existing["content"] or "") != content
+                metadata_changed = any(
                     (
-                        content,
-                        values["category_name"],
-                        values["user_name"],
-                        values["show_user_id"],
-                        values["real_user_id"],
-                        create_time,
-                        values["comment_count"],
-                        values["star_count"],
-                        values["trace_count"],
-                        list_update_time,
-                        source,
-                        now,
-                        post_id,
-                    ),
+                        content_changed,
+                        str(existing["category_name"] or "") != values["category_name"],
+                        str(existing["user_name"] or "") != values["user_name"],
+                        str(existing["show_user_id"] or "") != values["show_user_id"],
+                        str(existing["real_user_id"] or "") != values["real_user_id"],
+                        str(existing["create_time"] or "") != create_time,
+                        safe_int(existing["comment_count"]) != values["comment_count"],
+                        safe_int(existing["star_count"]) != values["star_count"],
+                        safe_int(existing["trace_count"]) != values["trace_count"],
+                        str(existing["list_update_time"] or "") != list_update_time,
+                        str(existing["list_source"] or "") != source,
+                    )
                 )
-                self.refresh_search_index(post_id, content, [], commit=False)
-                self.refresh_bigram_index(post_id, content, [], commit=False)
-                changed = True
+                if metadata_changed:
+                    self.conn.execute(
+                        """
+                        update posts
+                        set content=?, category_name=?, user_name=?,
+                            show_user_id=?, real_user_id=?, create_time=?,
+                            comment_count=?, star_count=?, trace_count=?,
+                            crawl_status='list_only', list_update_time=?,
+                            list_source=?, updated_at=?
+                        where id=?
+                        """,
+                        (
+                            content,
+                            values["category_name"],
+                            values["user_name"],
+                            values["show_user_id"],
+                            values["real_user_id"],
+                            create_time,
+                            values["comment_count"],
+                            values["star_count"],
+                            values["trace_count"],
+                            list_update_time,
+                            source,
+                            now,
+                            post_id,
+                        ),
+                    )
+                    if content_changed:
+                        self.refresh_search_index(post_id, content, [], commit=False)
+                        self.refresh_bigram_index(post_id, content, [], commit=False)
+                changed = metadata_changed
         if commit:
             self.conn.commit()
         return changed
@@ -700,7 +734,11 @@ class SQLitePostStore:
         self.ensure_crawler_queue(commit=False)
         now = now_text()
         existing = self.conn.execute(
-            "select source, priority, reason, status from crawler_queue where post_id=?",
+            """
+            select source, priority, reason, status, list_create_time,
+                   list_update_time, list_comment_count, db_comment_count
+            from crawler_queue where post_id=?
+            """,
             (str(post_id),),
         ).fetchone()
         if existing is None:
@@ -736,27 +774,58 @@ class SQLitePostStore:
             status = existing["status"]
             if status == "failed":
                 status = "pending"
+            new_source = ",".join(sorted(sources))
+            new_reason = "|".join(sorted(reasons))
+            new_priority = min(safe_int(existing["priority"]), priority)
+            new_create_time = (
+                list_create_time
+                if list_create_time
+                else str(existing["list_create_time"] or "")
+            )
+            new_update_time = (
+                list_update_time
+                if list_update_time
+                else str(existing["list_update_time"] or "")
+            )
+            unchanged = all(
+                (
+                    str(existing["source"] or "") == new_source,
+                    safe_int(existing["priority"]) == new_priority,
+                    str(existing["reason"] or "") == new_reason,
+                    str(existing["status"] or "") == status,
+                    str(existing["list_create_time"] or "") == new_create_time,
+                    str(existing["list_update_time"] or "") == new_update_time,
+                    safe_int(existing["list_comment_count"]) == list_comment_count,
+                    (
+                        existing["db_comment_count"] is None
+                        and db_comment_count is None
+                    )
+                    or safe_int(existing["db_comment_count"]) == safe_int(db_comment_count),
+                )
+            )
+            if unchanged:
+                if commit:
+                    self.conn.commit()
+                return
             self.conn.execute(
                 """
                 update crawler_queue
                 set source=?, priority=min(priority, ?),
-                    list_create_time=case when ? != '' then ? else list_create_time end,
-                    list_update_time=case when ? != '' then ? else list_update_time end,
+                    list_create_time=?,
+                    list_update_time=?,
                     list_comment_count=?, db_comment_count=?,
                     status=?, reason=?, updated_at=?
                 where post_id=?
                 """,
                 (
-                    ",".join(sorted(sources)),
+                    new_source,
                     priority,
-                    list_create_time,
-                    list_create_time,
-                    list_update_time,
-                    list_update_time,
+                    new_create_time,
+                    new_update_time,
                     list_comment_count,
                     db_comment_count,
                     status,
-                    "|".join(sorted(reasons)),
+                    new_reason,
                     now,
                     str(post_id),
                 ),
