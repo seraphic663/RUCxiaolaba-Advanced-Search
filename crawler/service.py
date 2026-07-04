@@ -8,6 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from math import gcd
 from pathlib import Path
 
 from crawler.client import MiniProgramClient
@@ -118,6 +119,7 @@ class CrawlerService:
         old_page_threshold: int,
         stop_on_repeat: bool,
         dry_run: bool,
+        write_stubs: bool,
         min_delay: float,
         max_delay: float,
     ) -> dict:
@@ -140,7 +142,7 @@ class CrawlerService:
                 if self.init_schema:
                     store.init_schema()
                 else:
-                    store.ensure_crawler_queue()
+                    store.ensure_runtime_schema()
                 for page in range(1, max_pages + 1):
                     time.sleep(random.uniform(min_delay, max_delay))
                     data, error = self._list_page(client, endpoint, page)
@@ -180,8 +182,15 @@ class CrawlerService:
                                 article.get("count_comment", 0),
                             )
                         )
-                        db_comment_count = store.get_post_counts(post_id)
-                        missing = db_comment_count is None
+                        snapshot = store.get_post_crawl_snapshot(post_id)
+                        db_comment_count = (
+                            None if snapshot is None else snapshot["comment_count"]
+                        )
+                        crawl_status = (
+                            "missing" if snapshot is None else snapshot["crawl_status"]
+                        )
+                        missing = snapshot is None
+                        needs_detail = missing or crawl_status != "full"
                         create_after_since = create_time >= since
                         update_after_since = update_time >= since
                         comment_changed = (
@@ -193,7 +202,7 @@ class CrawlerService:
                         reason = ""
                         priority = 99
                         if endpoint == "lists":
-                            if missing and create_after_since:
+                            if needs_detail and create_after_since:
                                 reason = "new_post"
                                 priority = 10
                         else:
@@ -202,7 +211,7 @@ class CrawlerService:
                                 priority = 0
                                 stats["comment_changed"] += 1
                                 page_changed += 1
-                            elif missing and create_after_since:
+                            elif needs_detail and create_after_since:
                                 reason = "active_missing"
                                 priority = 20
                             elif update_after_since:
@@ -212,6 +221,12 @@ class CrawlerService:
                             page_queued += 1
                             stats["queued"] += 1
                             if not dry_run:
+                                if write_stubs and needs_detail:
+                                    store.upsert_list_stub(
+                                        article,
+                                        source=endpoint,
+                                        commit=False,
+                                    )
                                 store.enqueue_crawler_candidate(
                                     post_id=post_id,
                                     source=endpoint,
@@ -282,7 +297,7 @@ class CrawlerService:
                 if self.init_schema:
                     store.init_schema()
                 else:
-                    store.ensure_crawler_queue()
+                    store.ensure_runtime_schema()
                 items = store.next_crawler_queue_items(limit)
                 stats["selected"] = len(items)
                 for item in items:
@@ -290,6 +305,22 @@ class CrawlerService:
                     time.sleep(random.uniform(min_delay, max_delay))
                     parsed, error = self.fetch_detail_with_error(client, post_id)
                     if error:
+                        if error in {"not_found", "foreign_or_invalid"}:
+                            if not dry_run:
+                                store.mark_crawler_queue_item(
+                                    post_id,
+                                    status="skipped",
+                                    last_error=error,
+                                    increment_attempts=True,
+                                    commit=False,
+                                )
+                                store.conn.commit()
+                            stats["misses"] += 1
+                            print(
+                                f"[trickle-fill] skip #{post_id} err={error}",
+                                flush=True,
+                            )
+                            continue
                         stats["misses"] += 1
                         consecutive_misses += 1
                         status = "failed"
@@ -349,6 +380,343 @@ class CrawlerService:
                     )
         print(
             f"[trickle-fill] done {json.dumps(stats, ensure_ascii=False)} "
+            f"dry_run={dry_run}",
+            flush=True,
+        )
+        return stats
+
+    def plan_gap_ranges(
+        self,
+        *,
+        since: str,
+        start_id: int,
+        end_id: int,
+        chunk_size: int,
+        density_threshold: float,
+        dry_run: bool,
+    ) -> dict:
+        client = self.client()
+        chunk_size = max(1, int(chunk_size))
+        density_threshold = max(0.0, min(1.0, float(density_threshold)))
+        stats = {
+            "start_id": start_id,
+            "end_id": end_id,
+            "chunk_size": chunk_size,
+            "planned": 0,
+            "ignored": 0,
+        }
+        with database_write_lock(self.db_path, self.lock_timeout):
+            with SQLitePostStore(self.db_path) as store:
+                if self.init_schema:
+                    store.init_schema()
+                else:
+                    store.ensure_runtime_schema()
+                resolved_start = safe_int(start_id)
+                if resolved_start <= 0:
+                    if not since:
+                        raise ValueError("provide --since or --start-id")
+                    row = store.conn.execute(
+                        "select min(cast(id as integer)) from posts where create_time >= ?",
+                        (since,),
+                    ).fetchone()
+                    resolved_start = safe_int(row[0] if row else 0)
+                if resolved_start <= 0:
+                    raise RuntimeError(f"cannot determine gap start for {since}")
+                resolved_end = safe_int(end_id)
+                if resolved_end <= 0:
+                    resolved_end = self._latest_id(client)
+                if resolved_end < resolved_start:
+                    raise ValueError("end id is earlier than start id")
+                stats["start_id"] = resolved_start
+                stats["end_id"] = resolved_end
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                current = resolved_start
+                while current <= resolved_end:
+                    chunk_end = min(resolved_end, current + chunk_size - 1)
+                    span = chunk_end - current + 1
+                    row = store.conn.execute(
+                        """
+                        select count(*) as n from posts
+                        where cast(id as integer) between ? and ?
+                        """,
+                        (current, chunk_end),
+                    ).fetchone()
+                    existing = safe_int(row["n"] if row else 0)
+                    density = existing / max(1, span)
+                    if density < density_threshold:
+                        stats["planned"] += 1
+                        if not dry_run:
+                            range_id = f"{current}-{chunk_end}"
+                            store.conn.execute(
+                                """
+                                insert into crawler_gap_ranges(
+                                    range_id, start_id, end_id, reason, status,
+                                    estimated_density, sampled, found, missing,
+                                    errors, created_at, updated_at
+                                ) values (?,?,?,?,?,?,?,?,?,?,?,?)
+                                on conflict(range_id) do update set
+                                    reason=excluded.reason,
+                                    estimated_density=excluded.estimated_density,
+                                    updated_at=excluded.updated_at,
+                                    status=case
+                                        when crawler_gap_ranges.status='complete'
+                                        then crawler_gap_ranges.status
+                                        else excluded.status
+                                    end
+                                """,
+                                (
+                                    range_id,
+                                    current,
+                                    chunk_end,
+                                    "density_gap",
+                                    "pending",
+                                    density,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    now,
+                                    now,
+                                ),
+                            )
+                    else:
+                        stats["ignored"] += 1
+                    print(
+                        f"[plan-gaps] {current}..{chunk_end} "
+                        f"existing={existing}/{span} density={density:.3f}",
+                        flush=True,
+                    )
+                    current = chunk_end + 1
+                if not dry_run:
+                    store.set_state(
+                        "crawler_plan_gaps",
+                        json.dumps(stats, ensure_ascii=False),
+                        commit=False,
+                    )
+                    store.conn.commit()
+        print(
+            f"[plan-gaps] done {json.dumps(stats, ensure_ascii=False)} "
+            f"dry_run={dry_run}",
+            flush=True,
+        )
+        return stats
+
+    @staticmethod
+    def sample_ids(
+        start_id: int,
+        end_id: int,
+        count: int,
+        *,
+        offset: int = 0,
+        exclude: set[str] | None = None,
+    ) -> list[int]:
+        span = max(1, end_id - start_id + 1)
+        count = max(1, min(count, span))
+        excluded = exclude or set()
+        if count >= span and not excluded:
+            return list(range(start_id, end_id + 1))
+        step = max(1, span // count)
+        while gcd(step, span) != 1:
+            step += 1
+        ids: list[int] = []
+        seen: set[int] = set()
+        start_offset = offset % span
+        for idx in range(span):
+            post_id = start_id + ((start_offset + idx * step) % span)
+            if post_id in seen:
+                continue
+            seen.add(post_id)
+            if str(post_id) in excluded:
+                continue
+            ids.append(post_id)
+            if len(ids) >= count:
+                break
+        return sorted(ids)
+
+    def probe_gap_ranges(
+        self,
+        *,
+        range_limit: int,
+        samples_per_range: int,
+        enqueue_found: bool,
+        dry_run: bool,
+        min_delay: float,
+        max_delay: float,
+    ) -> dict:
+        client = self.client()
+        stats = {
+            "ranges": 0,
+            "sampled": 0,
+            "found": 0,
+            "missing": 0,
+            "errors": 0,
+            "completed": 0,
+            "rate_limited": False,
+        }
+        with database_write_lock(self.db_path, self.lock_timeout):
+            with SQLitePostStore(self.db_path) as store:
+                if self.init_schema:
+                    store.init_schema()
+                else:
+                    store.ensure_runtime_schema()
+                ranges = store.conn.execute(
+                    """
+                    select * from crawler_gap_ranges
+                    where status in ('pending', 'sampled')
+                    order by start_id
+                    limit ?
+                    """,
+                    (max(1, range_limit),),
+                ).fetchall()
+                for gap in ranges:
+                    stats["ranges"] += 1
+                    range_id = gap["range_id"]
+                    already = {
+                        str(row["post_id"])
+                        for row in store.conn.execute(
+                            "select post_id from crawler_id_probe where range_id=?",
+                            (range_id,),
+                        )
+                    }
+                    ids = self.sample_ids(
+                        safe_int(gap["start_id"]),
+                        safe_int(gap["end_id"]),
+                        samples_per_range,
+                        offset=safe_int(gap["sampled"]),
+                        exclude=already,
+                    )
+                    if not ids:
+                        if not dry_run:
+                            store.conn.execute(
+                                """
+                                update crawler_gap_ranges
+                                set status='complete', updated_at=?
+                                where range_id=?
+                                """,
+                                (
+                                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    range_id,
+                                ),
+                            )
+                            store.conn.commit()
+                        stats["completed"] += 1
+                        print(f"[probe-gaps] {range_id} complete", flush=True)
+                        continue
+                    sampled = found = missing = errors = 0
+                    for post_id in ids:
+                        time.sleep(random.uniform(min_delay, max_delay))
+                        parsed, error = self.fetch_detail_with_error(
+                            client,
+                            str(post_id),
+                        )
+                        sampled += 1
+                        stats["sampled"] += 1
+                        status = "error"
+                        create_time = ""
+                        comment_count = 0
+                        last_error = error or ""
+                        if error:
+                            if self.is_rate_limited(error):
+                                stats["rate_limited"] = True
+                                if not dry_run:
+                                    store.conn.commit()
+                                raise RuntimeError(error)
+                            if error in {"not_found", "foreign_or_invalid"}:
+                                status = "not_found"
+                                missing += 1
+                                stats["missing"] += 1
+                            else:
+                                errors += 1
+                                stats["errors"] += 1
+                        else:
+                            post, _comments = parsed
+                            status = "found"
+                            create_time = post["create_time"]
+                            comment_count = safe_int(post["comment_count"])
+                            found += 1
+                            stats["found"] += 1
+                            if enqueue_found and not dry_run:
+                                store.enqueue_crawler_candidate(
+                                    post_id=str(post_id),
+                                    source="id_probe",
+                                    priority=15,
+                                    list_create_time=create_time,
+                                    list_update_time=create_time,
+                                    list_comment_count=comment_count,
+                                    db_comment_count=store.get_post_counts(str(post_id)),
+                                    reason="id_probe_found",
+                                    commit=False,
+                                )
+                        if not dry_run:
+                            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            store.conn.execute(
+                                """
+                                insert into crawler_id_probe(
+                                    post_id, range_id, status, create_time,
+                                    comment_count, last_error, attempts, probed_at
+                                ) values (?,?,?,?,?,?,?,?)
+                                on conflict(post_id) do update set
+                                    range_id=excluded.range_id,
+                                    status=excluded.status,
+                                    create_time=excluded.create_time,
+                                    comment_count=excluded.comment_count,
+                                    last_error=excluded.last_error,
+                                    attempts=crawler_id_probe.attempts + 1,
+                                    probed_at=excluded.probed_at
+                                """,
+                                (
+                                    str(post_id),
+                                    range_id,
+                                    status,
+                                    create_time,
+                                    comment_count,
+                                    last_error,
+                                    1,
+                                    now,
+                                ),
+                            )
+                    if not dry_run:
+                        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        span = max(
+                            1,
+                            safe_int(gap["end_id"]) - safe_int(gap["start_id"]) + 1,
+                        )
+                        total_sampled = safe_int(gap["sampled"]) + sampled
+                        next_status = "complete" if total_sampled >= span else "sampled"
+                        store.conn.execute(
+                            """
+                            update crawler_gap_ranges
+                            set sampled=sampled + ?, found=found + ?,
+                                missing=missing + ?, errors=errors + ?,
+                                status=?, updated_at=?
+                            where range_id=?
+                            """,
+                            (
+                                sampled,
+                                found,
+                                missing,
+                                errors,
+                                next_status,
+                                now,
+                                range_id,
+                            ),
+                        )
+                        store.conn.commit()
+                        if next_status == "complete":
+                            stats["completed"] += 1
+                    print(
+                        f"[probe-gaps] {range_id} sampled={sampled} "
+                        f"found={found} missing={missing} errors={errors}",
+                        flush=True,
+                    )
+                if not dry_run:
+                    store.set_state(
+                        "crawler_probe_gaps",
+                        json.dumps(stats, ensure_ascii=False),
+                        commit=True,
+                    )
+        print(
+            f"[probe-gaps] done {json.dumps(stats, ensure_ascii=False)} "
             f"dry_run={dry_run}",
             flush=True,
         )

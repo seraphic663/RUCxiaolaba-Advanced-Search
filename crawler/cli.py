@@ -91,6 +91,7 @@ def command_discover(args) -> int:
         old_page_threshold=args.old_page_threshold,
         stop_on_repeat=args.stop_on_repeat,
         dry_run=args.dry_run,
+        write_stubs=not args.no_write_stubs,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
     )
@@ -104,6 +105,30 @@ def command_trickle_fill(args) -> int:
         min_delay=args.min_delay,
         max_delay=args.max_delay,
         stop_after_misses=args.stop_after_misses,
+    )
+    return 0
+
+
+def command_plan_gaps(args) -> int:
+    _service(args).plan_gap_ranges(
+        since=args.since,
+        start_id=args.start_id,
+        end_id=args.end_id,
+        chunk_size=args.chunk_size,
+        density_threshold=args.density_threshold,
+        dry_run=args.dry_run,
+    )
+    return 0
+
+
+def command_probe_gaps(args) -> int:
+    _service(args).probe_gap_ranges(
+        range_limit=args.range_limit,
+        samples_per_range=args.samples_per_range,
+        enqueue_found=not args.no_enqueue_found,
+        dry_run=args.dry_run,
+        min_delay=args.min_delay,
+        max_delay=args.max_delay,
     )
     return 0
 
@@ -249,6 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover_latest.add_argument("--since", required=True)
     discover_latest.add_argument("--max-pages", type=int, default=180)
     discover_latest.add_argument("--old-page-threshold", type=int, default=5)
+    discover_latest.add_argument("--no-write-stubs", action="store_true")
     discover_latest.add_argument("--dry-run", action="store_true")
     discover_latest.add_argument("--min-delay", type=float, default=0.1)
     discover_latest.add_argument("--max-delay", type=float, default=0.3)
@@ -267,6 +293,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover_active.add_argument("--since", required=True)
     discover_active.add_argument("--max-pages", type=int, default=120)
     discover_active.add_argument("--old-page-threshold", type=int, default=5)
+    discover_active.add_argument("--no-write-stubs", action="store_true")
     discover_active.add_argument("--dry-run", action="store_true")
     discover_active.add_argument("--min-delay", type=float, default=0.1)
     discover_active.add_argument("--max-delay", type=float, default=0.3)
@@ -282,6 +309,32 @@ def build_parser() -> argparse.ArgumentParser:
     trickle.add_argument("--max-delay", type=float, default=10.0)
     trickle.add_argument("--stop-after-misses", type=int, default=3)
     trickle.set_defaults(func=command_trickle_fill, canonical_command="trickle-fill")
+
+    gaps = sub.add_parser(
+        "plan-gaps",
+        help="record sparse ID ranges for later low-rate probing",
+    )
+    add_common(gaps)
+    gaps.add_argument("--since", default="")
+    gaps.add_argument("--start-id", type=int, default=0)
+    gaps.add_argument("--end-id", type=int, default=0)
+    gaps.add_argument("--chunk-size", type=int, default=1000)
+    gaps.add_argument("--density-threshold", type=float, default=0.35)
+    gaps.add_argument("--dry-run", action="store_true")
+    gaps.set_defaults(func=command_plan_gaps, canonical_command="plan-gaps")
+
+    probe = sub.add_parser(
+        "probe-gaps",
+        help="sample recorded ID gap ranges and enqueue found posts",
+    )
+    add_common(probe)
+    probe.add_argument("--range-limit", type=int, default=2)
+    probe.add_argument("--samples-per-range", type=int, default=20)
+    probe.add_argument("--no-enqueue-found", action="store_true")
+    probe.add_argument("--dry-run", action="store_true")
+    probe.add_argument("--min-delay", type=float, default=8.0)
+    probe.add_argument("--max-delay", type=float, default=15.0)
+    probe.set_defaults(func=command_probe_gaps, canonical_command="probe-gaps")
 
     detail = sub.add_parser(
         "fill-details",
