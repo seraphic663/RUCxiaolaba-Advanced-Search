@@ -89,6 +89,13 @@ class CrawlerService:
         )
 
     @staticmethod
+    def normalize_cutoff_time(value: str) -> str:
+        text = str(value or "").strip()
+        if len(text) >= 19 and text[10] == "T":
+            return f"{text[:10]} {text[11:19]}"
+        return text
+
+    @staticmethod
     def page_signature(articles: list[dict]) -> str:
         return ",".join(str(item.get("id") or "") for item in articles)
 
@@ -123,6 +130,7 @@ class CrawlerService:
         min_delay: float,
         max_delay: float,
     ) -> dict:
+        since = self.normalize_cutoff_time(since)
         client = self.client()
         stats = {
             "endpoint": endpoint,
@@ -395,6 +403,7 @@ class CrawlerService:
         density_threshold: float,
         dry_run: bool,
     ) -> dict:
+        since = self.normalize_cutoff_time(since)
         client = self.client()
         chunk_size = max(1, int(chunk_size))
         density_threshold = max(0.0, min(1.0, float(density_threshold)))

@@ -210,6 +210,41 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(post["crawl_status"], "list_only")
         self.assertIn("103", post["content"])
 
+    def test_discover_accepts_iso_cutoff_from_railway_env(self):
+        client = FakeClient(
+            {
+                1: [
+                    {
+                        "id": "104",
+                        "detail": "iso cutoff stub",
+                        "create_time": "2026-06-25 00:05:00",
+                        "update_time": "2026-06-25 00:05:00",
+                        "count_comment": 0,
+                    }
+                ],
+                2: [],
+            },
+            {},
+        )
+        stats = self.service(client).discover_queue(
+            command="discover-latest",
+            endpoint="lists",
+            since="2026-06-25T00:00:00",
+            max_pages=2,
+            old_page_threshold=2,
+            stop_on_repeat=True,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(stats["queued"], 1)
+        with SQLitePostStore(self.db) as store:
+            row = store.conn.execute(
+                "select post_id from crawler_queue where post_id='104'"
+            ).fetchone()
+        self.assertIsNotNone(row)
+
     def test_discover_requeues_list_only_post_when_queue_is_missing(self):
         with SQLitePostStore(self.db) as store:
             store.upsert_list_stub(
@@ -385,8 +420,8 @@ class CrawlerServiceTest(unittest.TestCase):
                 [],
             )
         stats = self.service(FakeClient({1: [{"id": "1010"}]}, {})).plan_gap_ranges(
-            since="2026-06-25 00:00:00",
-            start_id=1000,
+            since="2026-06-25T00:00:00",
+            start_id=0,
             end_id=1010,
             chunk_size=5,
             density_threshold=0.8,
