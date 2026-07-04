@@ -30,6 +30,10 @@ def comment_time(item: dict) -> str:
     return str(item.get("create_time") or item.get("show_create_time") or item.get("update_time") or "")
 
 
+def article_text(item: dict) -> str:
+    return f"{item.get('title') or ''} {item.get('detail') or ''}".strip()
+
+
 def comment_row(
     post_id: str,
     parent_id: str,
@@ -153,6 +157,9 @@ class SQLitePostStore:
                 comment_count integer not null,
                 star_count integer not null,
                 trace_count integer not null,
+                crawl_status text not null default 'full',
+                list_update_time text not null default '',
+                list_source text not null default '',
                 updated_at text not null
             );
 
@@ -194,7 +201,34 @@ class SQLitePostStore:
                 updated_at text not null
             );
 
+            create table if not exists crawler_gap_ranges (
+                range_id text primary key,
+                start_id integer not null,
+                end_id integer not null,
+                reason text not null,
+                status text not null,
+                estimated_density real not null,
+                sampled integer not null,
+                found integer not null,
+                missing integer not null,
+                errors integer not null,
+                created_at text not null,
+                updated_at text not null
+            );
+
+            create table if not exists crawler_id_probe (
+                post_id text primary key,
+                range_id text not null,
+                status text not null,
+                create_time text not null,
+                comment_count integer not null,
+                last_error text not null,
+                attempts integer not null,
+                probed_at text not null
+            );
+
             create index if not exists idx_posts_create_time on posts(create_time);
+            create index if not exists idx_posts_id_int on posts(cast(id as integer));
             create index if not exists idx_posts_stars on posts(star_count desc, id desc);
             create index if not exists idx_posts_category on posts(category_name);
             create index if not exists idx_posts_show_user_id on posts(show_user_id);
@@ -209,6 +243,8 @@ class SQLitePostStore:
             create index if not exists idx_comments_show_user_name_lower on comments(lower(show_user_name));
             create index if not exists idx_comments_reply_user_name_lower on comments(lower(reply_show_user_name));
             create index if not exists idx_crawler_queue_status_priority on crawler_queue(status, priority, updated_at);
+            create index if not exists idx_crawler_gap_status on crawler_gap_ranges(status, start_id);
+            create index if not exists idx_crawler_probe_range on crawler_id_probe(range_id, status);
             """
         )
         if not self._table_exists("search_index"):
@@ -223,11 +259,32 @@ class SQLitePostStore:
                 """
             )
         self.conn.commit()
+        self.ensure_runtime_schema()
         self._post_columns = self._columns("posts")
         self._comment_columns = self._columns("comments")
         self._has_search_index = True
 
-    def ensure_crawler_queue(self) -> None:
+    def ensure_runtime_schema(self) -> None:
+        if self._table_exists("posts"):
+            columns = self._columns("posts")
+            for name, ddl in {
+                "crawl_status": "alter table posts add column crawl_status text not null default 'full'",
+                "list_update_time": "alter table posts add column list_update_time text not null default ''",
+                "list_source": "alter table posts add column list_source text not null default ''",
+            }.items():
+                if name not in columns:
+                    self.conn.execute(ddl)
+            self.conn.execute(
+                "create index if not exists idx_posts_id_int "
+                "on posts(cast(id as integer))"
+            )
+        self.ensure_crawler_queue(commit=False)
+        self.ensure_gap_tables(commit=False)
+        self.conn.commit()
+        self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
+        self._comment_columns = self._columns("comments") if self._table_exists("comments") else set()
+
+    def ensure_crawler_queue(self, commit: bool = True) -> None:
         self.conn.execute(
             """
             create table if not exists crawler_queue (
@@ -251,13 +308,62 @@ class SQLitePostStore:
             "create index if not exists idx_crawler_queue_status_priority "
             "on crawler_queue(status, priority, updated_at)"
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
+
+    def ensure_gap_tables(self, commit: bool = True) -> None:
+        self.conn.executescript(
+            """
+            create table if not exists crawler_gap_ranges (
+                range_id text primary key,
+                start_id integer not null,
+                end_id integer not null,
+                reason text not null,
+                status text not null,
+                estimated_density real not null,
+                sampled integer not null,
+                found integer not null,
+                missing integer not null,
+                errors integer not null,
+                created_at text not null,
+                updated_at text not null
+            );
+
+            create table if not exists crawler_id_probe (
+                post_id text primary key,
+                range_id text not null,
+                status text not null,
+                create_time text not null,
+                comment_count integer not null,
+                last_error text not null,
+                attempts integer not null,
+                probed_at text not null
+            );
+
+            create index if not exists idx_crawler_gap_status on crawler_gap_ranges(status, start_id);
+            create index if not exists idx_crawler_probe_range on crawler_id_probe(range_id, status);
+            """
+        )
+        if commit:
+            self.conn.commit()
 
     def upsert_post(self, post: dict, comments: list[dict] | None = None, commit: bool = True) -> None:
         updated_at = now_text()
         post_id = str(post.get("id") or "")
         if not post_id:
             raise ValueError("post id is required")
+
+        existing_meta = {}
+        if {"list_update_time", "list_source"}.issubset(self._post_columns):
+            row = self.conn.execute(
+                "select list_update_time, list_source from posts where id=?",
+                (post_id,),
+            ).fetchone()
+            if row is not None:
+                existing_meta = {
+                    "list_update_time": str(row["list_update_time"] or ""),
+                    "list_source": str(row["list_source"] or ""),
+                }
 
         values = {
             "id": post_id,
@@ -279,6 +385,18 @@ class SQLitePostStore:
                     "show_user_head": str(post.get("show_user_head") or ""),
                     "views": safe_int(post.get("views")),
                     "hot": safe_int(post.get("hot")),
+                    "crawl_status": str(post.get("crawl_status") or "full"),
+                    "list_update_time": str(
+                        post.get("list_update_time")
+                        or post.get("update_time")
+                        or existing_meta.get("list_update_time")
+                        or ""
+                    ),
+                    "list_source": str(
+                        post.get("list_source")
+                        or existing_meta.get("list_source")
+                        or ""
+                    ),
                 }.items()
                 if key in self._post_columns
             }
@@ -304,6 +422,107 @@ class SQLitePostStore:
         self.refresh_bigram_index(post_id, values["content"], comments, commit=False)
         if commit:
             self.conn.commit()
+
+    def upsert_list_stub(
+        self,
+        article: dict,
+        *,
+        source: str,
+        commit: bool = True,
+    ) -> bool:
+        if "crawl_status" not in self._post_columns:
+            self.ensure_runtime_schema()
+        post_id = str(article.get("id") or "")
+        if not post_id:
+            return False
+        content = article_text(article)
+        create_time = str(article.get("create_time") or article.get("show_create_time") or "")
+        list_update_time = str(article.get("update_time") or create_time)
+        now = now_text()
+        values = {
+            "id": post_id,
+            "content": content,
+            "category_name": str(article.get("category_name") or ""),
+            "user_name": str(article.get("show_user_name") or article.get("user_name") or ""),
+            "show_user_id": str(article.get("show_user_id") or ""),
+            "real_user_id": str(article.get("real_user_id") or "0"),
+            "create_time": create_time,
+            "comment_count": safe_int(article.get("comment_count", article.get("count_comment", 0))),
+            "star_count": safe_int(article.get("count_star", article.get("star_count", 0))),
+            "trace_count": safe_int(article.get("count_trace", article.get("trace_count", 0))),
+            "crawl_status": "list_only",
+            "list_update_time": list_update_time,
+            "list_source": source,
+            "updated_at": now,
+        }
+        columns = [col for col in values if col in self._post_columns]
+        existing = self.conn.execute(
+            "select crawl_status from posts where id=?",
+            (post_id,),
+        ).fetchone()
+        if existing is None:
+            placeholders = ",".join("?" for _ in columns)
+            self.conn.execute(
+                f"insert into posts({','.join(columns)}) values ({placeholders})",
+                [values[col] for col in columns],
+            )
+            self.refresh_search_index(post_id, content, [], commit=False)
+            self.refresh_bigram_index(post_id, content, [], commit=False)
+            changed = True
+        else:
+            status = str(existing["crawl_status"] or "full")
+            if status == "full":
+                self.conn.execute(
+                    """
+                    update posts
+                    set comment_count=?, star_count=?, trace_count=?,
+                        list_update_time=?, list_source=?, updated_at=?
+                    where id=?
+                    """,
+                    (
+                        values["comment_count"],
+                        values["star_count"],
+                        values["trace_count"],
+                        list_update_time,
+                        source,
+                        now,
+                        post_id,
+                    ),
+                )
+                changed = False
+            else:
+                self.conn.execute(
+                    """
+                    update posts
+                    set content=?, category_name=?, user_name=?,
+                        show_user_id=?, real_user_id=?, create_time=?,
+                        comment_count=?, star_count=?, trace_count=?,
+                        crawl_status='list_only', list_update_time=?,
+                        list_source=?, updated_at=?
+                    where id=?
+                    """,
+                    (
+                        content,
+                        values["category_name"],
+                        values["user_name"],
+                        values["show_user_id"],
+                        values["real_user_id"],
+                        create_time,
+                        values["comment_count"],
+                        values["star_count"],
+                        values["trace_count"],
+                        list_update_time,
+                        source,
+                        now,
+                        post_id,
+                    ),
+                )
+                self.refresh_search_index(post_id, content, [], commit=False)
+                self.refresh_bigram_index(post_id, content, [], commit=False)
+                changed = True
+        if commit:
+            self.conn.commit()
+        return changed
 
     def replace_comments(
         self,
@@ -441,6 +660,23 @@ class SQLitePostStore:
             return None
         return safe_int(row[0])
 
+    def get_post_crawl_snapshot(self, post_id: str) -> dict | None:
+        columns = ["comment_count"]
+        if "crawl_status" in self._post_columns:
+            columns.append("crawl_status")
+        row = self.conn.execute(
+            f"select {','.join(columns)} from posts where id=?",
+            (str(post_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "comment_count": safe_int(row["comment_count"]),
+            "crawl_status": str(row["crawl_status"] or "full")
+            if "crawl_status" in row.keys()
+            else "full",
+        }
+
     def post_exists(self, post_id: str) -> bool:
         row = self.conn.execute(
             "select 1 from posts where id=?",
@@ -461,7 +697,7 @@ class SQLitePostStore:
         reason: str,
         commit: bool = True,
     ) -> None:
-        self.ensure_crawler_queue()
+        self.ensure_crawler_queue(commit=False)
         now = now_text()
         existing = self.conn.execute(
             "select source, priority, reason, status from crawler_queue where post_id=?",
@@ -498,7 +734,7 @@ class SQLitePostStore:
             reasons = set(filter(None, str(existing["reason"]).split("|")))
             reasons.add(reason)
             status = existing["status"]
-            if status in {"failed", "skipped"}:
+            if status == "failed":
                 status = "pending"
             self.conn.execute(
                 """

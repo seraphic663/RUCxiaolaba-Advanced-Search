@@ -22,6 +22,13 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_float(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
 NEW_INTERVAL = env_int("CRAWLER_NEW_INTERVAL", 8 * 60 * 60)
 REFRESH_INTERVAL = env_int("CRAWLER_REFRESH_INTERVAL", 8 * 60 * 60)
 BACKFILL_INTERVAL = env_int("CRAWLER_BACKFILL_INTERVAL", 24 * 60 * 60)
@@ -33,6 +40,16 @@ TRICKLE_SINCE = os.environ.get("CRAWLER_TRICKLE_SINCE", "2026-06-25 00:00:00")
 DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 30 * 60)
 TRICKLE_INTERVAL = env_int("CRAWLER_TRICKLE_INTERVAL", 10 * 60)
 TRICKLE_LIMIT = env_int("CRAWLER_TRICKLE_LIMIT", 30)
+GAP_ENABLED = (
+    os.environ.get("CRAWLER_GAP_ENABLED", "1" if TRICKLE_ENABLED else "0") == "1"
+)
+GAP_SINCE = os.environ.get("CRAWLER_GAP_SINCE", TRICKLE_SINCE)
+GAP_PLAN_INTERVAL = env_int("CRAWLER_GAP_PLAN_INTERVAL", 6 * 60 * 60)
+GAP_PROBE_INTERVAL = env_int("CRAWLER_GAP_PROBE_INTERVAL", 2 * 60 * 60)
+GAP_RANGE_LIMIT = env_int("CRAWLER_GAP_RANGE_LIMIT", 1)
+GAP_SAMPLES = env_int("CRAWLER_GAP_SAMPLES", 12)
+GAP_CHUNK_SIZE = env_int("CRAWLER_GAP_CHUNK_SIZE", 1000)
+GAP_DENSITY_THRESHOLD = env_float("CRAWLER_GAP_DENSITY_THRESHOLD", 0.35)
 
 
 JOBS = {
@@ -65,6 +82,23 @@ TRICKLE_JOBS = {
         "--min-delay", "5", "--max-delay", "10",
     ],
 }
+
+if GAP_ENABLED:
+    TRICKLE_JOBS.update(
+        {
+            "plan_gaps": [
+                "plan-gaps", "--since", GAP_SINCE,
+                "--chunk-size", str(GAP_CHUNK_SIZE),
+                "--density-threshold", str(GAP_DENSITY_THRESHOLD),
+            ],
+            "probe_gaps": [
+                "probe-gaps",
+                "--range-limit", str(GAP_RANGE_LIMIT),
+                "--samples-per-range", str(GAP_SAMPLES),
+                "--min-delay", "8", "--max-delay", "15",
+            ],
+        }
+    )
 
 
 def job_args(name: str) -> list[str]:
@@ -119,10 +153,24 @@ def main() -> int:
             "discover_active": DISCOVER_INTERVAL,
             "trickle_fill": TRICKLE_INTERVAL,
         }
+        if GAP_ENABLED:
+            next_run.update(
+                {
+                    "plan_gaps": now + 10 * 60,
+                    "probe_gaps": now + 20 * 60,
+                }
+            )
+            intervals.update(
+                {
+                    "plan_gaps": GAP_PLAN_INTERVAL,
+                    "probe_gaps": GAP_PROBE_INTERVAL,
+                }
+            )
         print(
             "[scheduler] trickle enabled "
             f"since={TRICKLE_SINCE!r} discover={DISCOVER_INTERVAL}s "
-            f"trickle={TRICKLE_INTERVAL}s limit={TRICKLE_LIMIT}",
+            f"trickle={TRICKLE_INTERVAL}s limit={TRICKLE_LIMIT} "
+            f"gap={GAP_ENABLED} gap_since={GAP_SINCE!r}",
             flush=True,
         )
     else:
