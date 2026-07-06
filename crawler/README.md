@@ -117,7 +117,19 @@ railway ssh /opt/venv/bin/python /app/crawler_db.py probe-gaps --db-path /app/da
 - `操作频繁`
 - `稍后再试`
 
-客户端会标记为 `rate_limited`。`trickle-fill` 遇到后立即停止，并把当前候选保留为 `pending`，避免继续消耗同一 session 的额度。
+客户端会标记为 `rate_limited`。`trickle-fill` / `probe-gaps` 遇到后立即停止，并把当前候选保留为 `pending`，避免继续消耗同一 session 的额度。
+
+Railway 的 `jobs.scheduler` 会识别子进程 stderr 里的 `rate_limited:*` 和 `cookie_expired`：
+
+- `rate_limited`：写入 `/app/data/.crawler_pause.json`，默认暂停全部爬虫任务 6 小时，到点后自动恢复下一轮尝试。
+- `cookie_expired`：同样写入暂停文件，默认 6 小时后重试；但这通常需要人工替换 `/app/data/config.txt` 中的 cookie。
+- 暂停文件在 Volume 里，服务重启后仍生效；过期后 scheduler 会自动删除。
+
+默认暂停时长可以通过环境变量调整：
+
+- `CRAWLER_RATE_LIMIT_COOLDOWN=21600`
+- `CRAWLER_COOKIE_ERROR_COOLDOWN=21600`
+- `CRAWLER_PAUSE_FILE=/app/data/.crawler_pause.json`
 
 如果详情是 `not_found` / `foreign_or_invalid`，会记为 `skipped` 并继续下一条；这类结果通常不是限流，不应该触发整轮停止。
 
@@ -161,7 +173,7 @@ python crawler_db.py probe-gaps --range-limit 1 --samples-per-range 12 --min-del
 - 每 10 分钟运行一次 `trickle-fill --limit 20~40`。
 - 每 6 小时运行一次 `plan-gaps`。
 - 每 2 小时运行一次 `probe-gaps --range-limit 1 --samples-per-range 12`。
-- 如果触发限流，暂停 6 到 12 小时。
+- 如果触发限流，scheduler 会自动暂停全部爬虫任务，默认 6 小时后恢复尝试。
 
 Railway scheduler 的 trickle 模式支持这些环境变量：
 
@@ -170,6 +182,8 @@ Railway scheduler 的 trickle 模式支持这些环境变量：
 - `CRAWLER_DISCOVER_INTERVAL=1800`
 - `CRAWLER_TRICKLE_INTERVAL=600`
 - `CRAWLER_TRICKLE_LIMIT=30`
+- `CRAWLER_RATE_LIMIT_COOLDOWN=21600`
+- `CRAWLER_COOKIE_ERROR_COOLDOWN=21600`
 - `CRAWLER_GAP_ENABLED=1`
 - `CRAWLER_GAP_SINCE=2026-06-25 00:00:00`
 - `CRAWLER_GAP_PLAN_INTERVAL=21600`
