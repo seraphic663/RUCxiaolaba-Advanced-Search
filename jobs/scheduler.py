@@ -7,12 +7,20 @@ import os
 import subprocess
 import sys
 import time
+import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = os.environ.get("SQLITE_DB", "/app/data/posts.db")
 CONFIG_PATH = os.environ.get("CRAWLER_CONFIG", "/app/data/config.txt")
+PAUSE_PATH = Path(
+    os.environ.get(
+        "CRAWLER_PAUSE_FILE",
+        str(Path(DB_PATH).with_name(".crawler_pause.json")),
+    )
+)
 
 
 def env_int(name: str, default: int) -> int:
@@ -50,6 +58,8 @@ GAP_RANGE_LIMIT = env_int("CRAWLER_GAP_RANGE_LIMIT", 1)
 GAP_SAMPLES = env_int("CRAWLER_GAP_SAMPLES", 12)
 GAP_CHUNK_SIZE = env_int("CRAWLER_GAP_CHUNK_SIZE", 1000)
 GAP_DENSITY_THRESHOLD = env_float("CRAWLER_GAP_DENSITY_THRESHOLD", 0.35)
+RATE_LIMIT_COOLDOWN = env_int("CRAWLER_RATE_LIMIT_COOLDOWN", 6 * 60 * 60)
+COOKIE_ERROR_COOLDOWN = env_int("CRAWLER_COOKIE_ERROR_COOLDOWN", 6 * 60 * 60)
 
 
 JOBS = {
@@ -101,6 +111,76 @@ if GAP_ENABLED:
     )
 
 
+@dataclass(frozen=True)
+class JobResult:
+    succeeded: bool
+    error_kind: str = ""
+    stderr: str = ""
+
+
+def now_wall() -> float:
+    return time.time()
+
+
+def classify_error(stderr: str) -> str:
+    text = stderr.lower()
+    if "rate_limited:" in text:
+        return "rate_limited"
+    if "cookie_expired" in text:
+        return "cookie_expired"
+    return ""
+
+
+def load_pause() -> dict:
+    try:
+        return json.loads(PAUSE_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        print(f"[scheduler] ignore invalid pause file: {exc}", flush=True)
+        return {}
+
+
+def save_pause(*, reason: str, job: str, seconds: int, detail: str) -> dict:
+    until = now_wall() + max(1, int(seconds))
+    pause = {
+        "reason": reason,
+        "job": job,
+        "until": until,
+        "until_text": datetime.fromtimestamp(until, CHINA_TZ).isoformat(),
+        "detail": detail[-500:],
+        "updated_at": datetime.now(CHINA_TZ).isoformat(),
+    }
+    PAUSE_PATH.write_text(
+        json.dumps(pause, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(
+        "[scheduler] pause crawler "
+        f"reason={reason} job={job} until={pause['until_text']}",
+        flush=True,
+    )
+    return pause
+
+
+def clear_pause(reason: str) -> None:
+    try:
+        PAUSE_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    print(f"[scheduler] clear pause reason={reason}", flush=True)
+
+
+def active_pause() -> dict:
+    pause = load_pause()
+    until = float(pause.get("until") or 0)
+    if until > now_wall():
+        return pause
+    if pause:
+        clear_pause("expired")
+    return {}
+
+
 def job_args(name: str) -> list[str]:
     if name in TRICKLE_JOBS:
         return TRICKLE_JOBS[name]
@@ -114,7 +194,7 @@ def job_args(name: str) -> list[str]:
     return JOBS[name]
 
 
-def run_job(name: str) -> bool:
+def run_job(name: str) -> JobResult:
     command = [
         sys.executable,
         str(ROOT / "crawler_db.py"),
@@ -123,9 +203,22 @@ def run_job(name: str) -> bool:
         "--config", CONFIG_PATH,
     ]
     print(f"[scheduler] start {name}", flush=True)
-    result = subprocess.run(command, cwd=ROOT, check=False)
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        check=False,
+        text=True,
+        stderr=subprocess.PIPE,
+    )
+    stderr = result.stderr or ""
+    if stderr:
+        print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
     print(f"[scheduler] done {name} exit={result.returncode}", flush=True)
-    return result.returncode == 0
+    return JobResult(
+        succeeded=result.returncode == 0,
+        error_kind=classify_error(stderr),
+        stderr=stderr,
+    )
 
 
 def phase1_delay() -> float:
@@ -198,14 +291,45 @@ def main() -> int:
     while True:
         now = time.monotonic()
         due = min(next_run, key=next_run.get)
+        pause = active_pause()
+        if pause:
+            until_monotonic = now + max(1.0, float(pause["until"]) - now_wall())
+            print(
+                "[scheduler] paused "
+                f"reason={pause.get('reason')} due={due} "
+                f"until={pause.get('until_text')}",
+                flush=True,
+            )
+            for name in next_run:
+                next_run[name] = max(next_run[name], until_monotonic)
+            time.sleep(min(max(1.0, until_monotonic - now), 30))
+            continue
         wait = next_run[due] - now
         if wait > 0:
             time.sleep(min(wait, 30))
             continue
-        succeeded = run_job(due)
-        if due == "phase1" and succeeded:
+        result = run_job(due)
+        if result.error_kind == "rate_limited":
+            save_pause(
+                reason="rate_limited",
+                job=due,
+                seconds=RATE_LIMIT_COOLDOWN,
+                detail=result.stderr,
+            )
+        elif result.error_kind == "cookie_expired":
+            save_pause(
+                reason="cookie_expired",
+                job=due,
+                seconds=COOKIE_ERROR_COOLDOWN,
+                detail=result.stderr,
+            )
+        if due == "phase1" and result.succeeded:
             PHASE1_MARKER.touch()
-        retry_delay = 60 * 60 if due == "phase1" and not succeeded else intervals[due]
+        retry_delay = (
+            60 * 60
+            if due == "phase1" and not result.succeeded
+            else intervals[due]
+        )
         next_run[due] = time.monotonic() + retry_delay
 
 
