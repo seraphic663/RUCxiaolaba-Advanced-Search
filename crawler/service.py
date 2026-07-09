@@ -201,10 +201,6 @@ class CrawlerService:
                         needs_detail = missing or crawl_status != "full"
                         create_after_since = create_time >= since
                         update_after_since = update_time >= since
-                        comment_changed = (
-                            db_comment_count is not None
-                            and db_comment_count != comment_count
-                        )
                         if create_after_since or update_after_since:
                             page_has_since = True
                         reason = ""
@@ -212,19 +208,19 @@ class CrawlerService:
                         if endpoint == "lists":
                             if needs_detail and create_after_since:
                                 reason = "new_post"
-                                priority = 10
+                                priority = 10 if comment_count > 0 else 40
                         else:
-                            if comment_changed:
+                            if (
+                                db_comment_count is not None
+                                and comment_count > db_comment_count
+                            ):
                                 reason = "comment_changed"
                                 priority = 0
                                 stats["comment_changed"] += 1
                                 page_changed += 1
                             elif needs_detail and create_after_since:
                                 reason = "active_missing"
-                                priority = 20
-                            elif update_after_since:
-                                reason = "active_updated"
-                                priority = 30
+                                priority = 20 if comment_count > 0 else 50
                         if reason:
                             page_queued += 1
                             stats["queued"] += 1
