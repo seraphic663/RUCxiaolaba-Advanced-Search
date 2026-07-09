@@ -6,6 +6,7 @@ from jobs.scheduler import (
     job_args,
     job_budget_kind,
     next_quota_release,
+    parse_release_steps,
     planned_job_calls,
     quota_release_fraction,
 )
@@ -73,8 +74,16 @@ class CLIContractTest(unittest.TestCase):
             8,
         )
         self.assertEqual(planned_job_calls("plan_gaps", ["plan-gaps"]), 1)
+        trickle_args = job_args("trickle_fill")
+        self.assertLessEqual(int(trickle_args[trickle_args.index("--limit") + 1]), 12)
 
-    def test_scheduler_releases_quota_in_two_windows(self):
+    def test_scheduler_parses_quota_release_steps(self):
+        self.assertEqual(
+            parse_release_steps("11=0.2,14:0.35,17:30=0.5,bad,23=1.2"),
+            [(660, 0.2), (840, 0.35), (1050, 0.5), (1380, 1.0)],
+        )
+
+    def test_scheduler_releases_quota_in_stairs(self):
         china = timezone(timedelta(hours=8))
         self.assertEqual(
             quota_release_fraction(datetime(2026, 7, 10, 10, 59, tzinfo=china)),
@@ -82,11 +91,15 @@ class CLIContractTest(unittest.TestCase):
         )
         self.assertEqual(
             quota_release_fraction(datetime(2026, 7, 10, 11, 0, tzinfo=china)),
+            0.2,
+        )
+        self.assertEqual(
+            quota_release_fraction(datetime(2026, 7, 10, 17, 0, tzinfo=china)),
             0.5,
         )
         self.assertEqual(
-            quota_release_fraction(datetime(2026, 7, 10, 22, 59, tzinfo=china)),
-            0.5,
+            quota_release_fraction(datetime(2026, 7, 10, 20, 0, tzinfo=china)),
+            0.7,
         )
         self.assertEqual(
             quota_release_fraction(datetime(2026, 7, 10, 23, 0, tzinfo=china)),
@@ -95,6 +108,10 @@ class CLIContractTest(unittest.TestCase):
         self.assertEqual(
             next_quota_release(datetime(2026, 7, 10, 10, 30, tzinfo=china)).hour,
             11,
+        )
+        self.assertEqual(
+            next_quota_release(datetime(2026, 7, 10, 11, 30, tzinfo=china)).hour,
+            14,
         )
 
 

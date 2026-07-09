@@ -27,6 +27,12 @@ QUOTA_PATH = Path(
         str(Path(DB_PATH).with_name(".crawler_quota.json")),
     )
 )
+QUOTA_HISTORY_PATH = Path(
+    os.environ.get(
+        "CRAWLER_QUOTA_HISTORY_FILE",
+        str(Path(DB_PATH).with_name(".crawler_quota_history.jsonl")),
+    )
+)
 
 
 def env_int(name: str, default: int) -> int:
@@ -60,7 +66,13 @@ TRICKLE_ENABLED = os.environ.get("CRAWLER_TRICKLE_ENABLED", "0") == "1"
 TRICKLE_SINCE = os.environ.get("CRAWLER_TRICKLE_SINCE", "2026-06-25 00:00:00")
 DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 30 * 60)
 TRICKLE_INTERVAL = env_int("CRAWLER_TRICKLE_INTERVAL", 10 * 60)
-TRICKLE_LIMIT = env_int("CRAWLER_TRICKLE_LIMIT", 30)
+TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 12)
+TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 12), TRICKLE_LIMIT_CAP)
+TRICKLE_MIN_DELAY = env_float("CRAWLER_TRICKLE_MIN_DELAY", 8.0)
+TRICKLE_MAX_DELAY = max(
+    TRICKLE_MIN_DELAY,
+    env_float("CRAWLER_TRICKLE_MAX_DELAY", 14.0),
+)
 DISCOVER_LATEST_PAGES = env_int("CRAWLER_DISCOVER_LATEST_PAGES", 60)
 DISCOVER_ACTIVE_PAGES = env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", 80)
 GAP_ENABLED = (
@@ -87,6 +99,16 @@ DAILY_DETAIL_BUDGET = env_int("CRAWLER_DAILY_DETAIL_BUDGET", 450)
 DAILY_PROBE_BUDGET = env_nonnegative_int("CRAWLER_DAILY_PROBE_BUDGET", 0)
 QUOTA_FIRST_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_FIRST_RELEASE_HOUR", 11)
 QUOTA_SECOND_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_SECOND_RELEASE_HOUR", 23)
+QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
+    "CRAWLER_QUOTA_RELEASE_STEPS",
+    "11=0.20,14=0.35,17=0.50,20=0.70,23=1.00",
+)
+QUOTA_ADAPTIVE_ENABLED = os.environ.get("CRAWLER_QUOTA_ADAPTIVE_ENABLED", "1") == "1"
+QUOTA_ADAPTIVE_SAFETY = min(
+    1.0,
+    max(0.1, env_float("CRAWLER_QUOTA_ADAPTIVE_SAFETY", 0.80)),
+)
+QUOTA_ADAPTIVE_LOOKBACK_DAYS = env_int("CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14)
 RESET_GRACE_MINUTES = env_int("CRAWLER_RESET_GRACE_MINUTES", 5)
 PAUSE_LOG_INTERVAL = env_int("CRAWLER_PAUSE_LOG_INTERVAL", 10 * 60)
 
@@ -122,7 +144,8 @@ TRICKLE_JOBS = {
     ],
     "trickle_fill": [
         "trickle-fill", "--limit", str(TRICKLE_LIMIT),
-        "--min-delay", "5", "--max-delay", "10",
+        "--min-delay", str(TRICKLE_MIN_DELAY),
+        "--max-delay", str(TRICKLE_MAX_DELAY),
     ],
 }
 
@@ -172,31 +195,178 @@ def next_beijing_reset() -> datetime:
     ) + timedelta(minutes=RESET_GRACE_MINUTES)
 
 
-def quota_release_fraction(at: datetime | None = None) -> float:
-    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+def parse_release_steps(text: str) -> list[tuple[int, float]]:
+    steps: list[tuple[int, float]] = []
+    for chunk in text.split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        if "=" in item:
+            time_part, value_part = item.split("=", 1)
+        elif ":" in item:
+            time_part, value_part = item.split(":", 1)
+        else:
+            continue
+        try:
+            if ":" in time_part:
+                hour_text, minute_text = time_part.split(":", 1)
+                minutes = int(hour_text) * 60 + int(minute_text)
+            else:
+                minutes = int(time_part) * 60
+            fraction = max(0.0, min(1.0, float(value_part)))
+        except ValueError:
+            continue
+        if 0 <= minutes < 24 * 60:
+            steps.append((minutes, fraction))
+    steps.sort(key=lambda pair: pair[0])
+    deduped: list[tuple[int, float]] = []
+    for minutes, fraction in steps:
+        if deduped and deduped[-1][0] == minutes:
+            deduped[-1] = (minutes, fraction)
+        else:
+            deduped.append((minutes, fraction))
+    return deduped
+
+
+def quota_release_steps() -> list[tuple[int, float]]:
+    steps = parse_release_steps(QUOTA_RELEASE_STEPS_TEXT)
+    if steps:
+        return steps
     first_hour = min(23, QUOTA_FIRST_RELEASE_HOUR)
     second_hour = min(23, max(first_hour + 1, QUOTA_SECOND_RELEASE_HOUR))
-    if at.hour < first_hour:
-        return 0.0
-    if at.hour < second_hour:
-        return 0.5
-    return 1.0
+    return [(first_hour * 60, 0.5), (second_hour * 60, 1.0)]
+
+
+def quota_release_fraction(at: datetime | None = None) -> float:
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    current_minute = at.hour * 60 + at.minute
+    released = 0.0
+    for minute, fraction in quota_release_steps():
+        if current_minute >= minute:
+            released = fraction
+        else:
+            break
+    return released
 
 
 def next_quota_release(at: datetime | None = None) -> datetime:
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
-    first_hour = min(23, QUOTA_FIRST_RELEASE_HOUR)
-    second_hour = min(23, max(first_hour + 1, QUOTA_SECOND_RELEASE_HOUR))
-    first = at.replace(hour=first_hour, minute=0, second=0, microsecond=0)
-    second = at.replace(hour=second_hour, minute=0, second=0, microsecond=0)
-    if at < first:
-        return first
-    if at < second:
-        return second
+    current_minute = at.hour * 60 + at.minute
+    current_fraction = quota_release_fraction(at)
+    for minute, fraction in quota_release_steps():
+        if minute > current_minute and fraction > current_fraction:
+            return at.replace(
+                hour=minute // 60,
+                minute=minute % 60,
+                second=0,
+                microsecond=0,
+            )
     tomorrow = at.date() + timedelta(days=1)
-    return datetime.combine(tomorrow, datetime.min.time(), tzinfo=CHINA_TZ).replace(
-        hour=first_hour
+    first_minute = quota_release_steps()[0][0]
+    return datetime.combine(
+        tomorrow,
+        datetime.min.time(),
+        tzinfo=CHINA_TZ,
+    ).replace(
+        hour=first_minute // 60,
+        minute=first_minute % 60,
     )
+
+
+def quota_source_calls(quota: dict) -> int:
+    return sum(
+        int(quota.get(key, 0) or 0)
+        for key in (
+            "new_list_calls",
+            "active_list_calls",
+            "detail_calls",
+            "probe_calls",
+        )
+    )
+
+
+def configured_source_budget() -> int:
+    return (
+        DAILY_NEW_LIST_BUDGET
+        + DAILY_ACTIVE_LIST_BUDGET
+        + DAILY_DETAIL_BUDGET
+        + DAILY_PROBE_BUDGET
+    )
+
+
+def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
+    if not quota or not quota.get("date"):
+        return
+    record = {
+        "date": quota.get("date"),
+        "reason": reason,
+        "job": job,
+        "recorded_at": beijing_now().isoformat(),
+        "source_calls": quota_source_calls(quota),
+        "new_list_calls": int(quota.get("new_list_calls", 0) or 0),
+        "active_list_calls": int(quota.get("active_list_calls", 0) or 0),
+        "detail_calls": int(quota.get("detail_calls", 0) or 0),
+        "probe_calls": int(quota.get("probe_calls", 0) or 0),
+        "rate_limited": int(quota.get("rate_limited", 0) or 0),
+        "configured_source_budget": configured_source_budget(),
+        "release_fraction": quota_release_fraction(),
+    }
+    with QUOTA_HISTORY_PATH.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def recent_rate_limit_caps() -> list[int]:
+    if not QUOTA_ADAPTIVE_ENABLED:
+        return []
+    try:
+        lines = QUOTA_HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        print(f"[scheduler] ignore invalid quota history: {exc}", flush=True)
+        return []
+    cutoff = beijing_now().date() - timedelta(days=QUOTA_ADAPTIVE_LOOKBACK_DAYS)
+    caps: list[int] = []
+    for line in lines[-200:]:
+        try:
+            record = json.loads(line)
+            if record.get("reason") != "rate_limited":
+                continue
+            date_text = str(record.get("date", ""))
+            if date_text and datetime.fromisoformat(date_text).date() < cutoff:
+                continue
+            source_calls = int(record.get("source_calls", 0) or 0)
+        except Exception:
+            continue
+        if source_calls > 0:
+            caps.append(max(1, int(source_calls * QUOTA_ADAPTIVE_SAFETY)))
+    return caps
+
+
+def adaptive_source_budget() -> int:
+    caps = recent_rate_limit_caps()
+    if not caps:
+        return configured_source_budget()
+    return min(configured_source_budget(), min(caps))
+
+
+def adaptive_scale() -> float:
+    configured = configured_source_budget()
+    if configured <= 0:
+        return 1.0
+    return max(0.05, min(1.0, adaptive_source_budget() / configured))
+
+
+def daily_budget(kind: str) -> int:
+    base = {
+        "new_list": DAILY_NEW_LIST_BUDGET,
+        "active_list": DAILY_ACTIVE_LIST_BUDGET,
+        "detail": DAILY_DETAIL_BUDGET,
+        "probe": DAILY_PROBE_BUDGET,
+    }[kind]
+    if base <= 0:
+        return 0
+    return max(1, int(base * adaptive_scale()))
 
 
 def classify_error(stderr: str) -> str:
@@ -307,6 +477,8 @@ def load_quota() -> dict:
         print(f"[scheduler] ignore invalid quota file: {exc}", flush=True)
         quota = {}
     if quota.get("date") != today:
+        if quota.get("date"):
+            append_quota_history(quota, reason="day_rollover")
         quota = {
             "date": today,
             "new_list_calls": 0,
@@ -330,6 +502,17 @@ def load_quota() -> dict:
 
 def save_quota(quota: dict) -> None:
     quota["updated_at"] = beijing_now().isoformat()
+    quota["release_fraction"] = quota_release_fraction()
+    quota["configured_source_budget"] = configured_source_budget()
+    quota["adaptive_source_budget"] = adaptive_source_budget()
+    quota["adaptive_scale"] = adaptive_scale()
+    quota["release_steps"] = [
+        {
+            "time": f"{minute // 60:02d}:{minute % 60:02d}",
+            "fraction": fraction,
+        }
+        for minute, fraction in quota_release_steps()
+    ]
     QUOTA_PATH.write_text(
         json.dumps(quota, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -381,16 +564,16 @@ def remaining_budget(kind: str, quota: dict) -> int:
     if fraction <= 0:
         return 0
     if kind == "new_list":
-        allowed = int(DAILY_NEW_LIST_BUDGET * fraction)
+        allowed = int(daily_budget(kind) * fraction)
         return max(0, allowed - int(quota.get("new_list_calls", 0)))
     if kind == "active_list":
-        allowed = int(DAILY_ACTIVE_LIST_BUDGET * fraction)
+        allowed = int(daily_budget(kind) * fraction)
         return max(0, allowed - int(quota.get("active_list_calls", 0)))
     if kind == "detail":
-        allowed = int(DAILY_DETAIL_BUDGET * fraction)
+        allowed = int(daily_budget(kind) * fraction)
         return max(0, allowed - int(quota.get("detail_calls", 0)))
     if kind == "probe":
-        allowed = int(DAILY_PROBE_BUDGET * fraction)
+        allowed = int(daily_budget(kind) * fraction)
         return max(0, allowed - int(quota.get("probe_calls", 0)))
     return 10**9
 
@@ -583,7 +766,11 @@ def main() -> int:
         if result.error_kind == "rate_limited":
             quota = load_quota()
             quota["rate_limited"] = int(quota.get("rate_limited", 0)) + 1
+            quota["last_rate_limited_at"] = beijing_now().isoformat()
+            quota["last_rate_limited_job"] = due
+            quota["last_rate_limited_source_calls"] = quota_source_calls(quota)
             save_quota(quota)
+            append_quota_history(quota, reason="rate_limited", job=due)
             save_pause_until(
                 reason="rate_limited",
                 job=due,
