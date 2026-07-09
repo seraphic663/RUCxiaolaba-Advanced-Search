@@ -90,6 +90,8 @@ def command_discover(args) -> int:
         max_pages=args.max_pages,
         old_page_threshold=args.old_page_threshold,
         stop_on_repeat=args.stop_on_repeat,
+        min_pages=args.min_pages,
+        no_action_page_threshold=args.no_action_page_threshold,
         dry_run=args.dry_run,
         write_stubs=not args.no_write_stubs,
         min_delay=args.min_delay,
@@ -274,6 +276,8 @@ def build_parser() -> argparse.ArgumentParser:
     discover_latest.add_argument("--since", required=True)
     discover_latest.add_argument("--max-pages", type=int, default=180)
     discover_latest.add_argument("--old-page-threshold", type=int, default=5)
+    discover_latest.add_argument("--min-pages", type=int, default=5)
+    discover_latest.add_argument("--no-action-page-threshold", type=int, default=5)
     discover_latest.add_argument("--no-write-stubs", action="store_true")
     discover_latest.add_argument("--dry-run", action="store_true")
     discover_latest.add_argument("--min-delay", type=float, default=0.1)
@@ -293,6 +297,8 @@ def build_parser() -> argparse.ArgumentParser:
     discover_active.add_argument("--since", required=True)
     discover_active.add_argument("--max-pages", type=int, default=120)
     discover_active.add_argument("--old-page-threshold", type=int, default=5)
+    discover_active.add_argument("--min-pages", type=int, default=5)
+    discover_active.add_argument("--no-action-page-threshold", type=int, default=3)
     discover_active.add_argument("--no-write-stubs", action="store_true")
     discover_active.add_argument("--dry-run", action="store_true")
     discover_active.add_argument("--min-delay", type=float, default=0.1)
