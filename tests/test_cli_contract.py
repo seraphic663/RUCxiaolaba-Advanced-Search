@@ -5,8 +5,11 @@ from jobs.scheduler import (
     classify_error,
     job_args,
     job_budget_kind,
+    next_quota_release,
     planned_job_calls,
+    quota_release_fraction,
 )
+from datetime import datetime, timezone, timedelta
 
 
 class CLIContractTest(unittest.TestCase):
@@ -60,8 +63,9 @@ class CLIContractTest(unittest.TestCase):
         self.assertEqual(classify_error("[crawler] error: not_found"), "")
 
     def test_scheduler_budgets_source_call_types(self):
-        self.assertEqual(job_budget_kind("discover_new"), "list")
-        self.assertEqual(job_budget_kind("plan_gaps"), "list")
+        self.assertEqual(job_budget_kind("discover_new"), "new_list")
+        self.assertEqual(job_budget_kind("discover_active"), "active_list")
+        self.assertEqual(job_budget_kind("plan_gaps"), "new_list")
         self.assertEqual(job_budget_kind("trickle_fill"), "detail")
         self.assertEqual(job_budget_kind("probe_gaps"), "probe")
         self.assertEqual(
@@ -69,6 +73,29 @@ class CLIContractTest(unittest.TestCase):
             8,
         )
         self.assertEqual(planned_job_calls("plan_gaps", ["plan-gaps"]), 1)
+
+    def test_scheduler_releases_quota_in_two_windows(self):
+        china = timezone(timedelta(hours=8))
+        self.assertEqual(
+            quota_release_fraction(datetime(2026, 7, 10, 10, 59, tzinfo=china)),
+            0.0,
+        )
+        self.assertEqual(
+            quota_release_fraction(datetime(2026, 7, 10, 11, 0, tzinfo=china)),
+            0.5,
+        )
+        self.assertEqual(
+            quota_release_fraction(datetime(2026, 7, 10, 22, 59, tzinfo=china)),
+            0.5,
+        )
+        self.assertEqual(
+            quota_release_fraction(datetime(2026, 7, 10, 23, 0, tzinfo=china)),
+            1.0,
+        )
+        self.assertEqual(
+            next_quota_release(datetime(2026, 7, 10, 10, 30, tzinfo=china)).hour,
+            11,
+        )
 
 
 if __name__ == "__main__":

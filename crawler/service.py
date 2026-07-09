@@ -124,11 +124,13 @@ class CrawlerService:
         since: str,
         max_pages: int,
         old_page_threshold: int,
-        stop_on_repeat: bool,
-        dry_run: bool,
-        write_stubs: bool,
-        min_delay: float,
-        max_delay: float,
+        stop_on_repeat: bool = True,
+        min_pages: int = 3,
+        no_action_page_threshold: int = 3,
+        dry_run: bool = False,
+        write_stubs: bool = True,
+        min_delay: float = 0.1,
+        max_delay: float = 0.3,
     ) -> dict:
         since = self.normalize_cutoff_time(since)
         client = self.client()
@@ -142,9 +144,11 @@ class CrawlerService:
             "errors": 0,
             "repeat_stop": False,
             "old_page_stop": False,
+            "no_action_stop": False,
         }
         seen_signatures: dict[str, int] = {}
         old_pages = 0
+        no_action_pages = 0
         with database_write_lock(self.db_path, self.lock_timeout):
             with SQLitePostStore(self.db_path) as store:
                 if self.init_schema:
@@ -247,6 +251,10 @@ class CrawlerService:
                             page_existing += 1
                     if not dry_run:
                         store.conn.commit()
+                    if page_queued == 0:
+                        no_action_pages += 1
+                    else:
+                        no_action_pages = 0
                     if endpoint == "lists" and not page_has_since:
                         old_pages += 1
                     else:
@@ -262,6 +270,17 @@ class CrawlerService:
                         stats["old_page_stop"] = True
                         print(
                             f"[{command}] stop old_pages={old_pages}",
+                            flush=True,
+                        )
+                        break
+                    if (
+                        page >= min_pages
+                        and no_action_page_threshold > 0
+                        and no_action_pages >= no_action_page_threshold
+                    ):
+                        stats["no_action_stop"] = True
+                        print(
+                            f"[{command}] stop no_action_pages={no_action_pages}",
                             flush=True,
                         )
                         break

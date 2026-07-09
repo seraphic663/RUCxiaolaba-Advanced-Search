@@ -430,6 +430,58 @@ class CrawlerServiceTest(unittest.TestCase):
                 store.conn.execute("select 1 from crawler_queue").fetchone()
             )
 
+    def test_discover_active_stops_after_consecutive_no_action_pages(self):
+        with SQLitePostStore(self.db) as store:
+            for post_id in ("220", "221", "222", "223", "224"):
+                store.upsert_post(
+                    {
+                        "id": post_id,
+                        "content": "existing",
+                        "create_time": "2026-06-24 10:00:00",
+                        "comment_count": 2,
+                    },
+                    [],
+                )
+        pages = {
+            idx + 1: [
+                {
+                    "id": str(220 + idx),
+                    "create_time": "2026-06-24 10:00:00",
+                    "update_time": "2026-06-25 10:00:00",
+                    "count_comment": 2,
+                }
+            ]
+            for idx in range(5)
+        }
+        pages[6] = [
+            {
+                "id": "999",
+                "create_time": "2026-06-25 10:00:00",
+                "update_time": "2026-06-25 10:00:00",
+                "count_comment": 9,
+            }
+        ]
+        stats = self.service(FakeClient(pages, {})).discover_queue(
+            command="discover-active",
+            endpoint="lists2",
+            since="2026-06-25 00:00:00",
+            max_pages=10,
+            old_page_threshold=2,
+            stop_on_repeat=False,
+            min_pages=3,
+            no_action_page_threshold=3,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertTrue(stats["no_action_stop"])
+        self.assertEqual(stats["pages"], 3)
+        with SQLitePostStore(self.db) as store:
+            self.assertIsNone(
+                store.conn.execute("select 1 from crawler_queue where post_id='999'").fetchone()
+            )
+
     def test_queue_prioritizes_new_comment_delta_before_plain_new_posts(self):
         with SQLitePostStore(self.db) as store:
             store.enqueue_crawler_candidate(

@@ -75,8 +75,18 @@ GAP_CHUNK_SIZE = env_int("CRAWLER_GAP_CHUNK_SIZE", 1000)
 GAP_DENSITY_THRESHOLD = env_float("CRAWLER_GAP_DENSITY_THRESHOLD", 0.35)
 COOKIE_ERROR_COOLDOWN = env_int("CRAWLER_COOKIE_ERROR_COOLDOWN", 6 * 60 * 60)
 DAILY_LIST_BUDGET = env_int("CRAWLER_DAILY_LIST_BUDGET", 240)
+DAILY_NEW_LIST_BUDGET = env_int(
+    "CRAWLER_DAILY_NEW_LIST_BUDGET",
+    max(1, DAILY_LIST_BUDGET // 3),
+)
+DAILY_ACTIVE_LIST_BUDGET = env_int(
+    "CRAWLER_DAILY_ACTIVE_LIST_BUDGET",
+    max(1, DAILY_LIST_BUDGET - DAILY_NEW_LIST_BUDGET),
+)
 DAILY_DETAIL_BUDGET = env_int("CRAWLER_DAILY_DETAIL_BUDGET", 450)
 DAILY_PROBE_BUDGET = env_nonnegative_int("CRAWLER_DAILY_PROBE_BUDGET", 0)
+QUOTA_FIRST_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_FIRST_RELEASE_HOUR", 11)
+QUOTA_SECOND_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_SECOND_RELEASE_HOUR", 23)
 RESET_GRACE_MINUTES = env_int("CRAWLER_RESET_GRACE_MINUTES", 5)
 PAUSE_LOG_INTERVAL = env_int("CRAWLER_PAUSE_LOG_INTERVAL", 10 * 60)
 
@@ -101,11 +111,13 @@ TRICKLE_JOBS = {
     "discover_new": [
         "discover-latest", "--since", TRICKLE_SINCE,
         "--max-pages", str(DISCOVER_LATEST_PAGES),
+        "--min-pages", "5", "--no-action-page-threshold", "5",
         "--min-delay", "0.1", "--max-delay", "0.3",
     ],
     "discover_active": [
         "discover-active", "--since", TRICKLE_SINCE,
         "--max-pages", str(DISCOVER_ACTIVE_PAGES),
+        "--min-pages", "5", "--no-action-page-threshold", "3",
         "--min-delay", "0.1", "--max-delay", "0.3",
     ],
     "trickle_fill": [
@@ -158,6 +170,33 @@ def next_beijing_reset() -> datetime:
         datetime.min.time(),
         tzinfo=CHINA_TZ,
     ) + timedelta(minutes=RESET_GRACE_MINUTES)
+
+
+def quota_release_fraction(at: datetime | None = None) -> float:
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    first_hour = min(23, QUOTA_FIRST_RELEASE_HOUR)
+    second_hour = min(23, max(first_hour + 1, QUOTA_SECOND_RELEASE_HOUR))
+    if at.hour < first_hour:
+        return 0.0
+    if at.hour < second_hour:
+        return 0.5
+    return 1.0
+
+
+def next_quota_release(at: datetime | None = None) -> datetime:
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    first_hour = min(23, QUOTA_FIRST_RELEASE_HOUR)
+    second_hour = min(23, max(first_hour + 1, QUOTA_SECOND_RELEASE_HOUR))
+    first = at.replace(hour=first_hour, minute=0, second=0, microsecond=0)
+    second = at.replace(hour=second_hour, minute=0, second=0, microsecond=0)
+    if at < first:
+        return first
+    if at < second:
+        return second
+    tomorrow = at.date() + timedelta(days=1)
+    return datetime.combine(tomorrow, datetime.min.time(), tzinfo=CHINA_TZ).replace(
+        hour=first_hour
+    )
 
 
 def classify_error(stderr: str) -> str:
@@ -270,13 +309,22 @@ def load_quota() -> dict:
     if quota.get("date") != today:
         quota = {
             "date": today,
-            "list_calls": 0,
+            "new_list_calls": 0,
+            "active_list_calls": 0,
             "detail_calls": 0,
             "probe_calls": 0,
             "rate_limited": 0,
             "updated_at": beijing_now().isoformat(),
         }
         save_quota(quota)
+    quota.setdefault("new_list_calls", 0)
+    quota.setdefault("active_list_calls", 0)
+    if "list_calls" in quota:
+        # Older quota files only had a combined list counter. Keep the value
+        # visible but do not split it retroactively; the new per-source counters
+        # are authoritative from this deployment onward.
+        quota.setdefault("legacy_list_calls", quota.get("list_calls", 0))
+        quota.pop("list_calls", None)
     return quota
 
 
@@ -299,8 +347,12 @@ def replace_arg(args: list[str], flag: str, value: int) -> list[str]:
 
 
 def job_budget_kind(name: str) -> str:
-    if name in {"discover_new", "discover_active", "plan_gaps"}:
-        return "list"
+    if name == "discover_new":
+        return "new_list"
+    if name == "discover_active":
+        return "active_list"
+    if name == "plan_gaps":
+        return "new_list"
     if name == "trickle_fill":
         return "detail"
     if name == "probe_gaps":
@@ -325,18 +377,28 @@ def planned_job_calls(name: str, args: list[str]) -> int:
 
 
 def remaining_budget(kind: str, quota: dict) -> int:
-    if kind == "list":
-        return max(0, DAILY_LIST_BUDGET - int(quota.get("list_calls", 0)))
+    fraction = quota_release_fraction()
+    if fraction <= 0:
+        return 0
+    if kind == "new_list":
+        allowed = int(DAILY_NEW_LIST_BUDGET * fraction)
+        return max(0, allowed - int(quota.get("new_list_calls", 0)))
+    if kind == "active_list":
+        allowed = int(DAILY_ACTIVE_LIST_BUDGET * fraction)
+        return max(0, allowed - int(quota.get("active_list_calls", 0)))
     if kind == "detail":
-        return max(0, DAILY_DETAIL_BUDGET - int(quota.get("detail_calls", 0)))
+        allowed = int(DAILY_DETAIL_BUDGET * fraction)
+        return max(0, allowed - int(quota.get("detail_calls", 0)))
     if kind == "probe":
-        return max(0, DAILY_PROBE_BUDGET - int(quota.get("probe_calls", 0)))
+        allowed = int(DAILY_PROBE_BUDGET * fraction)
+        return max(0, allowed - int(quota.get("probe_calls", 0)))
     return 10**9
 
 
 def quota_key(kind: str) -> str:
     return {
-        "list": "list_calls",
+        "new_list": "new_list_calls",
+        "active_list": "active_list_calls",
         "detail": "detail_calls",
         "probe": "probe_calls",
     }[kind]
@@ -350,6 +412,8 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
     quota = load_quota()
     remaining = remaining_budget(kind, quota)
     if remaining <= 0:
+        if quota_release_fraction() <= 0:
+            return None, f"quota_window_locked_until={next_quota_release().isoformat()}"
         return None, f"{kind}_budget_exhausted"
     if name in {"discover_new", "discover_active"}:
         if remaining < 2:
