@@ -386,6 +386,85 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(row["priority"], 0)
         self.assertEqual(row["reason"], "comment_changed")
 
+    def test_discover_active_ignores_lower_comment_count_snapshot(self):
+        with SQLitePostStore(self.db) as store:
+            store.upsert_post(
+                {
+                    "id": "210",
+                    "content": "existing",
+                    "create_time": "2026-06-24 10:00:00",
+                    "comment_count": 3,
+                },
+                [],
+            )
+        client = FakeClient(
+            {
+                1: [
+                    {
+                        "id": "210",
+                        "create_time": "2026-06-24 10:00:00",
+                        "update_time": "2026-06-25 10:00:00",
+                        "count_comment": 2,
+                    }
+                ],
+                2: [],
+            },
+            {},
+        )
+        stats = self.service(client).discover_queue(
+            command="discover-active",
+            endpoint="lists2",
+            since="2026-06-25 00:00:00",
+            max_pages=2,
+            old_page_threshold=2,
+            stop_on_repeat=True,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(stats["queued"], 0)
+        self.assertEqual(stats["comment_changed"], 0)
+        with SQLitePostStore(self.db) as store:
+            self.assertIsNone(
+                store.conn.execute("select 1 from crawler_queue").fetchone()
+            )
+
+    def test_queue_prioritizes_new_comment_delta_before_plain_new_posts(self):
+        with SQLitePostStore(self.db) as store:
+            store.enqueue_crawler_candidate(
+                post_id="601",
+                source="lists",
+                priority=40,
+                list_create_time="2026-06-25 12:00:00",
+                list_update_time="2026-06-25 12:00:00",
+                list_comment_count=0,
+                db_comment_count=None,
+                reason="new_post",
+            )
+            store.enqueue_crawler_candidate(
+                post_id="602",
+                source="lists2",
+                priority=0,
+                list_create_time="2026-06-25 09:00:00",
+                list_update_time="2026-06-25 13:00:00",
+                list_comment_count=6,
+                db_comment_count=2,
+                reason="comment_changed",
+            )
+            store.enqueue_crawler_candidate(
+                post_id="603",
+                source="lists",
+                priority=10,
+                list_create_time="2026-06-25 11:00:00",
+                list_update_time="2026-06-25 11:00:00",
+                list_comment_count=3,
+                db_comment_count=None,
+                reason="new_post",
+            )
+            rows = store.next_crawler_queue_items(3)
+        self.assertEqual([row["post_id"] for row in rows], ["602", "603", "601"])
+
     def test_trickle_fill_stops_on_rate_limit_and_keeps_pending(self):
         with SQLitePostStore(self.db) as store:
             store.enqueue_crawler_candidate(

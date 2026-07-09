@@ -1,7 +1,12 @@
 import unittest
 
 from crawler.cli import build_parser
-from jobs.scheduler import classify_error, job_args
+from jobs.scheduler import (
+    classify_error,
+    job_args,
+    job_budget_kind,
+    planned_job_calls,
+)
 
 
 class CLIContractTest(unittest.TestCase):
@@ -53,6 +58,17 @@ class CLIContractTest(unittest.TestCase):
             "cookie_expired",
         )
         self.assertEqual(classify_error("[crawler] error: not_found"), "")
+
+    def test_scheduler_budgets_source_call_types(self):
+        self.assertEqual(job_budget_kind("discover_new"), "list")
+        self.assertEqual(job_budget_kind("plan_gaps"), "list")
+        self.assertEqual(job_budget_kind("trickle_fill"), "detail")
+        self.assertEqual(job_budget_kind("probe_gaps"), "probe")
+        self.assertEqual(
+            planned_job_calls("discover_new", ["discover-latest", "--max-pages", "7"]),
+            8,
+        )
+        self.assertEqual(planned_job_calls("plan_gaps", ["plan-gaps"]), 1)
 
 
 if __name__ == "__main__":

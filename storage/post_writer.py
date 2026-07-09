@@ -839,7 +839,17 @@ class SQLitePostStore:
             """
             select * from crawler_queue
             where status='pending'
-            order by priority asc, updated_at asc, cast(post_id as integer) desc
+            order by
+                priority asc,
+                max(
+                    0,
+                    coalesce(list_comment_count, 0)
+                    - coalesce(db_comment_count, 0)
+                ) desc,
+                coalesce(list_update_time, list_create_time, '') desc,
+                coalesce(list_comment_count, 0) desc,
+                updated_at asc,
+                cast(post_id as integer) desc
             limit ?
             """,
             (max(1, int(limit)),),
