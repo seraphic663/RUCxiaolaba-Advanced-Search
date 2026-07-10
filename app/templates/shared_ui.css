@@ -1,0 +1,12 @@
+.settings-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.28); z-index: 50; display: none; align-items: flex-start; justify-content: flex-end; padding: 72px 18px 18px; }
+.settings-backdrop.open { display: flex; }
+.settings-panel { width: min(360px, 94vw); background: #fff; color: #222; border: 1px solid #eee; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.2); padding: 16px; }
+.settings-panel h3 { font-size: 1em; margin-bottom: 12px; color: #8b0012; }
+.settings-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid #f0f0f0; font-size: .9em; }
+.settings-row:first-of-type { border-top: none; }
+.settings-row label { color: #555; }
+.settings-row select { min-width: 112px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 7px; background: #fff; color: #222; }
+.settings-row input[type=checkbox] { width: 18px; height: 18px; accent-color: #8b0012; }
+.settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.settings-actions button { padding: 7px 13px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+.settings-actions button.primary { border-color: #8b0012; background: #8b0012; color: #fff; }

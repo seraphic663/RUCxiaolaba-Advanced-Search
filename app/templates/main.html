@@ -27,18 +27,7 @@ body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f
 .theme-toggle:hover { color: #fff; border-color: rgba(255,255,255,.65); }
 .settings-toggle { width: 32px; height: 32px; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; background: transparent; color: rgba(255,255,255,.82); cursor: pointer; font-size: 17px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
 .settings-toggle:hover { color: #fff; border-color: rgba(255,255,255,.65); }
-.settings-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.28); z-index: 50; display: none; align-items: flex-start; justify-content: flex-end; padding: 72px 18px 18px; }
-.settings-backdrop.open { display: flex; }
-.settings-panel { width: min(360px, 94vw); background: #fff; color: #222; border: 1px solid #eee; border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.2); padding: 16px; }
-.settings-panel h3 { font-size: 1em; margin-bottom: 12px; color: #8b0012; }
-.settings-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 9px 0; border-top: 1px solid #f0f0f0; font-size: .9em; }
-.settings-row:first-of-type { border-top: none; }
-.settings-row label { color: #555; }
-.settings-row select { min-width: 112px; padding: 5px 8px; border: 1px solid #ddd; border-radius: 7px; background: #fff; color: #222; }
-.settings-row input[type=checkbox] { width: 18px; height: 18px; accent-color: #8b0012; }
-.settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
-.settings-actions button { padding: 7px 13px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
-.settings-actions button.primary { border-color: #8b0012; background: #8b0012; color: #fff; }
+__SHARED_UI_CSS__
 html.compact-mode .post { padding: 12px 14px; margin-bottom: 7px; }
 html.compact-mode .post .post-content { line-height: 1.62; }
 html.compact-mode .cmt { padding-top: 4px; padding-bottom: 4px; }
@@ -363,90 +352,8 @@ html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: va
 </div>
 
 <script>
-function updateThemeButton() {
-  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  document.querySelectorAll('.theme-icon').forEach(function(icon) {
-    icon.textContent = dark ? '☀' : '☾';
-  });
-  document.querySelectorAll('.theme-toggle').forEach(function(button) {
-    var label = dark ? '切换浅色模式' : '切换深色模式';
-    button.setAttribute('aria-label', label);
-    button.setAttribute('title', label);
-  });
-}
-
-function toggleTheme() {
-  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  var next = dark ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('rucxlb-theme', next);
-  updateThemeButton();
-}
-
-const SETTINGS_KEY = 'rucxlb-ui-settings';
-const DEFAULT_SETTINGS = {
-  pageSize: 50,
-  truncateLen: 140,
-  commentLimit: 50,
-  showStats: true,
-  compactMode: false
-};
-
-function loadSettings() {
-  try {
-    var raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
-    return Object.assign({}, DEFAULT_SETTINGS, raw);
-  } catch (e) {
-    return Object.assign({}, DEFAULT_SETTINGS);
-  }
-}
-
-let uiSettings = loadSettings();
-
-function normalizeSettings(settings) {
-  settings.pageSize = [20, 50, 100].indexOf(Number(settings.pageSize)) >= 0 ? Number(settings.pageSize) : 50;
-  settings.truncateLen = [0, 100, 140, 200].indexOf(Number(settings.truncateLen)) >= 0 ? Number(settings.truncateLen) : 140;
-  settings.commentLimit = [0, 20, 50].indexOf(Number(settings.commentLimit)) >= 0 ? Number(settings.commentLimit) : 50;
-  settings.showStats = settings.showStats !== false;
-  settings.compactMode = settings.compactMode === true;
-  return settings;
-}
-
-function applySettings() {
-  uiSettings = normalizeSettings(uiSettings);
-  PAGE_SIZE = uiSettings.pageSize;
-  TRUNCATE_LEN = uiSettings.truncateLen;
-  document.documentElement.classList.toggle('compact-mode', uiSettings.compactMode);
-  document.documentElement.classList.toggle('hide-stats', !uiSettings.showStats);
-}
-
-function openSettings() {
-  uiSettings = normalizeSettings(loadSettings());
-  document.getElementById('set-page-size').value = String(uiSettings.pageSize);
-  document.getElementById('set-truncate-len').value = String(uiSettings.truncateLen);
-  document.getElementById('set-comment-limit').value = String(uiSettings.commentLimit);
-  document.getElementById('set-show-stats').checked = uiSettings.showStats;
-  document.getElementById('set-compact-mode').checked = uiSettings.compactMode;
-  document.getElementById('settings-backdrop').classList.add('open');
-}
-
-function closeSettings() {
-  document.getElementById('settings-backdrop').classList.remove('open');
-}
-
-function saveSettings() {
-  uiSettings = normalizeSettings({
-    pageSize: Number(document.getElementById('set-page-size').value),
-    truncateLen: Number(document.getElementById('set-truncate-len').value),
-    commentLimit: Number(document.getElementById('set-comment-limit').value),
-    showStats: document.getElementById('set-show-stats').checked,
-    compactMode: document.getElementById('set-compact-mode').checked
-  });
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(uiSettings));
-  applySettings();
-  closeSettings();
-  doSearch();
-}
+var onUiSettingsSaved = function() { doSearch(); };
+__SHARED_UI_JS__
 
 // ===== State =====
 let currentPage = 1;

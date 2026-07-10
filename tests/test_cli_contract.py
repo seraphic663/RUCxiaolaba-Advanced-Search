@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from crawler.cli import build_parser
 from jobs.scheduler import (
@@ -10,7 +11,6 @@ from jobs.scheduler import (
     planned_job_calls,
     quota_release_fraction,
 )
-from datetime import datetime, timezone, timedelta
 
 
 class CLIContractTest(unittest.TestCase):

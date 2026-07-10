@@ -1,6 +1,6 @@
-# raw_json 冗余字段精简
+# raw_json 冗余字段精简（历史迁移记录）
 
-> 状态: **已完成，后续继续瘦身**。生产 schema 已移除原始 `raw_json`；新 schema 进一步移除 `comments.reply_comment_list`，依靠 `parent_comment_id` 递归表达评论树。
+> 状态：本文记录已完成的库瘦身依据和结果，不是日常运行步骤。当前 schema 以 `storage/post_writer.py` 和 [数据模型](../architecture/data-model.md) 为准；恢复旧库时再参考 `tools/migrations/README.md` 的生命周期说明。
 
 ## 结论
 

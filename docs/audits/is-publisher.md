@@ -1,4 +1,6 @@
-# is_publisher 字段可靠性审计与修复方案
+# is_publisher 字段可靠性审计与修复方案（历史证据）
+
+> 状态：本文保留当时的 API 对比和修复推理，旧文件位置与行号只对应历史版本。当前字段标准化入口以 `crawler/normalizer.py`、当前展示逻辑和相关测试为准；重新审计时使用 `tools/audits/audit_is_publisher.py` 采集新证据。
 
 ## 1. 问题概述
 

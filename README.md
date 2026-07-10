@@ -7,7 +7,7 @@
 ## 功能
 
 - 搜索帖子正文和评论，支持分类、日期、热度、点赞和评论数排序
-- 两字及以上关键词可使用 Bigram 索引，单字关键词回退 SQLite `LIKE`
+- 两字及以上关键词可使用 Bigram 索引，特殊符号/表情可使用 Symbol 索引，单字普通文本回退 SQLite `LIKE`
 - 按需展开正文和评论，慢查询使用游标分页
 - 爬虫直接增量写入 SQLite，可补新帖、活跃帖和历史范围
 
@@ -60,13 +60,16 @@ Bigram 索引是可选的。未提供索引时，搜索自动回退到 SQLite FT
 Copy-Item data\config.example.txt data\config.txt
 ```
 
-在 `data/config.txt` 中填写你有权使用的 cookie，然后执行一次小范围同步：
+在 `data/config.txt` 中填写你有权使用的 cookie，然后执行一次小范围的“发现候选 → 慢补详情”：
 
 ```powershell
-python crawler_db.py sync-latest --db-path data\posts.db --pages 20 --min-pages 3 --stop-unchanged 80
+$since = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd HH:mm:ss")
+python crawler_db.py discover-latest --db-path data\posts.db --since $since --max-pages 5 --min-pages 3 --no-action-page-threshold 3
+python crawler_db.py discover-active --db-path data\posts.db --since $since --max-pages 5 --min-pages 3 --no-action-page-threshold 3
+python crawler_db.py trickle-fill --db-path data\posts.db --limit 5 --min-delay 8 --max-delay 14
 ```
 
-该命令可以从空路径创建数据库。正式运行前先阅读：
+这组命令最多规划 10 次列表请求和 5 次详情请求；实际列表请求可能因重复页、无收益页或时间边界提前停止。`sync-latest`、`sync-active` 等旧命令仍为兼容和人工修复保留，但不是 Railway 当前推荐调度路径。正式运行前先阅读：
 
 - [爬虫命令、停止条件和写锁](docs/operations/crawler.md)
 - [项目如何抓取、是否获得授权、是否合法](docs/legal-and-data.md)
@@ -79,6 +82,7 @@ python crawler_db.py sync-latest --db-path data\posts.db --pages 20 --min-pages 
 |---|---|---|
 | `POSTS_DB_PATH` / `SQLITE_DB` | 主数据库路径 | `data/posts.db` |
 | `BIGRAM_DB_PATH` / `BIGRAM_DB` | Bigram 索引路径 | 自动探测 `data/bigram_index.db` |
+| `SYMBOL_INDEX_DB_PATH` / `SYMBOL_INDEX_DB` | 特殊符号索引路径 | 自动探测 `data/symbol_index.db` |
 | `HOST`, `PORT` | 监听地址和端口 | `0.0.0.0:8080` |
 
 配置文件、cookie、密码和真实数据库均已被 `.gitignore` 排除，不应提交。
@@ -98,17 +102,17 @@ ruff check .
 ```text
 server.py                  Web 兼容启动入口
 crawler_db.py              爬虫兼容 CLI 入口
-app/                       Web、Repository、Service 与 HTTP 路由
+app/                       Web、Repository、Service、HTTP 路由与页面模板
 crawler/                   API Client、规范化、扫描策略与执行服务
 storage/post_writer.py      SQLite 写入与搜索索引维护
 demo/                      可提交的合成演示数据库
-jobs/                      调度与运行时备份
-tools/                     迁移、审计、性能和运维工具
+jobs/                      Railway crawler 调度
+tools/                     迁移、审计、抓包、性能和人工运维工具；见 tools/README.md
 tests/                     单元、集成、契约和性能测试
 docs/                      架构、功能、运维和数据合规文档
 ```
 
-完整入口见 [文档地图](docs/index.md)。
+完整入口见 [文档地图](docs/index.md)，工具生命周期和归属见 [tools/README](tools/README.md)。
 
 ## 数据与授权
 

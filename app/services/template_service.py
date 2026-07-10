@@ -18,6 +18,17 @@ class TemplateService:
                 "</body></html>"
             )
         content = path.read_text(encoding="utf-8")
+        shared_assets = {
+            "__SHARED_UI_CSS__": "shared_ui.css",
+            "__SHARED_UI_JS__": "shared_ui.js",
+        }
+        for token, shared_name in shared_assets.items():
+            if token in content:
+                shared_path = self.templates_dir / shared_name
+                content = content.replace(
+                    token,
+                    shared_path.read_text(encoding="utf-8"),
+                )
         for key, value in values.items():
             content = content.replace(f"__{key}__", str(value))
         return content

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create timestamped backups for crawler configuration and SQLite data.
+"""Create operator-requested backups for crawler configuration and SQLite data.
 
 Default mode backs up only small mutable site files. Use --include-db only when
 there is enough free volume space for a full SQLite copy.

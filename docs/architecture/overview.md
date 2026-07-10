@@ -19,15 +19,17 @@ app/config.py                 集中配置和路径解析
 app/repositories/             SQLite 读取与搜索
 app/services/                 搜索、Admin、鉴权和模板
 app/http/routes/              公开与 Admin 路由
+app/templates/                public/admin 页面与共享 UI 资源
 crawler/client.py             小程序 API Client
 crawler/normalizer.py         API 数据标准化
 crawler/service.py            爬取执行与断点状态
 crawler/strategies/           页面流和 ID 范围扫描策略
 storage/post_writer.py        SQLite 写入、FTS 与 Bigram 同步
-jobs/scheduler.py             Railway 自动更新调度器
-jobs/backup.py                运行时备份
-tools/                        迁移、审计、性能和运维工具
-templates/                    主页和管理后台模板
+storage/symbol_index.py       特殊符号旁路索引
+jobs/scheduler.py             Railway 调度、每日配额、暂停与恢复
+tools/operations/             备份、索引重建和数据库维护
+tools/audits/                 上游探测和专项审计
+tools/capture/                本地抓包辅助，不进入生产路径
 ```
 
 ## 数据流
@@ -38,7 +40,7 @@ templates/                    主页和管理后台模板
   -> crawler.normalizer
   -> crawler.service.CrawlerService
   -> storage.post_writer.SQLitePostStore
-  -> data/posts.db + bigram_index.db
+  -> data/posts.db + bigram_index.db + symbol_index.db
 
 浏览器
   -> app.http.router
@@ -53,6 +55,7 @@ templates/                    主页和管理后台模板
 ```text
 data/posts.db             主数据库
 data/bigram_index.db      Bigram 旁路索引；存在时本地自动启用
+data/symbol_index.db      Symbol 旁路索引；存在时本地自动启用
 data/config.txt           小程序 cookie，爬虫需要
 Railway ADMIN_PASSWORD    admin 固定密码环境变量
 ```
@@ -73,10 +76,10 @@ Railway ADMIN_PASSWORD    admin 固定密码环境变量
 ## 当前风险点
 
 1. `data/posts.db` 很大，Railway 5GB Volume 下不要频繁做完整 DB 备份。
-2. 单字中文搜索回退 `LIKE`；两字及以上在 Bigram 可用时走旁路索引。
+2. 普通单字搜索回退 `LIKE`；两字及以上普通文本优先走 Bigram；特殊符号和表情查询优先走 Symbol。
 3. admin 的复杂筛选如果勾选评论/ID/昵称，会比正文搜索慢。
 4. 定时爬虫需要错峰，虽然已有跨进程锁，但不建议多个服务同时写 DB。
-5. Bigram 是可重建的旁路索引库，更新由 PostWriter 同步执行。
+5. Bigram 和 Symbol 都是可重建的旁路索引库，更新由 PostWriter 同步执行。
 
 ## 依赖方向
 
@@ -91,3 +94,5 @@ Repositories / API Client
 ```
 
 根目录入口仅用于兼容。新代码不得从 Service 或 Repository 反向导入 `server.py`、`crawler_db.py`。
+
+当前目录职责、冗余判断和兼容范围见 [工程边界、兼容入口与文件生命周期](refactoring.md)。爬虫运行参数只在 [爬虫运行与调度](../operations/crawler.md) 维护。

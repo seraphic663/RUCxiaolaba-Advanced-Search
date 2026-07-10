@@ -1,6 +1,6 @@
-# 页面加载与搜索性能优化方案（草案 v2）
+# 页面加载与搜索性能优化方案（历史基准记录）
 
-> 状态说明：本文前半部分保留了优化实施前的诊断和实验推导，属于历史记录。当前结论以第 7 节及代码为准：两字及以上优先使用 `data/bigram_index.db`，单字回退 `LIKE`，本地存在该文件时自动启用。
+> 状态说明：本文包含旧 `server.py` 单文件时期的测量、代码行号和优化推演，不是当前代码结构说明。当前搜索实现位于 `app/domain/search.py`、`app/repositories/search_repository.py` 和 `app/services/search_service.py`；特殊符号与 admin 字段组合语义以 `tests/test_search_bigram.py` 为回归依据。历史数字只有在数据库快照、索引版本和查询参数一致时才可复现。
 
 当前可重复验收命令：
 

@@ -1,122 +1,196 @@
-# 爬虫指南
+# 爬虫运行与调度
 
-> 合规边界：本爬虫复现小程序客户端对内部业务 API 的正常请求，不绕过认证，但该接口不是面向第三方开放的公开 API。只能使用本人合法取得且有权使用的 cookie；不得规避登录、验证码、签名、限流或权限检查。持续抓取、全量扫描、公开部署或共享真实数据前，应取得平台运营方的书面授权。无法确认授权范围时，不要连接真实接口。
+本文档是爬虫命令、停止条件、队列、配额和 Railway 调度的当前唯一运维事实源。`crawler/README.md` 只说明模块边界，不再复制运行手册。
 
-## 前置条件
+> 合规边界：只能使用本人合法取得且有权使用的 cookie，不得规避登录、验证码、签名、限流或权限检查。持续抓取、全量扫描、公开部署或共享真实数据前，应取得平台运营方的书面授权。无法确认授权范围时，不要连接真实接口。
 
-Cookie 存放在 `data/config.txt`：
+## 运行主线
+
+当前推荐路径是“快发现、慢补详情”：
+
+```text
+lists / lists2
+  -> discover-latest / discover-active
+  -> posts(list_only) + crawler_queue
+  -> trickle-fill
+  -> posts(full) + comments + search indexes
+```
+
+- `discover-latest` 扫新帖流，只发现候选，不在列表循环中拉详情。
+- `discover-active` 扫活跃/新回复流，只在本地缺详情或列表评论数大于数据库评论数时入队。
+- `trickle-fill` 按优先级小批量补详情，一次详情请求返回正文和完整评论/回复结构。
+- `plan-gaps` 只规划低密度 ID 区间；未指定结束 ID 时会用一次 `lists?page=1` 探测最新 ID。
+- `probe-gaps` 用详情接口低频抽样缺口，命中真实帖子后只记录并入队；默认每日预算为 0。
+
+旧 `sync-latest`、`sync-active`、`scan-history`、`scan-id-range` 仍由 CLI 保留，用于兼容和明确的人工修复，不是 Railway quota-friendly 模式的日常主线。
+
+## 配置与 Cookie
+
+Cookie 存放在 `data/config.txt`，爬虫只读取 `ys7_ysxy_session`：
 
 ```text
 ys7_ysxy_session=你的cookie
 ```
 
-获取方式：微信小程序抓包，复制请求头中的 `ys7_ysxy_session` 值。
+抓包只能用于取得本人当前登录会话中的 cookie，不得截获他人流量、收集他人 cookie 或把 cookie 提交到仓库。认证失败、限流或平台要求停止时必须停止任务，不得通过更换账号、代理或提高并发规避限制。
 
-抓包仅用于取得本人当前登录会话中的 cookie，不得截获他人流量、收集他人 cookie 或将 cookie 提交到仓库。认证失败、限流或平台要求停止时必须停止任务，不得通过更换账号、代理或提高并发规避限制。
+## 源 API 与请求成本
 
-## API 端点
+| 类型 | 端点 | 用途 | 调度计费 |
+|---|---|---|---:|
+| 新帖列表 | `/article/article/lists?page=N` | 发现新帖 ID、时间和评论数 | 每页 1 次 new-list |
+| 活跃列表 | `/article/article/lists2?page=N` | 发现评论增量和活跃帖子 | 每页 1 次 active-list |
+| 详情 | `/article/article/info?id=ID` | 正文、评论和回复 | 每帖 1 次 detail |
+| 最新 ID 探测 | `lists?page=1` | `plan-gaps` 确定规划上界 | 1 次 new-list |
+| 缺口抽样 | `info?id=ID` | `probe-gaps` 验证某 ID | 每个样本 1 次 probe |
 
-爬虫使用的接口：
+评论不是逐条请求；一个成功的详情请求同时返回帖子正文和当时可见的评论/回复。
 
-| 端点 | 用途 |
-|------|------|
-| `/article/article/lists?community_id=4&page=N` | 新帖流（`sync-latest`） |
-| `/article/article/lists2?community_id=4&page=N` | 活跃/更新流（`sync-active`） |
-| `/article/article/info?community_id=4&id=ID` | 帖子详情 + 完整评论树 |
+## 手动小范围验证
 
-返回码：
+先使用低预算发现，再补少量详情：
+
+```powershell
+$since = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd HH:mm:ss")
+python crawler_db.py discover-latest --db-path data\posts.db --since $since --max-pages 5 --min-pages 3 --no-action-page-threshold 3
+python crawler_db.py discover-active --db-path data\posts.db --since $since --max-pages 5 --min-pages 3 --no-action-page-threshold 3
+python crawler_db.py trickle-fill --db-path data\posts.db --limit 5 --min-delay 8 --max-delay 14
+```
+
+这组命令最多规划 10 次列表请求和 5 次详情请求；列表扫描可能提前停止。手动 SSH 大跑不会经过 scheduler 的配额窗口和暂停保护，不应用于日常补爬。
+
+只检查候选、不写数据库时使用 `--dry-run`。发现阶段默认写 `list_only` 快照；如不希望写快照，可加 `--no-write-stubs`。
+
+## `crawl_status` 与运行表
+
+- 新发现帖子先以 `posts.crawl_status='list_only'` 写入，正文来自列表快照，评论尚未补全。
+- 详情成功后帖子更新为 `crawl_status='full'`，同时刷新 `comments`、SQLite FTS 和旁路索引。
+- `crawler_queue` 保存详情候选、优先级、原因、状态、尝试次数和最后错误。
+- `crawler_gap_ranges` 保存低密度 ID 区间。
+- `crawler_id_probe` 保存缺口抽样结果，避免重复探测相同 ID。
+- `crawl_state` 保存各命令最近一次统计。
+
+旧数据库首次运行新命令时，`SQLitePostStore.ensure_runtime_schema()` 会补齐这些运行字段和表。
+
+## 队列优先级
+
+| 优先级 | 候选 | 原因 |
+|---:|---|---|
+| 0 | `lists2` 中已有帖评论数增加 | 新回复优先 |
+| 10 | `lists` 中缺失且有评论的新帖 | 有正文和评论收益 |
+| 15 | 缺口抽样命中的真实帖子 | 已付出探测成本，但低于明确新回复 |
+| 20 | `lists2` 中缺失且有评论的活跃帖 | 活跃流兜底 |
+| 40 | `lists` 中缺失但零评论的新帖 | 只有正文收益 |
+| 50 | `lists2` 中缺失但零评论的活跃帖 | 最低常规优先级 |
+
+同一优先级内再按评论增量、列表更新时间、评论数和入队时间排序。`lists2` 更新时间变化但评论数没有增加时不进入详情队列。
+
+## 列表停止条件
+
+`discover-latest`：
+
+- 至少扫描 `--min-pages` 后，连续 `--no-action-page-threshold` 页没有可入队候选即可停止。
+- 连续多页都早于 `--since` 时停止。
+- 页面 ID 签名重复时停止。
+- `--max-pages` 是硬上限。
+
+`discover-active`：
+
+- 页面 ID 签名重复时停止，避免上游窗口循环。
+- 至少扫描 `--min-pages` 后，连续无收益页达到阈值时停止。
+- `--max-pages` 是硬上限。
+
+停止逻辑同时依赖最小页数、连续无收益页、重复页签名、时间边界和硬预算；单条重复不能作为停止条件。
+
+## Railway quota-friendly 调度
+
+`CRAWLER_ENABLED=1` 时 `start.sh` 启动 `jobs.scheduler`。当前推荐线上模式还需要：
 
 ```text
-code=0000  成功
-code=1000  cookie 过期
-code=0102  帖子不存在
+CRAWLER_TRICKLE_ENABLED=1
+CRAWLER_TRICKLE_SINCE=<需要持续覆盖的起始时间>
 ```
 
-完整 API 端点清单见 [architecture/api-reference](../architecture/api-reference.md)。
-
-## 子命令
-
-### sync-latest — 补新帖
-
-```powershell
-python crawler_db.py sync-latest --db-path data\posts.db --pages 500 --min-pages 20 --stop-unchanged 300
-```
-
-扫 `/article/article/lists`，发现新 ID 或评论数变化的帖子。
-
-### sync-active — 补活跃帖
-
-```powershell
-python crawler_db.py sync-active --db-path data\posts.db --pages 500 --min-pages 20 --stop-unchanged 300
-```
-
-扫 `/article/article/lists2`，更新近期有评论变化的旧帖。
-
-### scan-history — 补历史
-
-```powershell
-python crawler_db.py scan-history --endpoint lists --db-path data\posts.db --start-page 200 --pages 500 --min-pages 20 --stop-unchanged 600
-```
-
-从指定页向后扫，低频运行。
-
-### scan-id-range — ID 全量扫描
-
-```powershell
-# 按日期
-python crawler_db.py scan-id-range --from-date 2026-06-01 --db-path data\posts.db
-
-# 按 ID 范围
-python crawler_db.py scan-id-range --start-id 5004321 --end-id 5066654 --db-path data\posts.db
-
-# 中断后自动续扫；加 --restart 从头重扫
-```
-
-### detail-fill — 指定 ID 修复
-
-```powershell
-python crawler_db.py detail-fill --db-path data\posts.db --ids 5014356,5018419
-```
-
-### 验证（dry-run）
-
-```powershell
-python crawler_db.py sync-latest --pages 20 --min-pages 3 --stop-unchanged 80 --max-details 100 --dry-run
-```
-
-## 判断逻辑
-
-```
-DB 无该 ID        → 抓详情 → 写入 posts/comments/search_index
-DB 有该 ID，评论数变化 → 抓详情 → 覆盖帖子和评论 → 刷新 search_index
-DB 有该 ID，评论数相同 → unchanged（不重抓）
-连续 unchanged ≥ stop-unchanged 且已扫 ≥ min-pages → 停止
-```
-
-## 写锁
-
-爬虫启动时创建 `data/posts.db.crawler.lock`（含 PID），防止多个进程同时写 SQLite。即使有锁也建议错峰运行。
-
-## Railway 调度
-
-`jobs.scheduler` 在 Web 服务内运行（非独立 Cron）：
-
-```
-sync-latest   每 8 小时
-sync-active   每 8 小时（错开 4 小时）
-scan-history  每 24 小时
-scan-id-range 每 7 天
-```
-
-间隔可通过环境变量覆盖（单位：秒）：
+代码默认预算：
 
 ```text
-CRAWLER_NEW_INTERVAL=28800
-CRAWLER_REFRESH_INTERVAL=28800
-CRAWLER_BACKFILL_INTERVAL=86400
-CRAWLER_PHASE1_INTERVAL=604800
+CRAWLER_DAILY_NEW_LIST_BUDGET=80
+CRAWLER_DAILY_ACTIVE_LIST_BUDGET=160
+CRAWLER_DAILY_DETAIL_BUDGET=450
+CRAWLER_DAILY_PROBE_BUDGET=0
+CRAWLER_TRICKLE_LIMIT_CAP=12
+CRAWLER_TRICKLE_MIN_DELAY=8
+CRAWLER_TRICKLE_MAX_DELAY=14
+CRAWLER_QUOTA_RELEASE_STEPS=11=0.20,14=0.35,17=0.50,20=0.70,23=1.00
+CRAWLER_QUOTA_ADAPTIVE_ENABLED=1
+CRAWLER_QUOTA_ADAPTIVE_SAFETY=0.80
+CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS=14
 ```
 
-`CRAWLER_ENABLED=1` 时调度器随 `start.sh` 启动。部署重启后首轮 `sync-latest` 等 4 小时、`sync-active` 等 8 小时，避免部署风暴。
+配置总上限为每天 690 次源请求：80 次新帖列表、160 次活跃列表、450 次详情、0 次缺口探测。阶梯累计上限在未触发自适应缩放时约为 11:00 的 138 次、14:00 的 241 次、17:00 的 345 次、20:00 的 483 次、23:00 的 690 次。
 
-旧命令名仍作为兼容别名保留。
+scheduler 在子任务运行前按 `max-pages` 或 `limit` 预留配额，因此 quota 文件记录的是保守预留上界，不保证等于子任务实际完成的请求数。真实收益仍需结合命令结束日志和 `crawl_state` 中的 `pages`、`queued`、`comment_changed`、`written`、`misses` 判断。
+
+默认调度间隔：
+
+```text
+CRAWLER_DISCOVER_INTERVAL=1800
+CRAWLER_TRICKLE_INTERVAL=600
+CRAWLER_GAP_PLAN_INTERVAL=21600
+CRAWLER_GAP_PROBE_INTERVAL=7200
+```
+
+`probe-gaps` 即使被调度，也会在每日 probe budget 为 0 时跳过。不要通过手动 SSH 大跑绕过这一保护。
+
+## 限流、Cookie 失效与暂停
+
+- `code == "1000"` 映射为 `cookie_expired`，通常需要人工替换 cookie。
+- “今天刷得太久”“休息一下”“操作频繁”“稍后再试”“访问频繁”等文本映射为 `rate_limited:*`。
+- `rate_limited` 发生后当前候选保持 `pending`，本轮立即停止；scheduler 暂停全部爬虫到下一个北京时间 00:05。
+- 暂停结束不代表立即放量，主动请求仍受当天 release step 约束。
+- `cookie_expired` 默认暂停 6 小时，但恢复通常依赖人工更新 `/app/data/config.txt`。
+- 最近 14 天发生过 `rate_limited` 时，有效总预算按最近触顶时已预留源请求数的 80% 缩小。
+
+运行文件位于主库旁：
+
+```text
+/app/data/.crawler_quota.json
+/app/data/.crawler_quota_history.jsonl
+/app/data/.crawler_pause.json
+```
+
+## Railway 只读检查
+
+远端容器没有 `sqlite3` CLI，Railway SSH 对 `python -c` 的引号处理也不可靠。使用 stdin 喂给虚拟环境 Python，不要在远端写临时脚本：
+
+```powershell
+@'
+import sqlite3
+conn = sqlite3.connect("/app/data/posts.db")
+conn.row_factory = sqlite3.Row
+print(conn.execute("select count(*) from posts").fetchone()[0])
+'@ | railway ssh -- /opt/venv/bin/python -
+```
+
+配额文件检查：
+
+```powershell
+@'
+from pathlib import Path
+for name in [".crawler_quota.json", ".crawler_quota_history.jsonl", ".crawler_pause.json"]:
+    path = Path("/app/data") / name
+    print("\n" + str(path))
+    print(path.read_text(encoding="utf-8")[-4000:] if path.exists() else "missing")
+'@ | railway ssh -- /opt/venv/bin/python -
+```
+
+## 本地验证
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m pytest tests/test_cli_contract.py tests/test_crawler_service.py tests/test_crawler_strategies.py -q
+python -B -c "import jobs.scheduler, crawler.service, crawler.cli; print('import ok')"
+git diff --check
+```
+
+部署后的状态、日志和健康检查见 [Railway 部署与运维](railway.md)。
