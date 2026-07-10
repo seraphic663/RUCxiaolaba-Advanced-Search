@@ -1,7 +1,7 @@
 """Build the optional symbol search sidecar.
 
 Example:
-    python -m tools.build_symbol_index --posts-db data/posts.db --output data/symbol_index.db
+    python -m tools.operations.build_symbol_index --posts-db data/posts.db --output data/symbol_index.db
 """
 
 from __future__ import annotations

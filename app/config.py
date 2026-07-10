@@ -9,7 +9,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
-DEFAULT_TEMPLATES_DIR = PROJECT_ROOT / "templates"
+DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 DEFAULT_BIGRAM_DB = DEFAULT_DATA_DIR / "bigram_index.db"
 DEFAULT_SYMBOL_DB = DEFAULT_DATA_DIR / "symbol_index.db"
 

@@ -112,7 +112,7 @@ class HTTPContractTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        templates = Path(__file__).resolve().parents[1] / "templates"
+        templates = Path(__file__).resolve().parents[1] / "app" / "templates"
         Handler.context = ApplicationContext(
             posts_db=str(self.db_path),
             admin_password="test",
@@ -188,6 +188,8 @@ class HTTPContractTest(unittest.TestCase):
         with urlopen(self.base + "/", timeout=5) as response:
             content = response.read().decode("utf-8")
         self.assertIn("RUC", content)
+        self.assertNotIn("__SHARED_UI_", content)
+        self.assertEqual(content.count("function updateThemeButton()"), 1)
 
     def test_admin_login_contract(self):
         opener = build_opener(HTTPCookieProcessor(CookieJar()))
@@ -205,6 +207,8 @@ class HTTPContractTest(unittest.TestCase):
         with opener.open(request, timeout=5) as response:
             dashboard = response.read().decode("utf-8")
         self.assertIn("SQLite", dashboard)
+        self.assertNotIn("__SHARED_UI_", dashboard)
+        self.assertEqual(dashboard.count("function updateThemeButton()"), 1)
 
 
 if __name__ == "__main__":

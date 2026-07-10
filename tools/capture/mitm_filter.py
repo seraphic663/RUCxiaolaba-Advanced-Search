@@ -1,4 +1,4 @@
-"""mitmproxy addon: highlight mini-program API requests, pass everything through."""
+"""mitmproxy addon for locally inspecting mini-program API requests."""
 import json
 import os
 import re

@@ -1,6 +1,6 @@
 # API 参考
 
-> 从 CLAUDE.md 提取，覆盖所有已知端点。Base URL: `https://ys.qimiaoyuanfen.com`，Community ID: `4`。
+> 本页是基于现有 Client 和历史正常小程序流量整理的端点参考。Base URL 与 Community ID 以 `crawler/client.py` 当前配置为准；本页不作为 crawler 调度参数的事实源。
 
 > 本页记录通过正常小程序流量观察到的内部业务接口，仅用于理解现有代码，不代表平台将其作为第三方开放 API，也不构成调用授权。正式帖子爬虫只使用文章列表、活跃列表和文章详情接口。私信、账户资料、手机号检查及写操作端点不得在没有明确授权时调用。
 
