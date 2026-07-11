@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 from pathlib import Path
 
 from app.repositories.connections import connect_readonly
@@ -76,6 +77,121 @@ class AdminService:
             "unique_commenters": "按需检索",
             "user_rows": self._render_users(users, posts_by_uid),
         }
+
+    def crawler_status(self, recent_limit: int = 30) -> dict:
+        """Return aggregate crawler state without exposing a public endpoint."""
+        if not self.posts_db.exists():
+            return {"ok": False, "error": "posts database not found"}
+        with connect_readonly(self.posts_db) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "select name from sqlite_master where type='table'"
+                )
+            }
+            post_columns = {
+                row[1] for row in conn.execute("pragma table_info(posts)")
+            }
+            status_sql = (
+                "crawl_status" if "crawl_status" in post_columns else "'full'"
+            )
+            updated_sql = "p.updated_at" if "updated_at" in post_columns else "''"
+            posts = dict(
+                conn.execute(
+                    f"select count(*) total, "
+                    f"sum(({status_sql})='full') as full_count, "
+                    f"sum(({status_sql})='list_only') as list_only_count, "
+                    "min(nullif(create_time,'')) earliest, "
+                    "max(nullif(create_time,'')) latest, "
+                    "max(cast(id as integer)) max_id from posts"
+                ).fetchone()
+            )
+            posts["full"] = posts.pop("full_count")
+            posts["list_only"] = posts.pop("list_only_count")
+            comments = dict(
+                conn.execute(
+                    "select count(*) total, count(distinct post_id) posts_with_comments, "
+                    "max(nullif(create_time,'')) latest_comment_time from comments"
+                ).fetchone()
+            )
+            queue_status = []
+            queue_pending_priority = []
+            queue_pending_age = {}
+            if "crawler_queue" in tables:
+                queue_status = [
+                    dict(row)
+                    for row in conn.execute(
+                        "select status,count(*) n from crawler_queue "
+                        "group by status order by status"
+                    )
+                ]
+                queue_pending_priority = [
+                    dict(row)
+                    for row in conn.execute(
+                        "select priority,reason,count(*) n from crawler_queue "
+                        "where status='pending' group by priority,reason "
+                        "order by priority,n desc"
+                    )
+                ]
+                queue_pending_age = dict(
+                    conn.execute(
+                        "select count(*) n,min(created_at) oldest,max(created_at) newest "
+                        "from crawler_queue where status='pending'"
+                    ).fetchone()
+                )
+            queue_join = (
+                "left join crawler_queue q on q.post_id=p.id"
+                if "crawler_queue" in tables
+                else ""
+            )
+            queue_columns = (
+                "q.status queue_status,q.priority,q.reason"
+                if "crawler_queue" in tables
+                else "null queue_status,null priority,null reason"
+            )
+            recent_posts = [
+                dict(row)
+                for row in conn.execute(
+                    f"select p.id,p.create_time,{updated_sql} updated_at,"
+                    f"{status_sql} crawl_status,p.comment_count,"
+                    "(select count(*) from comments c where c.post_id=p.id) "
+                    f"comment_rows,{queue_columns} from posts p {queue_join} "
+                    "order by p.create_time desc,cast(p.id as integer) desc limit ?",
+                    (max(1, min(int(recent_limit), 100)),),
+                )
+            ]
+            crawl_state = []
+            if "crawl_state" in tables:
+                crawl_state = [
+                    dict(row)
+                    for row in conn.execute(
+                        "select key,value,updated_at from crawl_state "
+                        "where key like 'crawler_%' order by updated_at desc limit 20"
+                    )
+                ]
+        quota = self._read_runtime_json(".crawler_quota.json")
+        pause = self._read_runtime_json(".crawler_pause.json")
+        return {
+            "ok": True,
+            "posts": posts,
+            "comments": comments,
+            "queue_status": queue_status,
+            "queue_pending_priority": queue_pending_priority,
+            "queue_pending_age": queue_pending_age,
+            "recent_posts": recent_posts,
+            "crawl_state": crawl_state,
+            "quota": quota,
+            "pause": pause,
+            "database_bytes": self.posts_db.stat().st_size,
+        }
+
+    def _read_runtime_json(self, name: str) -> dict:
+        path = self.posts_db.with_name(name)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
 
     @staticmethod
     def _render_users(users, posts_by_uid) -> str:

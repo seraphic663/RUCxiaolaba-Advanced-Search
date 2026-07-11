@@ -1,12 +1,16 @@
+import json
 import sqlite3
 import tempfile
 import time
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from app.services.admin_crawl_service import AdminCrawlError, AdminCrawlService
+from crawler.manual_quota import ManualQuota
 from crawler.normalizer import normalize_detail
 from storage.post_writer import SQLitePostStore
 from storage.symbol_index import SYMBOL_SCHEMA
@@ -245,3 +249,48 @@ def test_immediate_batch_is_rejected_before_start_when_quota_is_insufficient():
         preview = service.preview("lists", "", 1)
         with pytest.raises(AdminCrawlError, match="当前只剩 0 次"):
             service.create_job(preview["preview_id"], ["901"], "force")
+
+
+def test_manual_quota_is_extra_and_does_not_consume_main_counters():
+    class FakeScheduler:
+        @staticmethod
+        def quota_date():
+            return "2026-07-11"
+
+        @staticmethod
+        def beijing_now():
+            return datetime(2026, 7, 11, 8, 0, tzinfo=timezone.utc)
+
+        @staticmethod
+        def quota_release_fraction():
+            return 0.0
+
+        @staticmethod
+        def configured_source_budget():
+            return 690
+
+        @staticmethod
+        def adaptive_source_budget():
+            return 690
+
+        @staticmethod
+        def adaptive_scale():
+            return 1.0
+
+    with tempfile.TemporaryDirectory() as temp:
+        posts_db = Path(temp) / "posts.db"
+        quota = ManualQuota(posts_db)
+        with patch.object(ManualQuota, "_scheduler", return_value=FakeScheduler):
+            quota.reserve("new_list", "preview", 1)
+            quota.reserve("detail", "detail", 1)
+            status = quota.status()
+        saved = json.loads(
+            posts_db.with_name(".crawler_quota.json").read_text(encoding="utf-8")
+        )
+        assert saved["new_list_calls"] == 0
+        assert saved["detail_calls"] == 0
+        assert saved["admin_preview_calls"] == 1
+        assert saved["admin_detail_calls"] == 1
+        assert saved["configured_total_budget"] == 720
+        assert status["preview_allowed"] == 20
+        assert status["detail_allowed"] == 10
