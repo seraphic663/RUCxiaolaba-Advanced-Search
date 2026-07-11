@@ -30,7 +30,15 @@ PY
 
 if [ "${CRAWLER_ENABLED:-0}" = "1" ]; then
   echo "[boot] Starting crawler scheduler"
-  python -u -m jobs.scheduler &
+  (
+    set +e
+    while true; do
+      python -u -m jobs.scheduler
+      code=$?
+      echo "[boot] Crawler scheduler exited code=$code; restarting in 30s"
+      sleep 30
+    done
+  ) &
 else
   echo "[boot] Crawler scheduler disabled"
 fi

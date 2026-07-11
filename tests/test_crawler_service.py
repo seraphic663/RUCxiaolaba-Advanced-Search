@@ -31,7 +31,23 @@ class RateLimitedClient(FakeClient):
         return None, "rate_limited:今天刷的太久了，休息一下吧"
 
 
+class QuotaStoppedClient(FakeClient):
+    def list_page(self, endpoint, page):
+        return None, "source_quota_window_locked"
+
+    def article(self, post_id):
+        return None, "source_quota_window_locked"
+
+
 def detail(post_id, comments=0):
+    comment_list = [
+        {
+            "id": f"c{post_id}-{index}",
+            "detail": f"comment {index}",
+            "show_user_name": "commenter",
+        }
+        for index in range(comments)
+    ]
     return (
         {
             "community_id": "4",
@@ -40,7 +56,7 @@ def detail(post_id, comments=0):
             "show_user_name": "user",
             "create_time": "2026-06-11 10:00:00",
             "count_comment": comments,
-            "comment_list": [],
+            "comment_list": comment_list,
         },
         None,
     )
@@ -85,9 +101,7 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(stats["new"], 1)
         conn = sqlite3.connect(self.db)
         try:
-            self.assertEqual(
-                conn.execute("select count(*) from posts").fetchone()[0], 1
-            )
+            self.assertEqual(conn.execute("select count(*) from posts").fetchone()[0], 1)
         finally:
             conn.close()
 
@@ -127,9 +141,7 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(stats["details"], 0)
 
     def test_page_scan_reports_total_network_failure(self):
-        with self.assertRaisesRegex(
-            RuntimeError, "failed before reading any page"
-        ):
+        with self.assertRaisesRegex(RuntimeError, "failed before reading any page"):
             self.service(FailingClient({}, {})).scan_pages(
                 command="sync-latest",
                 endpoint="lists",
@@ -245,6 +257,22 @@ class CrawlerServiceTest(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(row)
 
+    def test_discover_stops_cleanly_when_request_quota_closes(self):
+        stats = self.service(QuotaStoppedClient({}, {})).discover_queue(
+            command="discover-latest",
+            endpoint="lists",
+            since="2026-06-25 00:00:00",
+            max_pages=5,
+            old_page_threshold=2,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertTrue(stats["quota_stop"])
+        self.assertEqual(stats["errors"], 0)
+        self.assertEqual(stats["pages"], 0)
+
     def test_discover_requeues_list_only_post_when_queue_is_missing(self):
         with SQLitePostStore(self.db) as store:
             store.upsert_list_stub(
@@ -311,14 +339,10 @@ class CrawlerServiceTest(unittest.TestCase):
         with SQLitePostStore(self.db) as store:
             changed = store.upsert_list_stub(article, source="lists")
             self.assertTrue(changed)
-            store.conn.execute(
-                "update posts set updated_at='sentinel' where id='151'"
-            )
+            store.conn.execute("update posts set updated_at='sentinel' where id='151'")
             store.conn.commit()
             changed = store.upsert_list_stub(article, source="lists")
-            row = store.conn.execute(
-                "select updated_at from posts where id='151'"
-            ).fetchone()
+            row = store.conn.execute("select updated_at from posts where id='151'").fetchone()
         self.assertFalse(changed)
         self.assertEqual(row["updated_at"], "sentinel")
 
@@ -335,15 +359,38 @@ class CrawlerServiceTest(unittest.TestCase):
                 "reason": "new_post",
             }
             store.enqueue_crawler_candidate(**kwargs)
-            store.conn.execute(
-                "update crawler_queue set updated_at='sentinel' where post_id='152'"
-            )
+            store.conn.execute("update crawler_queue set updated_at='sentinel' where post_id='152'")
             store.conn.commit()
             store.enqueue_crawler_candidate(**kwargs)
             row = store.conn.execute(
                 "select updated_at from crawler_queue where post_id='152'"
             ).fetchone()
         self.assertEqual(row["updated_at"], "sentinel")
+
+    def test_runtime_schema_repairs_done_rows_with_unfetched_comment_delta(self):
+        with SQLitePostStore(self.db) as store:
+            post, comments = self.service(
+                FakeClient({}, {"153": detail("153", 1)})
+            ).fetch_detail_with_error(FakeClient({}, {"153": detail("153", 1)}), "153")[0]
+            store.upsert_post(post, comments)
+            store.enqueue_crawler_candidate(
+                post_id="153",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="2026-06-25 10:00:00",
+                list_comment_count=3,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+            store.mark_crawler_queue_item("153", status="done")
+            reopened = store.reopen_stale_comment_deltas()
+            row = store.conn.execute(
+                "select status,priority from crawler_queue where post_id='153'"
+            ).fetchone()
+        self.assertEqual(reopened, 1)
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["priority"], 0)
 
     def test_discover_active_stops_on_repeated_page_signature(self):
         with SQLitePostStore(self.db) as store:
@@ -386,6 +433,114 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(row["priority"], 0)
         self.assertEqual(row["reason"], "comment_changed")
 
+    def test_comment_growth_reopens_done_queue_item_and_refreshes_detail(self):
+        with SQLitePostStore(self.db) as store:
+            old_post = detail("205", 1)[0]
+            normalized = self.service(FakeClient({}, {})).fetch_detail_with_error(
+                FakeClient({}, {"205": (old_post, None)}), "205"
+            )[0]
+            store.upsert_post(*normalized)
+            store.enqueue_crawler_candidate(
+                post_id="205",
+                source="lists",
+                priority=10,
+                list_create_time="2026-06-25 10:00:00",
+                list_update_time="2026-06-25 10:00:00",
+                list_comment_count=1,
+                db_comment_count=None,
+                reason="new_post",
+            )
+            store.mark_crawler_queue_item("205", status="done")
+
+        article = {
+            "id": "205",
+            "create_time": "2026-06-25 10:00:00",
+            "update_time": "2026-06-25 11:00:00",
+            "count_comment": 2,
+        }
+        service = self.service(FakeClient({1: [article], 2: []}, {}))
+        stats = service.discover_queue(
+            command="discover-active",
+            endpoint="lists2",
+            since="2026-06-25 00:00:00",
+            max_pages=2,
+            old_page_threshold=2,
+            min_pages=1,
+            no_action_page_threshold=1,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(stats["queue_reopened"], 1)
+        with SQLitePostStore(self.db) as store:
+            row = store.conn.execute(
+                "select status,priority,reason from crawler_queue where post_id='205'"
+            ).fetchone()
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["priority"], 0)
+        self.assertIn("comment_changed", row["reason"])
+
+        refresh = self.service(FakeClient({}, {"205": detail("205", 2)}))
+        result = refresh.trickle_fill(
+            limit=1,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=1,
+        )
+        self.assertEqual(result["refreshed_details"], 1)
+        self.assertEqual(result["new_comment_rows"], 1)
+        with SQLitePostStore(self.db) as store:
+            self.assertEqual(store.get_post_counts("205"), 2)
+            self.assertEqual(
+                store.conn.execute("select count(*) from comments where post_id='205'").fetchone()[
+                    0
+                ],
+                2,
+            )
+
+    def test_unchanged_pending_observations_trigger_no_action_stop(self):
+        article = {
+            "id": "206",
+            "detail": "pending",
+            "create_time": "2026-06-25 10:00:00",
+            "update_time": "2026-06-25 10:00:00",
+            "count_comment": 1,
+        }
+        with SQLitePostStore(self.db) as store:
+            store.upsert_list_stub(article, source="lists")
+            store.enqueue_crawler_candidate(
+                post_id="206",
+                source="lists",
+                priority=10,
+                list_create_time=article["create_time"],
+                list_update_time=article["update_time"],
+                list_comment_count=1,
+                db_comment_count=1,
+                reason="new_post",
+            )
+        stats = self.service(
+            FakeClient({1: [article], 2: [article], 3: [article]}, {})
+        ).discover_queue(
+            command="discover-latest",
+            endpoint="lists",
+            since="2026-06-25 00:00:00",
+            max_pages=3,
+            old_page_threshold=3,
+            stop_on_repeat=False,
+            min_pages=2,
+            no_action_page_threshold=2,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertTrue(stats["no_action_stop"])
+        self.assertEqual(stats["queued"], 2)
+        self.assertEqual(stats["queue_unchanged"], 2)
+        self.assertEqual(stats["pages"], 2)
+
     def test_discover_active_ignores_lower_comment_count_snapshot(self):
         with SQLitePostStore(self.db) as store:
             store.upsert_post(
@@ -426,9 +581,7 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(stats["queued"], 0)
         self.assertEqual(stats["comment_changed"], 0)
         with SQLitePostStore(self.db) as store:
-            self.assertIsNone(
-                store.conn.execute("select 1 from crawler_queue").fetchone()
-            )
+            self.assertIsNone(store.conn.execute("select 1 from crawler_queue").fetchone())
 
     def test_discover_active_stops_after_consecutive_no_action_pages(self):
         with SQLitePostStore(self.db) as store:
@@ -545,6 +698,34 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(row["attempts"], 1)
         self.assertIn("rate_limited", row["last_error"])
 
+    def test_trickle_quota_stop_keeps_item_pending_without_attempt(self):
+        with SQLitePostStore(self.db) as store:
+            store.enqueue_crawler_candidate(
+                post_id="301",
+                source="lists",
+                priority=10,
+                list_create_time="",
+                list_update_time="",
+                list_comment_count=1,
+                db_comment_count=None,
+                reason="new_post",
+            )
+        stats = self.service(QuotaStoppedClient({}, {})).trickle_fill(
+            limit=1,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=1,
+        )
+        self.assertTrue(stats["quota_stop"])
+        with SQLitePostStore(self.db) as store:
+            row = store.conn.execute(
+                "select status,attempts,last_error from crawler_queue where post_id='301'"
+            ).fetchone()
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["attempts"], 0)
+        self.assertEqual(row["last_error"], "")
+
     def test_trickle_fill_skips_not_found_without_stopping(self):
         with SQLitePostStore(self.db) as store:
             for post_id in ("401", "402"):
@@ -570,12 +751,47 @@ class CrawlerServiceTest(unittest.TestCase):
         with SQLitePostStore(self.db) as store:
             rows = {
                 row["post_id"]: row["status"]
-                for row in store.conn.execute(
-                    "select post_id, status from crawler_queue"
-                )
+                for row in store.conn.execute("select post_id, status from crawler_queue")
             }
         self.assertEqual(rows["401"], "skipped")
         self.assertEqual(rows["402"], "done")
+
+    def test_trickle_rejects_empty_comment_payload_without_erasing_old_rows(self):
+        with SQLitePostStore(self.db) as store:
+            old = self.service(FakeClient({}, {"410": detail("410", 1)}))
+            parsed, error = old.fetch_detail_with_error(
+                FakeClient({}, {"410": detail("410", 1)}), "410"
+            )
+            self.assertIsNone(error)
+            store.upsert_post(*parsed)
+            store.enqueue_crawler_candidate(
+                post_id="410",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="",
+                list_comment_count=2,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+        suspicious = detail("410", 2)
+        suspicious[0]["comment_list"] = []
+        stats = self.service(FakeClient({}, {"410": suspicious})).trickle_fill(
+            limit=1,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=1,
+        )
+        self.assertEqual(stats["suspicious_payloads"], 1)
+        with SQLitePostStore(self.db) as store:
+            rows = store.conn.execute("select detail from comments where post_id='410'").fetchall()
+            queue = store.conn.execute(
+                "select status,last_error from crawler_queue where post_id='410'"
+            ).fetchone()
+        self.assertEqual([row["detail"] for row in rows], ["comment 0"])
+        self.assertEqual(queue["status"], "failed")
+        self.assertIn("suspicious_payload", queue["last_error"])
 
     def test_plan_gaps_records_sparse_ranges(self):
         with SQLitePostStore(self.db) as store:
@@ -633,9 +849,7 @@ class CrawlerServiceTest(unittest.TestCase):
         )
         self.assertEqual(stats["found"], 1)
         with SQLitePostStore(self.db) as store:
-            self.assertIsNone(
-                store.conn.execute("select 1 from posts where id='500'").fetchone()
-            )
+            self.assertIsNone(store.conn.execute("select 1 from posts where id='500'").fetchone())
             probe = store.conn.execute(
                 "select status from crawler_id_probe where post_id='500'"
             ).fetchone()

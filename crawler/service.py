@@ -13,7 +13,7 @@ from pathlib import Path
 
 from crawler.client import MiniProgramClient
 from crawler.lock import database_write_lock
-from crawler.normalizer import normalize_detail
+from crawler.normalizer import normalize_detail, validate_normalized_detail
 from crawler.strategies.page_scan import PageScanProgress
 from storage.post_writer import SQLitePostStore, safe_int
 
@@ -62,10 +62,7 @@ class CrawlerService:
         if error:
             raise RuntimeError(f"cannot determine latest id: {error}")
         return max(
-            (
-                safe_int(item.get("id"))
-                for item in (data or {}).get("list", [])
-            ),
+            (safe_int(item.get("id")) for item in (data or {}).get("list", [])),
             default=0,
         )
 
@@ -77,15 +74,18 @@ class CrawlerService:
         data, error = self._article(client, post_id)
         if error or not data:
             return None
-        return normalize_detail(str(post_id), data)
+        parsed = normalize_detail(str(post_id), data)
+        if parsed is None:
+            return None
+        post, comments = parsed
+        if validate_normalized_detail(post, comments):
+            return None
+        return parsed
 
     @staticmethod
     def article_time(article: dict, key: str) -> str:
         return str(
-            article.get(key)
-            or article.get("create_time")
-            or article.get("update_time")
-            or ""
+            article.get(key) or article.get("create_time") or article.get("update_time") or ""
         )
 
     @staticmethod
@@ -103,6 +103,10 @@ class CrawlerService:
     def is_rate_limited(error: str | None) -> bool:
         return bool(error and error.startswith("rate_limited:"))
 
+    @staticmethod
+    def is_source_quota_stop(error: str | None) -> bool:
+        return bool(error and error.startswith("source_quota_"))
+
     def fetch_detail_with_error(
         self,
         client: MiniProgramClient,
@@ -114,6 +118,10 @@ class CrawlerService:
         parsed = normalize_detail(str(post_id), data)
         if parsed is None:
             return None, "foreign_or_invalid"
+        post, comments = parsed
+        payload_error = validate_normalized_detail(post, comments)
+        if payload_error:
+            return None, f"suspicious_payload:{payload_error}"
         return parsed, None
 
     def discover_queue(
@@ -139,12 +147,18 @@ class CrawlerService:
             "pages": 0,
             "seen": 0,
             "queued": 0,
+            "queue_inserted": 0,
+            "queue_reopened": 0,
+            "queue_updated": 0,
+            "queue_unchanged": 0,
             "existing": 0,
             "comment_changed": 0,
             "errors": 0,
             "repeat_stop": False,
             "old_page_stop": False,
             "no_action_stop": False,
+            "quota_stop": False,
+            "source_calls": 0,
         }
         seen_signatures: dict[str, int] = {}
         old_pages = 0
@@ -159,6 +173,10 @@ class CrawlerService:
                     time.sleep(random.uniform(min_delay, max_delay))
                     data, error = self._list_page(client, endpoint, page)
                     if error:
+                        if self.is_source_quota_stop(error):
+                            stats["quota_stop"] = True
+                            print(f"[{command}] stop {error}", flush=True)
+                            break
                         stats["errors"] += 1
                         print(f"[{command}] page={page} err={error}", flush=True)
                         if error == "cookie_expired" or self.is_rate_limited(error):
@@ -180,7 +198,7 @@ class CrawlerService:
                     seen_signatures[signature] = page
                     stats["pages"] += 1
                     stats["seen"] += len(articles)
-                    page_queued = page_existing = page_changed = 0
+                    page_queued = page_existing = page_changed = page_mutations = 0
                     page_has_since = False
                     for article in articles:
                         post_id = str(article.get("id") or "")
@@ -195,12 +213,8 @@ class CrawlerService:
                             )
                         )
                         snapshot = store.get_post_crawl_snapshot(post_id)
-                        db_comment_count = (
-                            None if snapshot is None else snapshot["comment_count"]
-                        )
-                        crawl_status = (
-                            "missing" if snapshot is None else snapshot["crawl_status"]
-                        )
+                        db_comment_count = None if snapshot is None else snapshot["comment_count"]
+                        crawl_status = "missing" if snapshot is None else snapshot["crawl_status"]
                         missing = snapshot is None
                         needs_detail = missing or crawl_status != "full"
                         create_after_since = create_time >= since
@@ -214,10 +228,7 @@ class CrawlerService:
                                 reason = "new_post"
                                 priority = 10 if comment_count > 0 else 40
                         else:
-                            if (
-                                db_comment_count is not None
-                                and comment_count > db_comment_count
-                            ):
+                            if db_comment_count is not None and comment_count > db_comment_count:
                                 reason = "comment_changed"
                                 priority = 0
                                 stats["comment_changed"] += 1
@@ -235,7 +246,7 @@ class CrawlerService:
                                         source=endpoint,
                                         commit=False,
                                     )
-                                store.enqueue_crawler_candidate(
+                                action = store.enqueue_crawler_candidate(
                                     post_id=post_id,
                                     source=endpoint,
                                     priority=priority,
@@ -246,12 +257,17 @@ class CrawlerService:
                                     reason=reason,
                                     commit=False,
                                 )
+                                stats[f"queue_{action}"] += 1
+                                if action != "unchanged":
+                                    page_mutations += 1
+                            elif dry_run:
+                                page_mutations += 1
                         else:
                             stats["existing"] += 1
                             page_existing += 1
                     if not dry_run:
                         store.conn.commit()
-                    if page_queued == 0:
+                    if page_mutations == 0:
                         no_action_pages += 1
                     else:
                         no_action_pages = 0
@@ -262,6 +278,7 @@ class CrawlerService:
                     print(
                         f"[{command}:{endpoint}] page={page} "
                         f"articles={len(articles)} queued={page_queued} "
+                        f"mutations={page_mutations} "
                         f"existing={page_existing} changed={page_changed} "
                         f"old_pages={old_pages}",
                         flush=True,
@@ -285,14 +302,14 @@ class CrawlerService:
                         )
                         break
                 if not dry_run:
+                    stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
                     store.set_state(
                         f"crawler_{command.replace('-', '_')}",
                         json.dumps(stats, ensure_ascii=False),
                         commit=True,
                     )
         print(
-            f"[{command}] done {json.dumps(stats, ensure_ascii=False)} "
-            f"dry_run={dry_run}",
+            f"[{command}] done {json.dumps(stats, ensure_ascii=False)} dry_run={dry_run}",
             flush=True,
         )
         return stats
@@ -313,6 +330,15 @@ class CrawlerService:
             "written": 0,
             "misses": 0,
             "rate_limited": False,
+            "quota_stop": False,
+            "suspicious_payloads": 0,
+            "completed_details": 0,
+            "refreshed_details": 0,
+            "new_comment_rows": 0,
+            "removed_comment_rows": 0,
+            "comment_row_delta": 0,
+            "unchanged_comment_rows": 0,
+            "source_calls": 0,
         }
         consecutive_misses = 0
         with database_write_lock(self.db_path, self.lock_timeout):
@@ -328,6 +354,10 @@ class CrawlerService:
                     time.sleep(random.uniform(min_delay, max_delay))
                     parsed, error = self.fetch_detail_with_error(client, post_id)
                     if error:
+                        if self.is_source_quota_stop(error):
+                            stats["quota_stop"] = True
+                            print(f"[trickle-fill] stop {error}", flush=True)
+                            break
                         if error in {"not_found", "foreign_or_invalid"}:
                             if not dry_run:
                                 store.mark_crawler_queue_item(
@@ -341,6 +371,23 @@ class CrawlerService:
                             stats["misses"] += 1
                             print(
                                 f"[trickle-fill] skip #{post_id} err={error}",
+                                flush=True,
+                            )
+                            continue
+                        if error.startswith("suspicious_payload:"):
+                            if not dry_run:
+                                store.mark_crawler_queue_item(
+                                    post_id,
+                                    status="failed",
+                                    last_error=error,
+                                    increment_attempts=True,
+                                    commit=False,
+                                )
+                                store.conn.commit()
+                            stats["misses"] += 1
+                            stats["suspicious_payloads"] += 1
+                            print(
+                                f"[trickle-fill] reject #{post_id} err={error}",
                                 flush=True,
                             )
                             continue
@@ -367,12 +414,18 @@ class CrawlerService:
                             raise RuntimeError(error)
                         if consecutive_misses >= stop_after_misses:
                             raise RuntimeError(
-                                f"too many consecutive detail misses: "
-                                f"{consecutive_misses}"
+                                f"too many consecutive detail misses: {consecutive_misses}"
                             )
                         continue
                     consecutive_misses = 0
                     post, comments = parsed
+                    before = store.get_post_crawl_snapshot(post_id)
+                    before_rows = safe_int(
+                        store.conn.execute(
+                            "select count(*) from comments where post_id=?",
+                            (post_id,),
+                        ).fetchone()[0]
+                    )
                     if dry_run:
                         print(
                             f"[trickle-fill] dry #{post_id} "
@@ -389,6 +442,23 @@ class CrawlerService:
                             commit=False,
                         )
                         store.conn.commit()
+                        after_rows = safe_int(
+                            store.conn.execute(
+                                "select count(*) from comments where post_id=?",
+                                (post_id,),
+                            ).fetchone()[0]
+                        )
+                        if before is None or before["crawl_status"] != "full":
+                            stats["completed_details"] += 1
+                        else:
+                            stats["refreshed_details"] += 1
+                        added_rows = max(0, after_rows - before_rows)
+                        removed_rows = max(0, before_rows - after_rows)
+                        stats["new_comment_rows"] += added_rows
+                        stats["removed_comment_rows"] += removed_rows
+                        stats["comment_row_delta"] += after_rows - before_rows
+                        if after_rows == before_rows:
+                            stats["unchanged_comment_rows"] += 1
                     stats["written"] += 1
                     print(
                         f"[trickle-fill] ok #{post_id} "
@@ -396,14 +466,14 @@ class CrawlerService:
                         flush=True,
                     )
                 if not dry_run:
+                    stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
                     store.set_state(
                         "crawler_trickle_fill",
                         json.dumps(stats, ensure_ascii=False),
                         commit=True,
                     )
         print(
-            f"[trickle-fill] done {json.dumps(stats, ensure_ascii=False)} "
-            f"dry_run={dry_run}",
+            f"[trickle-fill] done {json.dumps(stats, ensure_ascii=False)} dry_run={dry_run}",
             flush=True,
         )
         return stats
@@ -519,8 +589,7 @@ class CrawlerService:
                     )
                     store.conn.commit()
         print(
-            f"[plan-gaps] done {json.dumps(stats, ensure_ascii=False)} "
-            f"dry_run={dry_run}",
+            f"[plan-gaps] done {json.dumps(stats, ensure_ascii=False)} dry_run={dry_run}",
             flush=True,
         )
         return stats
@@ -576,6 +645,8 @@ class CrawlerService:
             "errors": 0,
             "completed": 0,
             "rate_limited": False,
+            "quota_stop": False,
+            "source_calls": 0,
         }
         with database_write_lock(self.db_path, self.lock_timeout):
             with SQLitePostStore(self.db_path) as store:
@@ -633,6 +704,10 @@ class CrawlerService:
                             client,
                             str(post_id),
                         )
+                        if self.is_source_quota_stop(error):
+                            stats["quota_stop"] = True
+                            print(f"[probe-gaps] stop {error}", flush=True)
+                            break
                         sampled += 1
                         stats["sampled"] += 1
                         status = "error"
@@ -733,15 +808,17 @@ class CrawlerService:
                         f"found={found} missing={missing} errors={errors}",
                         flush=True,
                     )
+                    if stats["quota_stop"]:
+                        break
                 if not dry_run:
+                    stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
                     store.set_state(
                         "crawler_probe_gaps",
                         json.dumps(stats, ensure_ascii=False),
                         commit=True,
                     )
         print(
-            f"[probe-gaps] done {json.dumps(stats, ensure_ascii=False)} "
-            f"dry_run={dry_run}",
+            f"[probe-gaps] done {json.dumps(stats, ensure_ascii=False)} dry_run={dry_run}",
             flush=True,
         )
         return stats
@@ -840,13 +917,9 @@ class CrawlerService:
                     data, error = self._list_page(client, endpoint, page)
                     if error:
                         stats["errors"] += 1
-                        print(
-                            f"[{command}] page={page} err={error}", flush=True
-                        )
+                        print(f"[{command}] page={page} err={error}", flush=True)
                         if error == "cookie_expired":
-                            raise RuntimeError(
-                                "crawler authentication expired; update cookie"
-                            )
+                            raise RuntimeError("crawler authentication expired; update cookie")
                         continue
                     articles = data.get("list", []) if data else []
                     if not articles:
@@ -903,8 +976,7 @@ class CrawlerService:
                         threshold=stop_unchanged,
                     ):
                         print(
-                            f"[{command}] stop unchanged_run="
-                            f"{progress.consecutive_unchanged}",
+                            f"[{command}] stop unchanged_run={progress.consecutive_unchanged}",
                             flush=True,
                         )
                         break
@@ -916,13 +988,9 @@ class CrawlerService:
                     )
         if stats["pages"] == 0 and stats["errors"]:
             raise RuntimeError(
-                f"{command} failed before reading any page "
-                f"({stats['errors']} request error(s))"
+                f"{command} failed before reading any page ({stats['errors']} request error(s))"
             )
-        print(
-            f"[{command}] done {json.dumps(stats, ensure_ascii=False)} "
-            f"dry_run={dry_run}"
-        )
+        print(f"[{command}] done {json.dumps(stats, ensure_ascii=False)} dry_run={dry_run}")
         return stats
 
     @staticmethod
@@ -930,9 +998,7 @@ class CrawlerService:
         try:
             return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
         except ValueError as exc:
-            raise ValueError(
-                f"{option} must use YYYY-MM-DD: {value}"
-            ) from exc
+            raise ValueError(f"{option} must use YYYY-MM-DD: {value}") from exc
 
     def scan_id_range(
         self,
@@ -946,9 +1012,7 @@ class CrawlerService:
         restart: bool,
         dry_run: bool,
     ) -> dict:
-        from_date = (
-            self.parse_date(from_date, "--from-date") if from_date else ""
-        )
+        from_date = self.parse_date(from_date, "--from-date") if from_date else ""
         to_date = self.parse_date(to_date, "--to-date") if to_date else ""
         if from_date and to_date and from_date > to_date:
             raise ValueError("--to-date must not be earlier than --from-date")
@@ -962,8 +1026,7 @@ class CrawlerService:
             resolved_start = safe_int(start_id)
             if resolved_start <= 0:
                 row = state_store.conn.execute(
-                    "select min(cast(id as integer)) from posts "
-                    "where create_time >= ?",
+                    "select min(cast(id as integer)) from posts where create_time >= ?",
                     (f"{from_date} 00:00:00",),
                 ).fetchone()
                 resolved_start = safe_int(row[0] if row else 0)
@@ -976,23 +1039,17 @@ class CrawlerService:
             if resolved_end <= 0:
                 if to_date:
                     row = state_store.conn.execute(
-                        "select max(cast(id as integer)) from posts "
-                        "where create_time <= ?",
+                        "select max(cast(id as integer)) from posts where create_time <= ?",
                         (f"{to_date} 23:59:59",),
                     ).fetchone()
                     resolved_end = safe_int(row[0] if row else 0)
                     if resolved_end <= 0:
-                        raise RuntimeError(
-                            f"cannot determine end id for {to_date}"
-                        )
+                        raise RuntimeError(f"cannot determine end id for {to_date}")
                     resolved_end += 100
                 else:
                     resolved_end = self._latest_id(probe) + 100
             if resolved_end < resolved_start:
-                raise ValueError(
-                    f"end id {resolved_end} is earlier than "
-                    f"start id {resolved_start}"
-                )
+                raise ValueError(f"end id {resolved_end} is earlier than start id {resolved_start}")
 
             # Keep the historical key so in-progress production scans resume
             # across the architecture migration.
@@ -1003,8 +1060,7 @@ class CrawlerService:
             saved = json.loads(row[0]) if row and not restart else {}
             if saved.get("complete"):
                 print(
-                    f"[scan-id-range] already complete "
-                    f"range={resolved_start}..{resolved_end}",
+                    f"[scan-id-range] already complete range={resolved_start}..{resolved_end}",
                     flush=True,
                 )
                 return saved
@@ -1051,8 +1107,7 @@ class CrawlerService:
             "missing": safe_int(saved.get("missing")),
             "foreign": safe_int(saved.get("foreign")),
             "errors": safe_int(saved.get("errors")),
-            "started_at": saved.get("started_at")
-            or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "started_at": saved.get("started_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         from_time = f"{from_date} 00:00:00" if from_date else ""
         to_time = f"{to_date} 23:59:59" if to_date else ""
@@ -1062,36 +1117,22 @@ class CrawlerService:
                 with ThreadPoolExecutor(max_workers=workers) as executor:
                     chunk_start = next_id
                     while chunk_start <= resolved_end:
-                        chunk_end = min(
-                            resolved_end, chunk_start + chunk_size - 1
-                        )
-                        results = executor.map(
-                            scan_one, range(chunk_start, chunk_end + 1)
-                        )
+                        chunk_end = min(resolved_end, chunk_start + chunk_size - 1)
+                        results = executor.map(scan_one, range(chunk_start, chunk_end + 1))
                         cookie_expired = False
                         chunk_errors = 0
                         for post_id, parsed, status in results:
                             stats["processed"] += 1
                             if status == "ok":
                                 post, comments = parsed
-                                in_range = (
-                                    not from_time
-                                    or post["create_time"] >= from_time
-                                ) and (
-                                    not to_time
-                                    or post["create_time"] <= to_time
+                                in_range = (not from_time or post["create_time"] >= from_time) and (
+                                    not to_time or post["create_time"] <= to_time
                                 )
                                 if in_range:
                                     existing = store.get_post_counts(post_id)
                                     if not dry_run:
-                                        store.upsert_post(
-                                            post, comments, commit=False
-                                        )
-                                    key = (
-                                        "new"
-                                        if existing is None
-                                        else "refreshed"
-                                    )
+                                        store.upsert_post(post, comments, commit=False)
+                                    key = "new" if existing is None else "refreshed"
                                     stats[key] += 1
                                 else:
                                     stats["filtered"] += 1
@@ -1101,15 +1142,11 @@ class CrawlerService:
                                 stats["errors"] += 1
                                 chunk_errors += 1
                                 cookie_expired |= status == "cookie_expired"
-                        stats["next_id"] = (
-                            chunk_start if chunk_errors else chunk_end + 1
-                        )
+                        stats["next_id"] = chunk_start if chunk_errors else chunk_end + 1
                         state = {
                             **stats,
                             "complete": False,
-                            "updated_at": datetime.now().strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            ),
+                            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         }
                         if not dry_run:
                             store.set_state(
@@ -1127,22 +1164,14 @@ class CrawlerService:
                             flush=True,
                         )
                         if chunk_errors:
-                            reason = (
-                                "cookie_expired"
-                                if cookie_expired
-                                else "request errors"
-                            )
-                            raise RuntimeError(
-                                f"{reason}; retry from id {chunk_start}"
-                            )
+                            reason = "cookie_expired" if cookie_expired else "request errors"
+                            raise RuntimeError(f"{reason}; retry from id {chunk_start}")
                         chunk_start = chunk_end + 1
                 final_state = {
                     **stats,
                     "next_id": resolved_end + 1,
                     "complete": True,
-                    "completed_at": datetime.now().strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
+                    "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 if not dry_run:
                     store.set_state(

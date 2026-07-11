@@ -17,9 +17,7 @@ def normalize_detail(
         comments = []
     post = {
         "id": str(post_id),
-        "content": (
-            f"{data.get('title') or ''} {data.get('detail') or ''}".strip()
-        ),
+        "content": (f"{data.get('title') or ''} {data.get('detail') or ''}".strip()),
         "category_name": data.get("category_name", ""),
         "user_name": data.get("show_user_name", ""),
         "show_user_id": data.get("show_user_id", ""),
@@ -30,3 +28,15 @@ def normalize_detail(
         "trace_count": safe_int(data.get("count_trace")),
     }
     return post, comments
+
+
+def validate_normalized_detail(
+    post: dict,
+    comments: list[dict],
+) -> str | None:
+    """Reject partial upstream payloads that would destroy good local data."""
+    if not str(post.get("content") or "").strip():
+        return "empty_content"
+    if safe_int(post.get("comment_count")) > 0 and not comments:
+        return "empty_comments"
+    return None

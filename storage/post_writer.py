@@ -1,4 +1,4 @@
-﻿"""SQLite writer for the future DB-first crawler pipeline.
+"""SQLite writer for the future DB-first crawler pipeline.
 
 The store targets the slim production schema by default. It also tolerates the
 older full schema by filling posts.comments_json when that column exists.
@@ -27,7 +27,9 @@ def now_text() -> str:
 
 
 def comment_time(item: dict) -> str:
-    return str(item.get("create_time") or item.get("show_create_time") or item.get("update_time") or "")
+    return str(
+        item.get("create_time") or item.get("show_create_time") or item.get("update_time") or ""
+    )
 
 
 def article_text(item: dict) -> str:
@@ -100,15 +102,13 @@ class SQLitePostStore:
         configured_bigram = (
             bigram_path
             if bigram_path is not None
-            else os.environ.get("BIGRAM_DB_PATH")
-            or os.environ.get("BIGRAM_DB", "")
+            else os.environ.get("BIGRAM_DB_PATH") or os.environ.get("BIGRAM_DB", "")
         )
         self.bigram_path = Path(configured_bigram).resolve() if configured_bigram else None
         configured_symbol = (
             symbol_path
             if symbol_path is not None
-            else os.environ.get("SYMBOL_INDEX_DB_PATH")
-            or os.environ.get("SYMBOL_INDEX_DB", "")
+            else os.environ.get("SYMBOL_INDEX_DB_PATH") or os.environ.get("SYMBOL_INDEX_DB", "")
         )
         self.symbol_path = Path(configured_symbol).resolve() if configured_symbol else None
         self.conn = sqlite3.connect(self.db_path)
@@ -146,7 +146,9 @@ class SQLitePostStore:
             self.conn.execute("pragma symbol.synchronous=normal")
             self._has_symbol_index = True
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
-        self._comment_columns = self._columns("comments") if self._table_exists("comments") else set()
+        self._comment_columns = (
+            self._columns("comments") if self._table_exists("comments") else set()
+        )
         self._has_search_index = self._table_exists("search_index")
 
     def close(self) -> None:
@@ -300,14 +302,21 @@ class SQLitePostStore:
                 if name not in columns:
                     self.conn.execute(ddl)
             self.conn.execute(
-                "create index if not exists idx_posts_id_int "
-                "on posts(cast(id as integer))"
+                "create index if not exists idx_posts_id_int on posts(cast(id as integer))"
             )
         self.ensure_crawler_queue(commit=False)
         self.ensure_gap_tables(commit=False)
+        reopened = self.reopen_stale_comment_deltas(commit=False)
         self.conn.commit()
+        if reopened:
+            print(
+                f"[queue] reopened stale comment deltas count={reopened}",
+                flush=True,
+            )
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
-        self._comment_columns = self._columns("comments") if self._table_exists("comments") else set()
+        self._comment_columns = (
+            self._columns("comments") if self._table_exists("comments") else set()
+        )
 
     def ensure_crawler_queue(self, commit: bool = True) -> None:
         self.conn.execute(
@@ -335,6 +344,41 @@ class SQLitePostStore:
         )
         if commit:
             self.conn.commit()
+
+    def reopen_stale_comment_deltas(self, commit: bool = True) -> int:
+        """Repair terminal queue rows left behind by the old reopen bug."""
+        if not self._table_exists("posts") or not self._table_exists("crawler_queue"):
+            return 0
+        now = now_text()
+        cursor = self.conn.execute(
+            """
+            update crawler_queue
+            set status='pending', priority=0,
+                reason=case
+                    when reason='comment_changed'
+                      or reason like 'comment_changed|%'
+                      or reason like '%|comment_changed'
+                      or reason like '%|comment_changed|%'
+                    then reason
+                    when reason='' then 'comment_changed'
+                    else reason || '|comment_changed'
+                end,
+                updated_at=?
+            where status='done'
+              and db_comment_count is not null
+              and exists(
+                  select 1 from posts p
+                  where p.id=crawler_queue.post_id
+                    and coalesce(p.crawl_status,'full')='full'
+                    and coalesce(crawler_queue.list_comment_count,0)
+                        > coalesce(p.comment_count,0)
+              )
+            """,
+            (now,),
+        )
+        if commit:
+            self.conn.commit()
+        return max(0, int(cursor.rowcount or 0))
 
     def ensure_gap_tables(self, commit: bool = True) -> None:
         self.conn.executescript(
@@ -372,7 +416,9 @@ class SQLitePostStore:
         if commit:
             self.conn.commit()
 
-    def upsert_post(self, post: dict, comments: list[dict] | None = None, commit: bool = True) -> None:
+    def upsert_post(
+        self, post: dict, comments: list[dict] | None = None, commit: bool = True
+    ) -> None:
         updated_at = now_text()
         post_id = str(post.get("id") or "")
         if not post_id:
@@ -418,9 +464,7 @@ class SQLitePostStore:
                         or ""
                     ),
                     "list_source": str(
-                        post.get("list_source")
-                        or existing_meta.get("list_source")
-                        or ""
+                        post.get("list_source") or existing_meta.get("list_source") or ""
                     ),
                 }.items()
                 if key in self._post_columns
@@ -473,7 +517,9 @@ class SQLitePostStore:
             "show_user_id": str(article.get("show_user_id") or ""),
             "real_user_id": str(article.get("real_user_id") or "0"),
             "create_time": create_time,
-            "comment_count": safe_int(article.get("comment_count", article.get("count_comment", 0))),
+            "comment_count": safe_int(
+                article.get("comment_count", article.get("count_comment", 0))
+            ),
             "star_count": safe_int(article.get("count_star", article.get("star_count", 0))),
             "trace_count": safe_int(article.get("count_trace", article.get("trace_count", 0))),
             "crawl_status": "list_only",
@@ -629,7 +675,13 @@ class SQLitePostStore:
         if commit:
             self.conn.commit()
 
-    def refresh_search_index(self, post_id: str, content: str | None = None, comments: list[dict] | None = None, commit: bool = True) -> None:
+    def refresh_search_index(
+        self,
+        post_id: str,
+        content: str | None = None,
+        comments: list[dict] | None = None,
+        commit: bool = True,
+    ) -> None:
         if not self._has_search_index:
             return
         self.conn.execute("delete from search_index where post_id=?", (post_id,))
@@ -642,7 +694,9 @@ class SQLitePostStore:
                 (post_id, "post", content),
             )
         if comments is None:
-            rows = self.conn.execute("select detail from comments where post_id=? and detail != ''", (post_id,)).fetchall()
+            rows = self.conn.execute(
+                "select detail from comments where post_id=? and detail != ''", (post_id,)
+            ).fetchall()
             bodies = [row[0] for row in rows]
         else:
             bodies = [
@@ -721,9 +775,7 @@ class SQLitePostStore:
             return
         self.conn.execute("delete from symbol.symbol_rows where post_id=?", (post_id,))
         if content is None:
-            row = self.conn.execute(
-                "select content from posts where id=?", (post_id,)
-            ).fetchone()
+            row = self.conn.execute("select content from posts where id=?", (post_id,)).fetchone()
             content = row[0] if row else ""
         if comments is None:
             rows = self.conn.execute(
@@ -747,13 +799,11 @@ class SQLitePostStore:
             )
         if inserts:
             self.conn.executemany(
-                "insert into symbol.symbol_rows(token,post_id,kind,position) "
-                "values (?,?,?,?)",
+                "insert into symbol.symbol_rows(token,post_id,kind,position) values (?,?,?,?)",
                 inserts,
             )
         if commit:
             self.conn.commit()
-
 
     def get_post_counts(self, post_id: str) -> int | None:
         row = self.conn.execute(
@@ -800,7 +850,7 @@ class SQLitePostStore:
         db_comment_count: int | None,
         reason: str,
         commit: bool = True,
-    ) -> None:
+    ) -> str:
         self.ensure_crawler_queue(commit=False)
         now = now_text()
         existing = self.conn.execute(
@@ -836,6 +886,7 @@ class SQLitePostStore:
                     now,
                 ),
             )
+            action = "inserted"
         else:
             sources = set(filter(None, str(existing["source"]).split(",")))
             sources.add(source)
@@ -844,18 +895,25 @@ class SQLitePostStore:
             status = existing["status"]
             if status == "failed":
                 status = "pending"
+            elif status in {"done", "skipped"}:
+                has_new_evidence = any(
+                    (
+                        reason in {"comment_changed", "admin_selected"},
+                        list_comment_count > safe_int(existing["list_comment_count"]),
+                        bool(list_update_time)
+                        and list_update_time > str(existing["list_update_time"] or ""),
+                    )
+                )
+                if has_new_evidence:
+                    status = "pending"
             new_source = ",".join(sorted(sources))
             new_reason = "|".join(sorted(reasons))
             new_priority = min(safe_int(existing["priority"]), priority)
             new_create_time = (
-                list_create_time
-                if list_create_time
-                else str(existing["list_create_time"] or "")
+                list_create_time if list_create_time else str(existing["list_create_time"] or "")
             )
             new_update_time = (
-                list_update_time
-                if list_update_time
-                else str(existing["list_update_time"] or "")
+                list_update_time if list_update_time else str(existing["list_update_time"] or "")
             )
             unchanged = all(
                 (
@@ -866,17 +924,15 @@ class SQLitePostStore:
                     str(existing["list_create_time"] or "") == new_create_time,
                     str(existing["list_update_time"] or "") == new_update_time,
                     safe_int(existing["list_comment_count"]) == list_comment_count,
-                    (
-                        existing["db_comment_count"] is None
-                        and db_comment_count is None
-                    )
+                    (existing["db_comment_count"] is None and db_comment_count is None)
                     or safe_int(existing["db_comment_count"]) == safe_int(db_comment_count),
                 )
             )
             if unchanged:
                 if commit:
                     self.conn.commit()
-                return
+                return "unchanged"
+            reopened = str(existing["status"] or "") != "pending" and status == "pending"
             self.conn.execute(
                 """
                 update crawler_queue
@@ -900,8 +956,10 @@ class SQLitePostStore:
                     str(post_id),
                 ),
             )
+            action = "reopened" if reopened else "updated"
         if commit:
             self.conn.commit()
+        return action
 
     def next_crawler_queue_items(self, limit: int) -> list[sqlite3.Row]:
         self.ensure_crawler_queue()
@@ -956,5 +1014,7 @@ class SQLitePostStore:
             self.conn.commit()
 
     def latest_post_id(self) -> str | None:
-        row = self.conn.execute("select id from posts order by create_time desc, id desc limit 1").fetchone()
+        row = self.conn.execute(
+            "select id from posts order by create_time desc, id desc limit 1"
+        ).fetchone()
         return row[0] if row else None

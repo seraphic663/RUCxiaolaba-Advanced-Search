@@ -84,20 +84,11 @@ class AdminService:
             return {"ok": False, "error": "posts database not found"}
         with connect_readonly(self.posts_db) as conn:
             tables = {
-                row[0]
-                for row in conn.execute(
-                    "select name from sqlite_master where type='table'"
-                )
+                row[0] for row in conn.execute("select name from sqlite_master where type='table'")
             }
-            post_columns = {
-                row[1] for row in conn.execute("pragma table_info(posts)")
-            }
-            status_sql = (
-                "crawl_status" if "crawl_status" in post_columns else "'full'"
-            )
-            queue_status_sql = (
-                "p.crawl_status" if "crawl_status" in post_columns else "'full'"
-            )
+            post_columns = {row[1] for row in conn.execute("pragma table_info(posts)")}
+            status_sql = "crawl_status" if "crawl_status" in post_columns else "'full'"
+            queue_status_sql = "p.crawl_status" if "crawl_status" in post_columns else "'full'"
             updated_sql = "p.updated_at" if "updated_at" in post_columns else "''"
             posts = dict(
                 conn.execute(
@@ -122,6 +113,7 @@ class AdminService:
             queue_pending_age = {}
             queue_pending_crawl_status = []
             list_only_queue_coverage = {}
+            queue_terminal_stale = []
             if "crawler_queue" in tables:
                 queue_status = [
                     dict(row)
@@ -162,10 +154,20 @@ class AdminService:
                         f"where ({status_sql})='list_only'"
                     ).fetchone()
                 )
+                queue_terminal_stale = [
+                    dict(row)
+                    for row in conn.execute(
+                        f"select q.status,count(*) n,"
+                        "sum(q.list_comment_count-p.comment_count) comment_delta "
+                        "from crawler_queue q join posts p on p.id=q.post_id "
+                        "where q.status!='pending' "
+                        f"and ({queue_status_sql})='full' "
+                        "and q.list_comment_count>p.comment_count "
+                        "group by q.status order by n desc"
+                    )
+                ]
             queue_join = (
-                "left join crawler_queue q on q.post_id=p.id"
-                if "crawler_queue" in tables
-                else ""
+                "left join crawler_queue q on q.post_id=p.id" if "crawler_queue" in tables else ""
             )
             queue_columns = (
                 "q.status queue_status,q.priority,q.reason"
@@ -194,6 +196,7 @@ class AdminService:
                 ]
         quota = self._read_runtime_json(".crawler_quota.json")
         pause = self._read_runtime_json(".crawler_pause.json")
+        scheduler_heartbeat = self._read_runtime_json(".crawler_scheduler_heartbeat.json")
         return {
             "ok": True,
             "posts": posts,
@@ -203,10 +206,12 @@ class AdminService:
             "queue_pending_age": queue_pending_age,
             "queue_pending_crawl_status": queue_pending_crawl_status,
             "list_only_queue_coverage": list_only_queue_coverage,
+            "queue_terminal_stale": queue_terminal_stale,
             "recent_posts": recent_posts,
             "crawl_state": crawl_state,
             "quota": quota,
             "pause": pause,
+            "scheduler_heartbeat": scheduler_heartbeat,
             "database_bytes": self.posts_db.stat().st_size,
         }
 
@@ -233,13 +238,13 @@ class AdminService:
                     f'<span class="post-id">#{html.escape(post["id"])}</span> '
                     f'<span class="post-time">{html.escape((post["create_time"] or "")[:19])}</span> '
                     f'<span style="color:#666;font-size:0.8em;">L{post["star_count"]} C{post["comment_count"]}</span>'
-                    '</div>'
+                    "</div>"
                     f'<div class="post-content">{html.escape((post["content"] or "")[:300])}</div>'
-                    '</div>'
+                    "</div>"
                 )
             escaped_id = html.escape(user_id, quote=True)
             data_text = html.escape(
-                f'{user_id} {user["user_name"] or ""} {categories}',
+                f"{user_id} {user['user_name'] or ''} {categories}",
                 quote=True,
             )
             rows.append(
@@ -251,8 +256,10 @@ class AdminService:
                 f'<span class="cats">{html.escape(categories)}</span></div>'
                 f'<span class="count">{user["post_count"]} post(s)</span></div>'
                 f'<div class="user-detail" id="detail-{escaped_id}">'
-                f'{"".join(details)}</div></div>'
+                f"{''.join(details)}</div></div>"
             )
-        return "\n".join(rows) if rows else (
-            '<div class="no-data">No data with show_user_id found.</div>'
+        return (
+            "\n".join(rows)
+            if rows
+            else ('<div class="no-data">No data with show_user_id found.</div>')
         )

@@ -7,11 +7,14 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from crawler.automatic_quota import AUTOMATIC_QUOTA_KIND_ENV
 from crawler.manual_quota import exclusive_control_lock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +36,12 @@ QUOTA_HISTORY_PATH = Path(
     os.environ.get(
         "CRAWLER_QUOTA_HISTORY_FILE",
         str(Path(DB_PATH).with_name(".crawler_quota_history.jsonl")),
+    )
+)
+HEARTBEAT_PATH = Path(
+    os.environ.get(
+        "CRAWLER_SCHEDULER_HEARTBEAT_FILE",
+        str(Path(DB_PATH).with_name(".crawler_scheduler_heartbeat.json")),
     )
 )
 
@@ -77,9 +86,7 @@ TRICKLE_MAX_DELAY = max(
 )
 DISCOVER_LATEST_PAGES = env_int("CRAWLER_DISCOVER_LATEST_PAGES", 60)
 DISCOVER_ACTIVE_PAGES = env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", 80)
-GAP_ENABLED = (
-    os.environ.get("CRAWLER_GAP_ENABLED", "1" if TRICKLE_ENABLED else "0") == "1"
-)
+GAP_ENABLED = os.environ.get("CRAWLER_GAP_ENABLED", "1" if TRICKLE_ENABLED else "0") == "1"
 GAP_SINCE = os.environ.get("CRAWLER_GAP_SINCE", TRICKLE_SINCE)
 GAP_PLAN_INTERVAL = env_int("CRAWLER_GAP_PLAN_INTERVAL", 6 * 60 * 60)
 GAP_PROBE_INTERVAL = env_int("CRAWLER_GAP_PROBE_INTERVAL", 2 * 60 * 60)
@@ -99,17 +106,13 @@ DAILY_ACTIVE_LIST_BUDGET = env_int(
 )
 DAILY_DETAIL_BUDGET = env_int("CRAWLER_DAILY_DETAIL_BUDGET", 450)
 DAILY_PROBE_BUDGET = env_nonnegative_int("CRAWLER_DAILY_PROBE_BUDGET", 0)
-DAILY_ADMIN_PREVIEW_BUDGET = env_nonnegative_int(
-    "CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET", 20
-)
-DAILY_ADMIN_DETAIL_BUDGET = env_nonnegative_int(
-    "CRAWLER_DAILY_ADMIN_DETAIL_BUDGET", 10
-)
+DAILY_ADMIN_PREVIEW_BUDGET = env_nonnegative_int("CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET", 20)
+DAILY_ADMIN_DETAIL_BUDGET = env_nonnegative_int("CRAWLER_DAILY_ADMIN_DETAIL_BUDGET", 10)
 QUOTA_FIRST_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_FIRST_RELEASE_HOUR", 11)
-QUOTA_SECOND_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_SECOND_RELEASE_HOUR", 23)
+QUOTA_SECOND_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_SECOND_RELEASE_HOUR", 22)
 QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
     "CRAWLER_QUOTA_RELEASE_STEPS",
-    "11=0.20,14=0.35,17=0.50,20=0.70,23=1.00",
+    "11=0.20,14=0.35,17=0.50,20=0.70,21=0.85,22=1.00",
 )
 QUOTA_ADAPTIVE_ENABLED = os.environ.get("CRAWLER_QUOTA_ADAPTIVE_ENABLED", "1") == "1"
 QUOTA_ADAPTIVE_SAFETY = min(
@@ -119,41 +122,88 @@ QUOTA_ADAPTIVE_SAFETY = min(
 QUOTA_ADAPTIVE_LOOKBACK_DAYS = env_int("CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14)
 RESET_GRACE_MINUTES = env_int("CRAWLER_RESET_GRACE_MINUTES", 5)
 PAUSE_LOG_INTERVAL = env_int("CRAWLER_PAUSE_LOG_INTERVAL", 10 * 60)
+HEARTBEAT_INTERVAL = env_int("CRAWLER_SCHEDULER_HEARTBEAT_INTERVAL", 30)
 
 
 JOBS = {
     "new": [
-        "sync-latest", "--pages", "100", "--min-pages", "20",
-        "--stop-unchanged", "220", "--max-details", "0",
+        "sync-latest",
+        "--pages",
+        "100",
+        "--min-pages",
+        "20",
+        "--stop-unchanged",
+        "220",
+        "--max-details",
+        "0",
     ],
     "refresh": [
-        "sync-active", "--pages", "100", "--min-pages", "20",
-        "--stop-unchanged", "220", "--max-details", "0",
+        "sync-active",
+        "--pages",
+        "100",
+        "--min-pages",
+        "20",
+        "--stop-unchanged",
+        "220",
+        "--max-details",
+        "0",
     ],
     "backfill": [
-        "scan-history", "--endpoint", "lists2", "--start-page", "2",
-        "--pages", "99", "--min-pages", "99",
-        "--stop-unchanged", "100000", "--max-details", "0",
+        "scan-history",
+        "--endpoint",
+        "lists2",
+        "--start-page",
+        "2",
+        "--pages",
+        "99",
+        "--min-pages",
+        "99",
+        "--stop-unchanged",
+        "100000",
+        "--max-details",
+        "0",
     ],
 }
 
 TRICKLE_JOBS = {
     "discover_new": [
-        "discover-latest", "--since", TRICKLE_SINCE,
-        "--max-pages", str(DISCOVER_LATEST_PAGES),
-        "--min-pages", "5", "--no-action-page-threshold", "5",
-        "--min-delay", "0.1", "--max-delay", "0.3",
+        "discover-latest",
+        "--since",
+        TRICKLE_SINCE,
+        "--max-pages",
+        str(DISCOVER_LATEST_PAGES),
+        "--min-pages",
+        "5",
+        "--no-action-page-threshold",
+        "5",
+        "--min-delay",
+        "0.1",
+        "--max-delay",
+        "0.3",
     ],
     "discover_active": [
-        "discover-active", "--since", TRICKLE_SINCE,
-        "--max-pages", str(DISCOVER_ACTIVE_PAGES),
-        "--min-pages", "5", "--no-action-page-threshold", "3",
-        "--min-delay", "0.1", "--max-delay", "0.3",
+        "discover-active",
+        "--since",
+        TRICKLE_SINCE,
+        "--max-pages",
+        str(DISCOVER_ACTIVE_PAGES),
+        "--min-pages",
+        "5",
+        "--no-action-page-threshold",
+        "3",
+        "--min-delay",
+        "0.1",
+        "--max-delay",
+        "0.3",
     ],
     "trickle_fill": [
-        "trickle-fill", "--limit", str(TRICKLE_LIMIT),
-        "--min-delay", str(TRICKLE_MIN_DELAY),
-        "--max-delay", str(TRICKLE_MAX_DELAY),
+        "trickle-fill",
+        "--limit",
+        str(TRICKLE_LIMIT),
+        "--min-delay",
+        str(TRICKLE_MIN_DELAY),
+        "--max-delay",
+        str(TRICKLE_MAX_DELAY),
     ],
 }
 
@@ -161,15 +211,24 @@ if GAP_ENABLED:
     TRICKLE_JOBS.update(
         {
             "plan_gaps": [
-                "plan-gaps", "--since", GAP_SINCE,
-                "--chunk-size", str(GAP_CHUNK_SIZE),
-                "--density-threshold", str(GAP_DENSITY_THRESHOLD),
+                "plan-gaps",
+                "--since",
+                GAP_SINCE,
+                "--chunk-size",
+                str(GAP_CHUNK_SIZE),
+                "--density-threshold",
+                str(GAP_DENSITY_THRESHOLD),
             ],
             "probe_gaps": [
                 "probe-gaps",
-                "--range-limit", str(GAP_RANGE_LIMIT),
-                "--samples-per-range", str(GAP_SAMPLES),
-                "--min-delay", "8", "--max-delay", "15",
+                "--range-limit",
+                str(GAP_RANGE_LIMIT),
+                "--samples-per-range",
+                str(GAP_SAMPLES),
+                "--min-delay",
+                "8",
+                "--max-delay",
+                "15",
             ],
         }
     )
@@ -180,6 +239,15 @@ class JobResult:
     succeeded: bool
     error_kind: str = ""
     stderr: str = ""
+
+
+OVERDUE_JOB_PRIORITY = {
+    "trickle_fill": 0,
+    "discover_active": 1,
+    "discover_new": 2,
+    "plan_gaps": 3,
+    "probe_gaps": 4,
+}
 
 
 def now_wall() -> float:
@@ -297,10 +365,7 @@ def quota_source_calls(quota: dict) -> int:
 
 def configured_source_budget() -> int:
     return (
-        DAILY_NEW_LIST_BUDGET
-        + DAILY_ACTIVE_LIST_BUDGET
-        + DAILY_DETAIL_BUDGET
-        + DAILY_PROBE_BUDGET
+        DAILY_NEW_LIST_BUDGET + DAILY_ACTIVE_LIST_BUDGET + DAILY_DETAIL_BUDGET + DAILY_PROBE_BUDGET
     )
 
 
@@ -432,8 +497,7 @@ def save_pause_until(
         encoding="utf-8",
     )
     print(
-        "[scheduler] pause crawler "
-        f"reason={reason} job={job} until={pause['until_text']}",
+        f"[scheduler] pause crawler reason={reason} job={job} until={pause['until_text']}",
         flush=True,
     )
     return pause
@@ -466,8 +530,7 @@ def normalize_pause(pause: dict) -> dict:
         encoding="utf-8",
     )
     print(
-        "[scheduler] extend rate-limit pause "
-        f"until={pause['until_text']}",
+        f"[scheduler] extend rate-limit pause until={pause['until_text']}",
         flush=True,
     )
     return pause
@@ -527,9 +590,7 @@ def save_quota(quota: dict) -> None:
     quota["release_fraction"] = quota_release_fraction()
     quota["configured_source_budget"] = configured_source_budget()
     quota["configured_admin_budget"] = configured_admin_budget()
-    quota["configured_total_budget"] = (
-        configured_source_budget() + configured_admin_budget()
-    )
+    quota["configured_total_budget"] = configured_source_budget() + configured_admin_budget()
     quota["adaptive_source_budget"] = adaptive_source_budget()
     quota["adaptive_scale"] = adaptive_scale()
     quota["release_steps"] = [
@@ -539,10 +600,78 @@ def save_quota(quota: dict) -> None:
         }
         for minute, fraction in quota_release_steps()
     ]
-    QUOTA_PATH.write_text(
+    QUOTA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = QUOTA_PATH.with_name(f"{QUOTA_PATH.name}.{os.getpid()}.tmp")
+    temporary.write_text(
         json.dumps(quota, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    temporary.replace(QUOTA_PATH)
+
+
+def save_heartbeat(*, state: str, job: str = "", detail: str = "") -> None:
+    """Publish scheduler liveness without letting telemetry stop the crawler."""
+    payload = {
+        "date": quota_date(),
+        "updated_at": beijing_now().isoformat(),
+        "state": state,
+        "job": job,
+        "detail": str(detail)[-500:],
+        "pid": os.getpid(),
+    }
+    try:
+        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = HEARTBEAT_PATH.with_name(f"{HEARTBEAT_PATH.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(HEARTBEAT_PATH)
+    except Exception as exc:
+        print(f"[scheduler] heartbeat write failed: {exc}", flush=True)
+
+
+@contextmanager
+def running_heartbeat(job: str):
+    """Keep liveness fresh while a long crawler subprocess is running."""
+    stopped = threading.Event()
+
+    def refresh() -> None:
+        while not stopped.wait(HEARTBEAT_INTERVAL):
+            save_heartbeat(state="running", job=job)
+
+    worker = threading.Thread(
+        target=refresh,
+        daemon=True,
+        name=f"scheduler-heartbeat-{job}",
+    )
+    save_heartbeat(state="running", job=job)
+    worker.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        worker.join(timeout=max(1.0, HEARTBEAT_INTERVAL + 1.0))
+
+
+def select_next_job(next_run: dict[str, float], now: float) -> str:
+    """Prefer valuable overdue work; otherwise return the earliest future job."""
+    overdue = [name for name, due_at in next_run.items() if due_at <= now]
+    if overdue:
+        return min(
+            overdue,
+            key=lambda name: (
+                OVERDUE_JOB_PRIORITY.get(name, 100),
+                next_run[name],
+                name,
+            ),
+        )
+    return min(next_run, key=lambda name: (next_run[name], name))
+
+
+def next_job_run(started_at: float, finished_at: float, interval: float) -> float:
+    """Keep start-to-start cadence without replaying missed runs in a burst."""
+    return max(started_at + interval, finished_at + 1.0)
 
 
 def replace_arg(args: list[str], flag: str, value: int) -> list[str]:
@@ -571,7 +700,7 @@ def job_budget_kind(name: str) -> str:
 
 def planned_job_calls(name: str, args: list[str]) -> int:
     if name in {"discover_new", "discover_active"}:
-        return int(args[args.index("--max-pages") + 1]) + 1
+        return int(args[args.index("--max-pages") + 1])
     if name == "plan_gaps":
         # plan-gaps asks the source for the current latest id when --end-id is
         # omitted. Count it so gap planning cannot silently consume list quota.
@@ -627,12 +756,9 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
                 return None, f"quota_window_locked_until={next_quota_release().isoformat()}"
             return None, f"{kind}_budget_exhausted"
         if name in {"discover_new", "discover_active"}:
-            if remaining < 2:
-                return None, "list_budget_exhausted"
-            # Reserve one extra list call for the repeat/empty stop page.
             max_pages = max(
                 1,
-                min(int(args[args.index("--max-pages") + 1]), remaining - 1),
+                min(int(args[args.index("--max-pages") + 1]), remaining),
             )
             args = replace_arg(args, "--max-pages", max_pages)
         elif name == "trickle_fill":
@@ -651,9 +777,7 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
             args = replace_arg(args, "--range-limit", 1)
             args = replace_arg(args, "--samples-per-range", samples)
         planned = planned_job_calls(name, args)
-        quota[quota_key(kind)] = int(quota.get(quota_key(kind), 0)) + planned
-        save_quota(quota)
-        return args, f"{kind}_calls_reserved={planned}"
+        return args, f"{kind}_calls_available={remaining} planned_max={planned}"
 
 
 def job_args(name: str) -> list[str]:
@@ -662,9 +786,15 @@ def job_args(name: str) -> list[str]:
     if name == "phase1":
         from_date = (datetime.now(CHINA_TZ).date() - timedelta(days=7)).isoformat()
         return [
-            "scan-id-range", "--from-date", from_date,
-            "--workers", "10", "--chunk-size", "500",
-            "--lock-timeout", "21600",
+            "scan-id-range",
+            "--from-date",
+            from_date,
+            "--workers",
+            "10",
+            "--chunk-size",
+            "500",
+            "--lock-timeout",
+            "21600",
         ]
     return JOBS[name]
 
@@ -680,13 +810,26 @@ def run_job(name: str) -> JobResult:
         sys.executable,
         str(ROOT / "crawler_db.py"),
         *args,
-        "--db-path", DB_PATH,
-        "--config", CONFIG_PATH,
+        "--db-path",
+        DB_PATH,
+        "--config",
+        CONFIG_PATH,
     ]
+    child_env = os.environ.copy()
+    child_env["SQLITE_DB"] = DB_PATH
+    child_env["CRAWLER_QUOTA_FILE"] = str(QUOTA_PATH)
+    child_env["CRAWLER_QUOTA_HISTORY_FILE"] = str(QUOTA_HISTORY_PATH)
+    child_env["CRAWLER_PAUSE_FILE"] = str(PAUSE_PATH)
+    kind = job_budget_kind(name)
+    if kind:
+        child_env[AUTOMATIC_QUOTA_KIND_ENV] = kind
+    else:
+        child_env.pop(AUTOMATIC_QUOTA_KIND_ENV, None)
     print(f"[scheduler] start {name}", flush=True)
     result = subprocess.run(
         command,
         cwd=ROOT,
+        env=child_env,
         check=False,
         text=True,
         stderr=subprocess.PIPE,
@@ -718,9 +861,9 @@ def main() -> int:
     now = time.monotonic()
     if TRICKLE_ENABLED:
         next_run = {
-            "discover_new": now + 60,
+            "trickle_fill": now + 60,
             "discover_active": now + 3 * 60,
-            "trickle_fill": now + 5 * 60,
+            "discover_new": now + 5 * 60,
         }
         intervals = {
             "discover_new": DISCOVER_INTERVAL,
@@ -770,9 +913,11 @@ def main() -> int:
         )
 
     last_pause_log: dict[str, float] = {}
+    last_heartbeat = 0.0
+    save_heartbeat(state="started")
     while True:
         now = time.monotonic()
-        due = min(next_run, key=next_run.get)
+        due = select_next_job(next_run, now)
         pause = active_pause()
         if pause:
             until_monotonic = now + max(1.0, float(pause["until"]) - now_wall())
@@ -785,44 +930,72 @@ def main() -> int:
                     flush=True,
                 )
                 last_pause_log[due] = now
+            if now - last_heartbeat >= 60:
+                save_heartbeat(
+                    state="paused",
+                    job=due,
+                    detail=str(pause.get("reason") or ""),
+                )
+                last_heartbeat = now
             for name in next_run:
                 next_run[name] = max(next_run[name], until_monotonic)
             time.sleep(min(max(1.0, until_monotonic - now), 30))
             continue
         wait = next_run[due] - now
         if wait > 0:
+            if now - last_heartbeat >= 60:
+                save_heartbeat(state="idle", job=due)
+                last_heartbeat = now
             time.sleep(min(wait, 30))
             continue
-        result = run_job(due)
-        if result.error_kind == "rate_limited":
-            quota = load_quota()
-            quota["rate_limited"] = int(quota.get("rate_limited", 0)) + 1
-            quota["last_rate_limited_at"] = beijing_now().isoformat()
-            quota["last_rate_limited_job"] = due
-            quota["last_rate_limited_source_calls"] = quota_source_calls(quota)
-            save_quota(quota)
-            append_quota_history(quota, reason="rate_limited", job=due)
-            save_pause_until(
-                reason="rate_limited",
-                job=due,
-                until_dt=next_beijing_reset(),
-                detail=result.stderr,
+        started_at = time.monotonic()
+        last_heartbeat = started_at
+        try:
+            with running_heartbeat(due):
+                result = run_job(due)
+            if result.error_kind == "rate_limited":
+                lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
+                with exclusive_control_lock(lock_path):
+                    quota = load_quota()
+                    quota["rate_limited"] = int(quota.get("rate_limited", 0)) + 1
+                    quota["last_rate_limited_at"] = beijing_now().isoformat()
+                    quota["last_rate_limited_job"] = due
+                    quota["last_rate_limited_source_calls"] = quota_source_calls(quota)
+                    save_quota(quota)
+                    append_quota_history(quota, reason="rate_limited", job=due)
+                save_pause_until(
+                    reason="rate_limited",
+                    job=due,
+                    until_dt=next_beijing_reset(),
+                    detail=result.stderr,
+                )
+            elif result.error_kind == "cookie_expired":
+                save_pause(
+                    reason="cookie_expired",
+                    job=due,
+                    seconds=COOKIE_ERROR_COOLDOWN,
+                    detail=result.stderr,
+                )
+            if due == "phase1" and result.succeeded:
+                PHASE1_MARKER.touch()
+        except Exception as exc:
+            print(
+                f"[scheduler] job error name={due} type={type(exc).__name__} detail={exc}",
+                file=sys.stderr,
+                flush=True,
             )
-        elif result.error_kind == "cookie_expired":
-            save_pause(
-                reason="cookie_expired",
-                job=due,
-                seconds=COOKIE_ERROR_COOLDOWN,
-                detail=result.stderr,
-            )
-        if due == "phase1" and result.succeeded:
-            PHASE1_MARKER.touch()
-        retry_delay = (
-            60 * 60
-            if due == "phase1" and not result.succeeded
-            else intervals[due]
+            save_heartbeat(state="error", job=due, detail=str(exc))
+            next_run[due] = time.monotonic() + 60
+            continue
+        retry_delay = 60 * 60 if due == "phase1" and not result.succeeded else intervals[due]
+        finished_at = time.monotonic()
+        next_run[due] = next_job_run(started_at, finished_at, retry_delay)
+        save_heartbeat(
+            state="idle",
+            job=due,
+            detail="succeeded" if result.succeeded else "failed",
         )
-        next_run[due] = time.monotonic() + retry_delay
+        last_heartbeat = finished_at
 
 
 if __name__ == "__main__":

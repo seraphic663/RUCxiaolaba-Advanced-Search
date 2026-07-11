@@ -125,13 +125,13 @@ CRAWLER_DAILY_ADMIN_DETAIL_BUDGET=10
 CRAWLER_TRICKLE_LIMIT_CAP=12
 CRAWLER_TRICKLE_MIN_DELAY=8
 CRAWLER_TRICKLE_MAX_DELAY=14
-CRAWLER_QUOTA_RELEASE_STEPS=11=0.20,14=0.35,17=0.50,20=0.70,23=1.00
+CRAWLER_QUOTA_RELEASE_STEPS=11=0.20,14=0.35,17=0.50,20=0.70,21=0.85,22=1.00
 CRAWLER_QUOTA_ADAPTIVE_ENABLED=1
 CRAWLER_QUOTA_ADAPTIVE_SAFETY=0.80
 CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS=14
 ```
 
-自动调度主额度上限为每天 690 次源请求：80 次新帖列表、160 次活跃列表、450 次详情、0 次缺口探测。阶梯累计上限在未触发自适应缩放时约为 11:00 的 138 次、14:00 的 241 次、17:00 的 345 次、20:00 的 483 次、23:00 的 690 次。
+自动调度主额度上限为每天 690 次源请求：80 次新帖列表、160 次活跃列表、450 次详情、0 次缺口探测。阶梯累计上限在未触发自适应缩放时约为 11:00 的 138 次、14:00 的 241 次、17:00 的 345 次、20:00 的 483 次、21:00 的 586 次、22:00 的 690 次。最后 30% 分两小时释放，是为了让串行详情任务在午夜前实际使用额度，同时仍把早间额度留给用户本人。
 
 Admin 使用独立额外额度：每天 20 次候选预览和 10 次人工详情，不扣减 new-list、active-list 或 detail 主计数，也不受主额度阶梯释放约束；因此配置请求上界是 690 次自动主额度加 30 次人工额度，共 720 次。人工调用仍读取同一个全局 pause，发生 `rate_limited` 时会和 scheduler 一起暂停；人工计数也会进入 quota history 的真实 `source_calls`，不能在限流分析中漏算。一次预览最多 3 页，一次任务最多 10 个帖子；详情任务第一个帖子立即请求，后续帖子继续使用 8–14 秒串行间隔。
 
@@ -143,7 +143,11 @@ Admin 使用独立额外额度：每天 20 次候选预览和 10 次人工详情
 
 预览只写主库旁的 `.admin_crawl.db`，10 分钟后失效，不会写入 `posts`。人工任务也保存在该 sidecar，服务重启后会恢复未完成任务。详情成功后在同一写入路径更新 SQLite FTS、Bigram 和可用的 Symbol sidecar；上游声称有评论却返回空评论、正文为空或社区不匹配时拒绝覆盖旧数据。
 
-scheduler 在子任务运行前按 `max-pages` 或 `limit` 预留配额，因此 quota 文件记录的是保守预留上界，不保证等于子任务实际完成的请求数。真实收益仍需结合命令结束日志和 `crawl_state` 中的 `pages`、`queued`、`comment_changed`、`written`、`misses` 判断。
+scheduler 只用剩余额度裁剪子任务的 `max-pages` 或 `limit`，不再整批预扣。scheduler 启动的子进程会在每一次真实 HTTP 请求前原子领取 1 次对应额度，因此 quota 文件记录的是实际发起的源请求；部署中断、提前停止、重复页和空页不会再虚扣整批额度。北京时间跨日后 release 重新归零，仍在运行的旧任务会在下一次请求前正常停止，不能偷吃次日 11:00 前的额度。
+
+多个任务同时过期时按 `trickle-fill`、`discover-active`、`discover-latest` 的价值顺序运行；间隔按开始时间计算，所以“每 10 分钟详情”是接近真实的 start-to-start 节拍，不再变成“任务耗时 + 10 分钟”。列表日志保留 `queued` 作为候选观察数，同时新增 `queue_inserted`、`queue_reopened`、`queue_updated`、`queue_unchanged`；连续无收益页按真实队列变化判断。
+
+已完成队列行在 `lists2` 发现评论数增长后会重新变成 `pending` priority 0。启动时还会修复旧版本遗留的“队列 done、列表评论数大于主库评论数”记录。自动详情与 Admin 现爬共用可疑响应校验：正文为空，或上游声明有评论但评论列表为空时，不覆盖主库已有数据。
 
 默认调度间隔：
 
@@ -172,7 +176,10 @@ CRAWLER_GAP_PROBE_INTERVAL=7200
 /app/data/.crawler_quota_history.jsonl
 /app/data/.crawler_pause.json
 /app/data/.admin_crawl.db
+/app/data/.crawler_scheduler_heartbeat.json
 ```
+
+数据库写锁使用带 token、容器主机名和心跳的 90 秒租约；新旧 Railway 容器重叠时，新容器不会仅因为看不到旧容器 PID 就删除活锁。scheduler 还由 `start.sh` 监督，意外退出后 30 秒重启；管理员状态接口会返回 scheduler heartbeat 和终态队列中仍未补的评论差值。
 
 ## Railway 只读检查
 
@@ -203,7 +210,7 @@ for name in [".crawler_quota.json", ".crawler_quota_history.jsonl", ".crawler_pa
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python -B -m pytest tests/test_cli_contract.py tests/test_crawler_service.py tests/test_crawler_strategies.py -q
+python -B -m pytest tests/test_cli_contract.py tests/test_automatic_quota.py tests/test_crawler_lock.py tests/test_crawler_service.py tests/test_crawler_strategies.py -q
 python -B -c "import jobs.scheduler, crawler.service, crawler.cli; print('import ok')"
 git diff --check
 ```
