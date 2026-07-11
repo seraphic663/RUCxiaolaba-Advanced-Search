@@ -15,7 +15,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from crawler.automatic_quota import AUTOMATIC_QUOTA_KIND_ENV
+from crawler.lock import database_write_lock
 from crawler.manual_quota import exclusive_control_lock
+from storage.post_writer import SQLitePostStore
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = os.environ.get("SQLITE_DB", "/app/data/posts.db")
@@ -631,6 +633,17 @@ def save_heartbeat(*, state: str, job: str = "", detail: str = "") -> None:
         print(f"[scheduler] heartbeat write failed: {exc}", flush=True)
 
 
+def refresh_runtime_state() -> None:
+    """Refresh quota metadata and repair local queue invariants without source I/O."""
+    quota_lock = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
+    with exclusive_control_lock(quota_lock):
+        quota = load_quota()
+        save_quota(quota)
+    with database_write_lock(DB_PATH):
+        with SQLitePostStore(DB_PATH) as store:
+            store.ensure_runtime_schema()
+
+
 @contextmanager
 def running_heartbeat(job: str):
     """Keep liveness fresh while a long crawler subprocess is running."""
@@ -857,6 +870,15 @@ def main() -> int:
         raise FileNotFoundError(DB_PATH)
     if not Path(CONFIG_PATH).exists():
         raise FileNotFoundError(CONFIG_PATH)
+
+    try:
+        refresh_runtime_state()
+    except Exception as exc:
+        print(
+            f"[scheduler] runtime-state refresh failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     now = time.monotonic()
     if TRICKLE_ENABLED:
