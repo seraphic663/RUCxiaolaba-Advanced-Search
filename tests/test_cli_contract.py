@@ -11,6 +11,7 @@ from jobs.scheduler import (
     parse_release_steps,
     planned_job_calls,
     quota_release_fraction,
+    quota_source_calls,
     remaining_budget,
 )
 
@@ -116,13 +117,13 @@ class CLIContractTest(unittest.TestCase):
             14,
         )
 
-    def test_scheduler_reserves_released_detail_slots_for_admin(self):
+    def test_scheduler_main_detail_budget_is_independent_from_admin(self):
         with (
             patch("jobs.scheduler.quota_release_fraction", return_value=1.0),
             patch("jobs.scheduler.daily_budget", return_value=450),
             patch("jobs.scheduler.DAILY_ADMIN_DETAIL_BUDGET", 10),
         ):
-            self.assertEqual(remaining_budget("detail", {"detail_calls": 0}), 440)
+            self.assertEqual(remaining_budget("detail", {"detail_calls": 0}), 450)
             self.assertEqual(
                 remaining_budget(
                     "detail",
@@ -130,6 +131,19 @@ class CLIContractTest(unittest.TestCase):
                 ),
                 440,
             )
+        self.assertEqual(
+            quota_source_calls(
+                {
+                    "new_list_calls": 1,
+                    "active_list_calls": 2,
+                    "detail_calls": 3,
+                    "probe_calls": 4,
+                    "admin_preview_calls": 5,
+                    "admin_detail_calls": 6,
+                }
+            ),
+            21,
+        )
 
 
 if __name__ == "__main__":

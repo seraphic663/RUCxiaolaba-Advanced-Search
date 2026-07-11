@@ -95,3 +95,10 @@ def status(handler):
         _error(handler, exc.http_status, exc.code, str(exc))
         return
     handler.serve_json({"ok": True, "job": result})
+
+
+def overview(handler):
+    if not handler.is_admin():
+        _error(handler, 401, "admin_required", "管理员登录已失效，请重新登录")
+        return
+    handler.serve_json(handler.context.admin.crawler_status())
