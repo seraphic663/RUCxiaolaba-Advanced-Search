@@ -7,10 +7,11 @@
 | 文件 | 职责 |
 |---|---|
 | `client.py` | session cookie、上游请求和错误语义映射 |
-| `normalizer.py` | 把源 API 响应标准化为帖子和评论结构 |
+| `automatic_quota.py` | scheduler 子进程每次真实源请求前的原子额度领取 |
+| `normalizer.py` | 把源 API 响应标准化，并拒绝会破坏本地完整数据的异常详情 |
 | `service.py` | discover、trickle-fill、gap plan/probe 与兼容扫描流程 |
 | `strategies/page_scan.py` | 页扫描的最小页数和连续无收益停止状态 |
-| `lock.py` | SQLite 跨进程写锁 |
+| `lock.py` | 带 token 和心跳租约的 SQLite 跨进程、跨容器写锁 |
 | `config.py` | cookie 配置读取 |
 | `cli.py` | 当前命令和兼容别名 |
 
@@ -19,7 +20,7 @@
 ```text
 crawler.cli / jobs.scheduler
   -> crawler.service
-  -> crawler.client + crawler.normalizer
+  -> crawler.client + crawler.automatic_quota + crawler.normalizer
   -> storage.post_writer
 ```
 
@@ -35,5 +36,5 @@ CLI 契约可用以下命令核对：
 python crawler_db.py --help
 python crawler_db.py discover-latest --help
 python crawler_db.py trickle-fill --help
-python -B -m pytest tests/test_cli_contract.py tests/test_crawler_service.py tests/test_crawler_strategies.py -q
+python -B -m pytest tests/test_cli_contract.py tests/test_automatic_quota.py tests/test_crawler_lock.py tests/test_crawler_service.py tests/test_crawler_strategies.py -q
 ```
