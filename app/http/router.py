@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.http.routes import admin, public
+from app.http.routes import admin, admin_crawl, public
 
 GET_ROUTES = {
     "/": public.main_page,
@@ -11,10 +11,13 @@ GET_ROUTES = {
     "/api/categories": public.categories,
     "/healthz": public.health,
     "/admin": admin.get,
+    "/api/admin/live-crawl": admin_crawl.status,
 }
 
 POST_ROUTES = {
     "/admin": admin.post,
+    "/api/admin/upstream-preview": admin_crawl.preview,
+    "/api/admin/live-crawl": admin_crawl.create,
 }
 
 

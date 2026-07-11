@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from crawler.manual_quota import exclusive_control_lock
+
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = os.environ.get("SQLITE_DB", "/app/data/posts.db")
 CONFIG_PATH = os.environ.get("CRAWLER_CONFIG", "/app/data/config.txt")
@@ -97,6 +99,9 @@ DAILY_ACTIVE_LIST_BUDGET = env_int(
 )
 DAILY_DETAIL_BUDGET = env_int("CRAWLER_DAILY_DETAIL_BUDGET", 450)
 DAILY_PROBE_BUDGET = env_nonnegative_int("CRAWLER_DAILY_PROBE_BUDGET", 0)
+DAILY_ADMIN_DETAIL_BUDGET = env_nonnegative_int(
+    "CRAWLER_DAILY_ADMIN_DETAIL_BUDGET", 10
+)
 QUOTA_FIRST_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_FIRST_RELEASE_HOUR", 11)
 QUOTA_SECOND_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_SECOND_RELEASE_HOUR", 23)
 QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
@@ -571,7 +576,13 @@ def remaining_budget(kind: str, quota: dict) -> int:
         return max(0, allowed - int(quota.get("active_list_calls", 0)))
     if kind == "detail":
         allowed = int(daily_budget(kind) * fraction)
-        return max(0, allowed - int(quota.get("detail_calls", 0)))
+        manual_allowed = int(DAILY_ADMIN_DETAIL_BUDGET * fraction)
+        manual_used = int(quota.get("admin_detail_calls", 0) or 0)
+        manual_reserve = max(0, manual_allowed - manual_used)
+        return max(
+            0,
+            allowed - int(quota.get("detail_calls", 0)) - manual_reserve,
+        )
     if kind == "probe":
         allowed = int(daily_budget(kind) * fraction)
         return max(0, allowed - int(quota.get("probe_calls", 0)))
@@ -588,41 +599,46 @@ def quota_key(kind: str) -> str:
 
 
 def prepare_job(name: str) -> tuple[list[str] | None, str]:
-    args = job_args(name)
-    kind = job_budget_kind(name)
-    if not kind:
-        return args, ""
-    quota = load_quota()
-    remaining = remaining_budget(kind, quota)
-    if remaining <= 0:
-        if quota_release_fraction() <= 0:
-            return None, f"quota_window_locked_until={next_quota_release().isoformat()}"
-        return None, f"{kind}_budget_exhausted"
-    if name in {"discover_new", "discover_active"}:
-        if remaining < 2:
-            return None, "list_budget_exhausted"
-        # Reserve one extra list call for the repeat/empty stop page.
-        max_pages = max(1, min(int(args[args.index("--max-pages") + 1]), remaining - 1))
-        args = replace_arg(args, "--max-pages", max_pages)
-    elif name == "trickle_fill":
-        args = replace_arg(
-            args,
-            "--limit",
-            max(1, min(int(args[args.index("--limit") + 1]), remaining)),
-        )
-    elif name == "probe_gaps":
-        if DAILY_PROBE_BUDGET <= 0:
-            return None, "probe_budget_disabled"
-        samples = max(
-            1,
-            min(int(args[args.index("--samples-per-range") + 1]), remaining),
-        )
-        args = replace_arg(args, "--range-limit", 1)
-        args = replace_arg(args, "--samples-per-range", samples)
-    planned = planned_job_calls(name, args)
-    quota[quota_key(kind)] = int(quota.get(quota_key(kind), 0)) + planned
-    save_quota(quota)
-    return args, f"{kind}_calls_reserved={planned}"
+    lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
+    with exclusive_control_lock(lock_path):
+        args = job_args(name)
+        kind = job_budget_kind(name)
+        if not kind:
+            return args, ""
+        quota = load_quota()
+        remaining = remaining_budget(kind, quota)
+        if remaining <= 0:
+            if quota_release_fraction() <= 0:
+                return None, f"quota_window_locked_until={next_quota_release().isoformat()}"
+            return None, f"{kind}_budget_exhausted"
+        if name in {"discover_new", "discover_active"}:
+            if remaining < 2:
+                return None, "list_budget_exhausted"
+            # Reserve one extra list call for the repeat/empty stop page.
+            max_pages = max(
+                1,
+                min(int(args[args.index("--max-pages") + 1]), remaining - 1),
+            )
+            args = replace_arg(args, "--max-pages", max_pages)
+        elif name == "trickle_fill":
+            args = replace_arg(
+                args,
+                "--limit",
+                max(1, min(int(args[args.index("--limit") + 1]), remaining)),
+            )
+        elif name == "probe_gaps":
+            if DAILY_PROBE_BUDGET <= 0:
+                return None, "probe_budget_disabled"
+            samples = max(
+                1,
+                min(int(args[args.index("--samples-per-range") + 1]), remaining),
+            )
+            args = replace_arg(args, "--range-limit", 1)
+            args = replace_arg(args, "--samples-per-range", samples)
+        planned = planned_job_calls(name, args)
+        quota[quota_key(kind)] = int(quota.get(quota_key(kind), 0)) + planned
+        save_quota(quota)
+        return args, f"{kind}_calls_reserved={planned}"
 
 
 def job_args(name: str) -> list[str]:

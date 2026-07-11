@@ -86,6 +86,12 @@ class MiniProgramClient:
             {"community_id": COMMUNITY_ID, "id": str(post_id)},
         )
 
+    def search(self, keyword: str, page: int):
+        return self.get(
+            "/article/article/search",
+            {"community_id": COMMUNITY_ID, "keyword": keyword, "page": page},
+        )
+
     def latest_id(self) -> int:
         data, error = self.list_page("lists", 1)
         if error:

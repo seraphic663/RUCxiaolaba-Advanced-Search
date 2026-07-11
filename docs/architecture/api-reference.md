@@ -29,6 +29,18 @@ Bigram/trigram 等快速查询仍返回 `pagination_mode=numbered`。单字 LIKE
 
 候选总数是在分类、日期、匿名/实名等非文本条件过滤后统计的。游标模式先按时间、点赞、评论或综合排序，再扫描关键词，因此返回页面顺序与完整查询一致。
 
+### Admin 上游预览与人工现爬
+
+以下接口仅接受有效管理员会话。两个 POST 接口还要求一次性 `X-CSRF-Token`，令牌由后台页面及每次 POST 响应返回。
+
+| 接口 | 方法 | 用途 |
+|---|---|---|
+| `/api/admin/upstream-preview` | POST | 从 `search`、`lists` 或 `lists2` 获取最多 3 页候选，只保存 10 分钟预览，不写帖子库 |
+| `/api/admin/live-crawl` | POST | 对本次预览中勾选的最多 10 个帖子执行 `smart`、`force` 或 `queue` |
+| `/api/admin/live-crawl?id=任务号` | GET | 查询逐帖状态；不会向 public 页面暴露 |
+
+`smart` 和 `force` 创建任务后立即由单线程 worker 串行拉取并逐帖保存；`queue` 只写最高优先级候选，不调用详情 API。候选 ID 必须属于未过期的服务端预览，客户端不能提交任意批量 ID。
+
 ## 认证
 
 ```
