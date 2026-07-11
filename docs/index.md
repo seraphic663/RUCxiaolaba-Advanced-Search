@@ -14,6 +14,7 @@
 | 文件 | 回答什么问题 |
 |------|-------------|
 | [crawler](operations/crawler.md) | 当前唯一爬虫运维事实源：命令、请求成本、队列、停止条件、配额和暂停 |
+| [2026-07-11 爬取现状报告](operations/crawler-status-2026-07-11.md) | 当前线上覆盖、积压、配额效率、20:21 缺评论现象和证据边界的时间点快照 |
 | [railway](operations/railway.md) | 部署、Volume、环境变量、健康检查 |
 
 ## features/ — 功能模块
