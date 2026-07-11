@@ -7,6 +7,7 @@ from pathlib import Path
 import requests
 import urllib3
 
+from crawler.automatic_quota import AutomaticQuota, AutomaticQuotaError
 from crawler.config import BASE_URL, COMMUNITY_ID, HEADERS
 
 urllib3.disable_warnings()
@@ -46,12 +47,20 @@ class MiniProgramClient:
         self.session.headers.update(HEADERS)
         self.session.cookies.set("ys7_ysxy_session", cookie)
         self.session.verify = False
+        self.automatic_quota = AutomaticQuota.from_environment()
+        self.request_count = 0
 
     def get(
         self,
         path: str,
         params: dict | None = None,
     ) -> tuple[dict | None, str | None]:
+        if self.automatic_quota is not None:
+            try:
+                self.automatic_quota.claim(1)
+            except AutomaticQuotaError as exc:
+                return None, exc.code
+        self.request_count += 1
         try:
             response = self.session.get(
                 f"{BASE_URL}{path}",

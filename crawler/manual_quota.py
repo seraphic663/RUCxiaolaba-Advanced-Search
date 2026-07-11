@@ -23,9 +23,7 @@ def exclusive_control_lock(path: str | Path, timeout: float = 10.0):
     descriptor = None
     while True:
         try:
-            descriptor = os.open(
-                str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY
-            )
+            descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.write(descriptor, str(os.getpid()).encode("ascii"))
             break
         except FileExistsError:
@@ -64,15 +62,9 @@ class ManualQuota:
                 str(db_path.with_name(".crawler_pause.json")),
             )
         )
-        self.lock_path = self.quota_path.with_name(
-            self.quota_path.name + ".lock"
-        )
-        self.preview_cap = max(
-            0, int(os.environ.get("CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET", "20"))
-        )
-        self.detail_cap = max(
-            0, int(os.environ.get("CRAWLER_DAILY_ADMIN_DETAIL_BUDGET", "10"))
-        )
+        self.lock_path = self.quota_path.with_name(self.quota_path.name + ".lock")
+        self.preview_cap = max(0, int(os.environ.get("CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET", "20")))
+        self.detail_cap = max(0, int(os.environ.get("CRAWLER_DAILY_ADMIN_DETAIL_BUDGET", "10")))
 
     @staticmethod
     def _scheduler():
@@ -94,6 +86,8 @@ class ManualQuota:
             quota = {}
         today = scheduler.quota_date()
         if quota.get("date") != today:
+            if quota.get("date") and hasattr(scheduler, "append_quota_history"):
+                scheduler.append_quota_history(quota, reason="day_rollover")
             quota = {
                 "date": today,
                 "new_list_calls": 0,
@@ -116,9 +110,7 @@ class ManualQuota:
         quota["adaptive_source_budget"] = scheduler.adaptive_source_budget()
         quota["adaptive_scale"] = scheduler.adaptive_scale()
         temporary = self.quota_path.with_name(self.quota_path.name + ".tmp")
-        temporary.write_text(
-            json.dumps(quota, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        temporary.write_text(json.dumps(quota, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(self.quota_path)
 
     def reserve(self, kind: str, manual_kind: str, count: int = 1) -> dict:
@@ -169,9 +161,7 @@ class ManualQuota:
 
     def pause_for_cookie(self, detail: str) -> None:
         scheduler = self._scheduler()
-        until = scheduler.beijing_now() + timedelta(
-            seconds=scheduler.COOKIE_ERROR_COOLDOWN
-        )
+        until = scheduler.beijing_now() + timedelta(seconds=scheduler.COOKIE_ERROR_COOLDOWN)
         pause = {
             "reason": "cookie_expired",
             "job": "admin_live_crawl",

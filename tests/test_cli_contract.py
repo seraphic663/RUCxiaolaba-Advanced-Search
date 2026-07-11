@@ -7,12 +7,14 @@ from jobs.scheduler import (
     classify_error,
     job_args,
     job_budget_kind,
+    next_job_run,
     next_quota_release,
     parse_release_steps,
     planned_job_calls,
     quota_release_fraction,
     quota_source_calls,
     remaining_budget,
+    select_next_job,
 )
 
 
@@ -27,9 +29,7 @@ class CLIContractTest(unittest.TestCase):
     def test_phase1_and_scan_id_range_are_both_supported(self):
         parser = build_parser()
         old = parser.parse_args(["phase1", "--start-id", "1", "--end-id", "2"])
-        new = parser.parse_args(
-            ["scan-id-range", "--start-id", "1", "--end-id", "2"]
-        )
+        new = parser.parse_args(["scan-id-range", "--start-id", "1", "--end-id", "2"])
         self.assertIs(old.func, new.func)
         self.assertEqual((old.start_id, old.end_id), (1, 2))
 
@@ -74,7 +74,7 @@ class CLIContractTest(unittest.TestCase):
         self.assertEqual(job_budget_kind("probe_gaps"), "probe")
         self.assertEqual(
             planned_job_calls("discover_new", ["discover-latest", "--max-pages", "7"]),
-            8,
+            7,
         )
         self.assertEqual(planned_job_calls("plan_gaps", ["plan-gaps"]), 1)
         trickle_args = job_args("trickle_fill")
@@ -105,7 +105,11 @@ class CLIContractTest(unittest.TestCase):
             0.7,
         )
         self.assertEqual(
-            quota_release_fraction(datetime(2026, 7, 10, 23, 0, tzinfo=china)),
+            quota_release_fraction(datetime(2026, 7, 10, 21, 0, tzinfo=china)),
+            0.85,
+        )
+        self.assertEqual(
+            quota_release_fraction(datetime(2026, 7, 10, 22, 0, tzinfo=china)),
             1.0,
         )
         self.assertEqual(
@@ -116,6 +120,26 @@ class CLIContractTest(unittest.TestCase):
             next_quota_release(datetime(2026, 7, 10, 11, 30, tzinfo=china)).hour,
             14,
         )
+
+    def test_scheduler_prioritizes_overdue_details_then_active_then_new(self):
+        next_run = {
+            "discover_new": 10.0,
+            "discover_active": 20.0,
+            "trickle_fill": 30.0,
+        }
+        self.assertEqual(select_next_job(next_run, 40.0), "trickle_fill")
+        self.assertEqual(
+            select_next_job(
+                {"discover_new": 10.0, "discover_active": 20.0},
+                40.0,
+            ),
+            "discover_active",
+        )
+        self.assertEqual(select_next_job(next_run, 5.0), "discover_new")
+
+    def test_scheduler_interval_is_measured_start_to_start(self):
+        self.assertEqual(next_job_run(100.0, 340.0, 600.0), 700.0)
+        self.assertEqual(next_job_run(100.0, 800.0, 600.0), 801.0)
 
     def test_scheduler_main_detail_budget_is_independent_from_admin(self):
         with (
