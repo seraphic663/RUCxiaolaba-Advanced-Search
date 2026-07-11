@@ -109,6 +109,10 @@ class ManualQuota:
         quota["updated_at"] = scheduler.beijing_now().isoformat()
         quota["release_fraction"] = scheduler.quota_release_fraction()
         quota["configured_source_budget"] = scheduler.configured_source_budget()
+        quota["configured_admin_budget"] = self.preview_cap + self.detail_cap
+        quota["configured_total_budget"] = (
+            scheduler.configured_source_budget() + self.preview_cap + self.detail_cap
+        )
         quota["adaptive_source_budget"] = scheduler.adaptive_source_budget()
         quota["adaptive_scale"] = scheduler.adaptive_scale()
         temporary = self.quota_path.with_name(self.quota_path.name + ".tmp")
@@ -121,7 +125,6 @@ class ManualQuota:
         if count <= 0:
             return {}
         scheduler = self._scheduler()
-        key = scheduler.quota_key(kind)
         manual_key = f"admin_{manual_kind}_calls"
         cap = self.preview_cap if manual_kind == "preview" else self.detail_cap
         with exclusive_control_lock(self.lock_path):
@@ -132,27 +135,17 @@ class ManualQuota:
                     f"爬虫已暂停到 {pause.get('until_text') or '稍后'}",
                 )
             quota = self._load_quota(scheduler)
-            fraction = scheduler.quota_release_fraction()
-            if fraction <= 0:
-                raise ManualQuotaError(
-                    "release_locked",
-                    f"额度尚未释放，下一窗口 {scheduler.next_quota_release().isoformat()}",
-                )
-            allowed = int(scheduler.daily_budget(kind) * fraction)
-            manual_allowed = int(cap * fraction)
-            used = int(quota.get(key, 0) or 0)
+            manual_allowed = cap
             manual_used = int(quota.get(manual_key, 0) or 0)
             if manual_used + count > manual_allowed:
                 raise ManualQuotaError("manual_budget_exhausted", "后台人工额度已用完")
-            if used + count > allowed:
-                raise ManualQuotaError("source_budget_exhausted", "对应源 API 额度已用完")
-            quota[key] = used + count
             quota[manual_key] = manual_used + count
+            if manual_kind == "preview":
+                breakdown_key = f"admin_preview_{kind}_calls"
+                quota[breakdown_key] = int(quota.get(breakdown_key, 0) or 0) + count
             self._save_quota(scheduler, quota)
             return {
                 "kind": kind,
-                "used": quota[key],
-                "allowed": allowed,
                 "manual_used": quota[manual_key],
                 "manual_allowed": manual_allowed,
             }
@@ -198,8 +191,8 @@ class ManualQuota:
         with exclusive_control_lock(self.lock_path):
             quota = self._load_quota(scheduler)
         fraction = scheduler.quota_release_fraction()
-        preview_allowed = int(self.preview_cap * fraction)
-        detail_allowed = int(self.detail_cap * fraction)
+        preview_allowed = self.preview_cap
+        detail_allowed = self.detail_cap
         preview_used = int(quota.get("admin_preview_calls", 0) or 0)
         detail_used = int(quota.get("admin_detail_calls", 0) or 0)
         return {

@@ -38,6 +38,7 @@ Bigram/trigram 等快速查询仍返回 `pagination_mode=numbered`。单字 LIKE
 | `/api/admin/upstream-preview` | POST | 从 `search`、`lists` 或 `lists2` 获取最多 3 页候选，只保存 10 分钟预览，不写帖子库 |
 | `/api/admin/live-crawl` | POST | 对本次预览中勾选的最多 10 个帖子执行 `smart`、`force` 或 `queue` |
 | `/api/admin/live-crawl?id=任务号` | GET | 查询逐帖状态；不会向 public 页面暴露 |
+| `/api/admin/crawl-status` | GET | 只读聚合 full/list_only、评论、队列、quota/pause 和最近帖子状态 |
 
 `smart` 和 `force` 创建任务后立即由单线程 worker 串行拉取并逐帖保存；`queue` 只写最高优先级候选，不调用详情 API。候选 ID 必须属于未过期的服务端预览，客户端不能提交任意批量 ID。
 

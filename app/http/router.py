@@ -12,6 +12,7 @@ GET_ROUTES = {
     "/healthz": public.health,
     "/admin": admin.get,
     "/api/admin/live-crawl": admin_crawl.status,
+    "/api/admin/crawl-status": admin_crawl.overview,
 }
 
 POST_ROUTES = {

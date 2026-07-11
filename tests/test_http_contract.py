@@ -202,6 +202,9 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertFalse(payload["ok"])
         self.assertIn("管理员登录已失效", payload["error"])
+        status, payload = self.get_json("/api/admin/crawl-status")
+        self.assertEqual(status, 401)
+        self.assertFalse(payload["ok"])
 
     def test_main_page_contract(self):
         with urlopen(self.base + "/", timeout=5) as response:
@@ -230,6 +233,10 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(dashboard.count("function updateThemeButton()"), 1)
         self.assertIn("上游候选与人工现爬", dashboard)
         self.assertNotIn("__ADMIN_CSRF_TOKEN__", dashboard)
+        with opener.open(self.base + "/api/admin/crawl-status", timeout=5) as response:
+            crawler_status = json.loads(response.read())
+        self.assertTrue(crawler_status["ok"])
+        self.assertEqual(crawler_status["posts"]["total"], 1)
 
 
 if __name__ == "__main__":
