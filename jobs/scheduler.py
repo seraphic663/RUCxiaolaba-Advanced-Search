@@ -99,6 +99,9 @@ DAILY_ACTIVE_LIST_BUDGET = env_int(
 )
 DAILY_DETAIL_BUDGET = env_int("CRAWLER_DAILY_DETAIL_BUDGET", 450)
 DAILY_PROBE_BUDGET = env_nonnegative_int("CRAWLER_DAILY_PROBE_BUDGET", 0)
+DAILY_ADMIN_PREVIEW_BUDGET = env_nonnegative_int(
+    "CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET", 20
+)
 DAILY_ADMIN_DETAIL_BUDGET = env_nonnegative_int(
     "CRAWLER_DAILY_ADMIN_DETAIL_BUDGET", 10
 )
@@ -286,6 +289,8 @@ def quota_source_calls(quota: dict) -> int:
             "active_list_calls",
             "detail_calls",
             "probe_calls",
+            "admin_preview_calls",
+            "admin_detail_calls",
         )
     )
 
@@ -297,6 +302,10 @@ def configured_source_budget() -> int:
         + DAILY_DETAIL_BUDGET
         + DAILY_PROBE_BUDGET
     )
+
+
+def configured_admin_budget() -> int:
+    return DAILY_ADMIN_PREVIEW_BUDGET + DAILY_ADMIN_DETAIL_BUDGET
 
 
 def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
@@ -312,8 +321,12 @@ def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
         "active_list_calls": int(quota.get("active_list_calls", 0) or 0),
         "detail_calls": int(quota.get("detail_calls", 0) or 0),
         "probe_calls": int(quota.get("probe_calls", 0) or 0),
+        "admin_preview_calls": int(quota.get("admin_preview_calls", 0) or 0),
+        "admin_detail_calls": int(quota.get("admin_detail_calls", 0) or 0),
         "rate_limited": int(quota.get("rate_limited", 0) or 0),
         "configured_source_budget": configured_source_budget(),
+        "configured_admin_budget": configured_admin_budget(),
+        "configured_total_budget": configured_source_budget() + configured_admin_budget(),
         "release_fraction": quota_release_fraction(),
     }
     with QUOTA_HISTORY_PATH.open("a", encoding="utf-8") as fh:
@@ -491,11 +504,15 @@ def load_quota() -> dict:
             "detail_calls": 0,
             "probe_calls": 0,
             "rate_limited": 0,
+            "admin_preview_calls": 0,
+            "admin_detail_calls": 0,
             "updated_at": beijing_now().isoformat(),
         }
         save_quota(quota)
     quota.setdefault("new_list_calls", 0)
     quota.setdefault("active_list_calls", 0)
+    quota.setdefault("admin_preview_calls", 0)
+    quota.setdefault("admin_detail_calls", 0)
     if "list_calls" in quota:
         # Older quota files only had a combined list counter. Keep the value
         # visible but do not split it retroactively; the new per-source counters
@@ -509,6 +526,10 @@ def save_quota(quota: dict) -> None:
     quota["updated_at"] = beijing_now().isoformat()
     quota["release_fraction"] = quota_release_fraction()
     quota["configured_source_budget"] = configured_source_budget()
+    quota["configured_admin_budget"] = configured_admin_budget()
+    quota["configured_total_budget"] = (
+        configured_source_budget() + configured_admin_budget()
+    )
     quota["adaptive_source_budget"] = adaptive_source_budget()
     quota["adaptive_scale"] = adaptive_scale()
     quota["release_steps"] = [
@@ -576,13 +597,7 @@ def remaining_budget(kind: str, quota: dict) -> int:
         return max(0, allowed - int(quota.get("active_list_calls", 0)))
     if kind == "detail":
         allowed = int(daily_budget(kind) * fraction)
-        manual_allowed = int(DAILY_ADMIN_DETAIL_BUDGET * fraction)
-        manual_used = int(quota.get("admin_detail_calls", 0) or 0)
-        manual_reserve = max(0, manual_allowed - manual_used)
-        return max(
-            0,
-            allowed - int(quota.get("detail_calls", 0)) - manual_reserve,
-        )
+        return max(0, allowed - int(quota.get("detail_calls", 0)))
     if kind == "probe":
         allowed = int(daily_budget(kind) * fraction)
         return max(0, allowed - int(quota.get("probe_calls", 0)))
