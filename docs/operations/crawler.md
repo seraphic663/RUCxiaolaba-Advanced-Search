@@ -43,8 +43,8 @@ ys7_ysxy_session=你的cookie
 | 详情 | `/article/article/info?id=ID` | 正文、评论和回复 | 每帖 1 次 detail |
 | 最新 ID 探测 | `lists?page=1` | `plan-gaps` 确定规划上界 | 1 次 new-list |
 | 缺口抽样 | `info?id=ID` | `probe-gaps` 验证某 ID | 每个样本 1 次 probe |
-| Admin 候选预览 | `search/lists/lists2` | 先展示上游候选供管理员勾选 | 每页 1 次相应 list budget |
-| Admin 人工现爬 | `info?id=ID` | 勾选后立即补全并保存正文、评论和回复 | 每帖 1 次 detail |
+| Admin 候选预览 | `search/lists/lists2` | 先展示上游候选供管理员勾选 | 每页 1 次 admin-preview 独立额度 |
+| Admin 人工现爬 | `info?id=ID` | 勾选后立即补全并保存正文、评论和回复 | 每帖 1 次 admin-detail 独立额度 |
 
 评论不是逐条请求；一个成功的详情请求同时返回帖子正文和当时可见的评论/回复。
 
