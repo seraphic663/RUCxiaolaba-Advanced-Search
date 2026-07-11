@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from app.services.admin_crawl_service import AdminCrawlError, AdminCrawlService
+from crawler.client import MiniProgramClient
 from crawler.manual_quota import ManualQuota
 from crawler.normalizer import normalize_detail
 from storage.post_writer import SQLitePostStore
@@ -294,3 +295,27 @@ def test_manual_quota_is_extra_and_does_not_consume_main_counters():
         assert saved["configured_total_budget"] == 720
         assert status["preview_allowed"] == 20
         assert status["detail_allowed"] == 10
+
+
+def test_upstream_search_uses_search_parameter_name():
+    class FakeResponse:
+        @staticmethod
+        def json():
+            return {"code": "0000", "data": {"list": []}}
+
+    class FakeSession:
+        def __init__(self):
+            self.params = None
+
+        def get(self, url, *, params, timeout, verify):
+            self.params = params
+            return FakeResponse()
+
+    client = MiniProgramClient("cookie")
+    session = FakeSession()
+    client.session = session
+    data, error = client.search("食堂", 1)
+    assert error is None
+    assert data == {"list": []}
+    assert session.params["search"] == "食堂"
+    assert "keyword" not in session.params
