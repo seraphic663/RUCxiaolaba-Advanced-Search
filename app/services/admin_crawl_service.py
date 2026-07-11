@@ -14,7 +14,7 @@ from app.repositories.admin_crawl_repository import AdminCrawlRepository
 from crawler.client import MiniProgramClient, load_cookie
 from crawler.lock import database_write_lock
 from crawler.manual_quota import ManualQuota, ManualQuotaError
-from crawler.normalizer import normalize_detail
+from crawler.normalizer import normalize_detail, validate_normalized_detail
 from storage.post_writer import SQLitePostStore, safe_int
 
 
@@ -129,9 +129,7 @@ class AdminCrawlService:
                     local_status=status,
                     local_comment_count=local_count,
                     recommended=(
-                        row is None
-                        or status != "full"
-                        or item["comment_count"] > local_count
+                        row is None or status != "full" or item["comment_count"] > local_count
                     ),
                 )
         finally:
@@ -205,9 +203,7 @@ class AdminCrawlService:
         if strategy == "force":
             estimated_details = len(selected)
         elif strategy == "smart":
-            estimated_details = sum(
-                1 for post_id in selected if candidates[post_id]["recommended"]
-            )
+            estimated_details = sum(1 for post_id in selected if candidates[post_id]["recommended"])
         quota_status = self.quota.status()
         detail_remaining = int(quota_status.get("detail_remaining", 0) or 0)
         if estimated_details > detail_remaining:
@@ -218,9 +214,7 @@ class AdminCrawlService:
                 429,
             )
         job_id = uuid.uuid4().hex
-        active = self.repository.create_job(
-            job_id, preview_id, strategy, selected, candidates
-        )
+        active = self.repository.create_job(job_id, preview_id, strategy, selected, candidates)
         if active:
             raise AdminCrawlError(
                 "worker_busy",
@@ -273,9 +267,7 @@ class AdminCrawlService:
     def _queue_item(self, item: dict) -> str:
         status, db_count, _ = self._snapshot(str(item["post_id"]))
         with database_write_lock(self.posts_db, timeout=30):
-            with SQLitePostStore(
-                self.posts_db, self.bigram_db, self.symbol_db
-            ) as store:
+            with SQLitePostStore(self.posts_db, self.bigram_db, self.symbol_db) as store:
                 store.ensure_runtime_schema()
                 store.enqueue_crawler_candidate(
                     post_id=str(item["post_id"]),
@@ -315,15 +307,14 @@ class AdminCrawlService:
         if parsed is None:
             raise AdminCrawlError("invalid_payload", "上游返回的社区或帖子数据无效", 502)
         post, comments = parsed
-        if not str(post.get("content") or "").strip():
+        payload_error = validate_normalized_detail(post, comments)
+        if payload_error == "empty_content":
             raise AdminCrawlError("suspicious_payload", "上游正文为空，已保留旧数据", 502)
-        if safe_int(post.get("comment_count")) > 0 and not comments:
+        if payload_error == "empty_comments":
             raise AdminCrawlError("suspicious_payload", "上游评论异常为空，已保留旧数据", 502)
         self._update_item(item["job_id"], post_id, status="waiting_write")
         with database_write_lock(self.posts_db, timeout=180):
-            with SQLitePostStore(
-                self.posts_db, self.bigram_db, self.symbol_db
-            ) as store:
+            with SQLitePostStore(self.posts_db, self.bigram_db, self.symbol_db) as store:
                 store.ensure_runtime_schema()
                 store.upsert_post(post, comments)
         _, _, after_rows = self._snapshot(post_id)
@@ -368,9 +359,7 @@ class AdminCrawlService:
                         stop_error = str(exc)
             except Exception as exc:  # pragma: no cover - final worker fuse
                 status, error = "failed", str(exc)
-            self._update_item(
-                job_id, post_id, status=status, result=result, error=error
-            )
+            self._update_item(job_id, post_id, status=status, result=result, error=error)
             if stop_error:
                 break
         self.repository.finish_job(

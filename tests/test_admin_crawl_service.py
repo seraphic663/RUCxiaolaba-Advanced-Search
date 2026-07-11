@@ -53,6 +53,7 @@ class FakeClient:
                 }
             ]
         }, None
+
     def list_page(self, endpoint, page):
         return self.search(endpoint, page)
 
@@ -196,9 +197,7 @@ def test_suspicious_empty_comments_do_not_replace_existing_data():
         assert job["items"][0]["status"] == "failed"
         assert "已保留旧数据" in job["items"][0]["error"]
         with SQLitePostStore(posts_db) as store:
-            rows = store.conn.execute(
-                "select detail from comments where post_id='901'"
-            ).fetchall()
+            rows = store.conn.execute("select detail from comments where post_id='901'").fetchall()
         assert [row["detail"] for row in rows] == ["完整评论"]
 
 
@@ -209,9 +208,7 @@ def test_detail_upsert_incrementally_refreshes_symbol_sidecar():
         symbol_db = root / "symbol.db"
         with closing(sqlite3.connect(symbol_db)) as conn:
             conn.executescript(SYMBOL_SCHEMA)
-            conn.execute(
-                "insert into index_meta(key,value) values ('schema_version','symbol-v1')"
-            )
+            conn.execute("insert into index_meta(key,value) values ('schema_version','symbol-v1')")
             conn.commit()
         with SQLitePostStore(posts_db, symbol_path=symbol_db) as store:
             store.init_schema()
@@ -286,9 +283,7 @@ def test_manual_quota_is_extra_and_does_not_consume_main_counters():
             quota.reserve("new_list", "preview", 1)
             quota.reserve("detail", "detail", 1)
             status = quota.status()
-        saved = json.loads(
-            posts_db.with_name(".crawler_quota.json").read_text(encoding="utf-8")
-        )
+        saved = json.loads(posts_db.with_name(".crawler_quota.json").read_text(encoding="utf-8"))
         assert saved["new_list_calls"] == 0
         assert saved["detail_calls"] == 0
         assert saved["admin_preview_calls"] == 1
@@ -296,6 +291,50 @@ def test_manual_quota_is_extra_and_does_not_consume_main_counters():
         assert saved["configured_total_budget"] == 720
         assert status["preview_allowed"] == 20
         assert status["detail_allowed"] == 10
+
+
+def test_manual_quota_preserves_previous_day_history_on_first_new_day_call():
+    history = []
+
+    class FakeScheduler:
+        @staticmethod
+        def quota_date():
+            return "2026-07-12"
+
+        @staticmethod
+        def beijing_now():
+            return datetime(2026, 7, 12, 8, 0, tzinfo=timezone.utc)
+
+        @staticmethod
+        def quota_release_fraction():
+            return 0.0
+
+        @staticmethod
+        def configured_source_budget():
+            return 690
+
+        @staticmethod
+        def adaptive_source_budget():
+            return 690
+
+        @staticmethod
+        def adaptive_scale():
+            return 1.0
+
+        @staticmethod
+        def append_quota_history(quota, *, reason, job=""):
+            history.append((dict(quota), reason, job))
+
+    with tempfile.TemporaryDirectory() as temp:
+        posts_db = Path(temp) / "posts.db"
+        quota = ManualQuota(posts_db)
+        quota.quota_path.write_text(
+            json.dumps({"date": "2026-07-11", "detail_calls": 339}),
+            encoding="utf-8",
+        )
+        with patch.object(ManualQuota, "_scheduler", return_value=FakeScheduler):
+            quota.reserve("new_list", "preview", 1)
+        assert history == [({"date": "2026-07-11", "detail_calls": 339}, "day_rollover", "")]
 
 
 def test_upstream_search_uses_search_parameter_name():
@@ -358,3 +397,5 @@ def test_admin_crawler_status_splits_pending_full_and_list_only():
             {"crawl_status": "full", "n": 1},
             {"crawl_status": "list_only", "n": 1},
         ]
+        assert status["queue_terminal_stale"] == []
+        assert status["scheduler_heartbeat"] == {}

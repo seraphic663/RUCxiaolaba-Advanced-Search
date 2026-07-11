@@ -142,9 +142,12 @@ try { (Invoke-WebRequest -UseBasicParsing https://rucxlb.up.railway.app/healthz 
 正常调度日志类似：
 
 ```text
-[scheduler] quota discover_active active_list_calls_reserved=...
-[discover-active:lists2] done {...}
+[scheduler] quota discover_active active_list_calls_available=... planned_max=...
+[lock] acquired token=... lease=90s path=/app/data/posts.db.crawler.lock
+[discover-active] done {... "source_calls": ...}
 [scheduler] done discover_active exit=0
 ```
+
+`active_list_calls_available` 只是本轮可用上界，不会提前扣除；quota 在每次真实 HTTP 请求前增加。长任务期间 `.crawler_scheduler_heartbeat.json` 应约每 30 秒更新，异常退出的 scheduler 由 `start.sh` 在 30 秒后重新启动。
 
 不要仅凭 GitHub push 判断部署成功。完整 DB 备份会消耗大量 Volume 空间，5GB Volume 下应把长期备份保存到外部对象存储。
