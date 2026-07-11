@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from app.services.admin_crawl_service import AdminCrawlError, AdminCrawlService
+from app.services.admin_service import AdminService
 from crawler.client import MiniProgramClient
 from crawler.manual_quota import ManualQuota
 from crawler.normalizer import normalize_detail
@@ -319,3 +320,41 @@ def test_upstream_search_uses_search_parameter_name():
     assert data == {"list": []}
     assert session.params["search"] == "食堂"
     assert "keyword" not in session.params
+
+
+def test_admin_crawler_status_splits_pending_full_and_list_only():
+    with tempfile.TemporaryDirectory() as temp:
+        posts_db = Path(temp) / "posts.db"
+        with SQLitePostStore(posts_db) as store:
+            store.init_schema()
+            for post_id, status in (("1", "list_only"), ("2", "full")):
+                store.upsert_post(
+                    {
+                        "id": post_id,
+                        "content": "测试",
+                        "category_name": "测试",
+                        "user_name": "测试",
+                        "create_time": "2026-07-11 20:00:00",
+                        "crawl_status": status,
+                    },
+                    [] if status == "full" else None,
+                )
+                store.enqueue_crawler_candidate(
+                    post_id=post_id,
+                    source="test",
+                    priority=0,
+                    list_create_time="",
+                    list_update_time="",
+                    list_comment_count=1,
+                    db_comment_count=0,
+                    reason="test",
+                )
+        status = AdminService(posts_db).crawler_status()
+        assert status["list_only_queue_coverage"] == {
+            "total": 1,
+            "pending": 1,
+        }
+        assert status["queue_pending_crawl_status"] == [
+            {"crawl_status": "full", "n": 1},
+            {"crawl_status": "list_only", "n": 1},
+        ]
