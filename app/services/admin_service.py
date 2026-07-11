@@ -95,6 +95,9 @@ class AdminService:
             status_sql = (
                 "crawl_status" if "crawl_status" in post_columns else "'full'"
             )
+            queue_status_sql = (
+                "p.crawl_status" if "crawl_status" in post_columns else "'full'"
+            )
             updated_sql = "p.updated_at" if "updated_at" in post_columns else "''"
             posts = dict(
                 conn.execute(
@@ -117,6 +120,8 @@ class AdminService:
             queue_status = []
             queue_pending_priority = []
             queue_pending_age = {}
+            queue_pending_crawl_status = []
+            list_only_queue_coverage = {}
             if "crawler_queue" in tables:
                 queue_status = [
                     dict(row)
@@ -137,6 +142,24 @@ class AdminService:
                     conn.execute(
                         "select count(*) n,min(created_at) oldest,max(created_at) newest "
                         "from crawler_queue where status='pending'"
+                    ).fetchone()
+                )
+                queue_pending_crawl_status = [
+                    dict(row)
+                    for row in conn.execute(
+                        f"select coalesce({queue_status_sql},'missing') crawl_status,"
+                        "count(*) n from crawler_queue q left join posts p "
+                        "on p.id=q.post_id where q.status='pending' "
+                        f"group by coalesce({queue_status_sql},'missing') "
+                        "order by n desc,crawl_status"
+                    )
+                ]
+                list_only_queue_coverage = dict(
+                    conn.execute(
+                        f"select count(*) total,sum(exists(select 1 from "
+                        "crawler_queue q where q.post_id=p.id and "
+                        "q.status='pending')) pending from posts p "
+                        f"where ({status_sql})='list_only'"
                     ).fetchone()
                 )
             queue_join = (
@@ -178,6 +201,8 @@ class AdminService:
             "queue_status": queue_status,
             "queue_pending_priority": queue_pending_priority,
             "queue_pending_age": queue_pending_age,
+            "queue_pending_crawl_status": queue_pending_crawl_status,
+            "list_only_queue_coverage": list_only_queue_coverage,
             "recent_posts": recent_posts,
             "crawl_state": crawl_state,
             "quota": quota,
