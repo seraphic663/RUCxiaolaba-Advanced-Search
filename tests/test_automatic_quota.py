@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 from crawler.automatic_quota import AutomaticQuota, AutomaticQuotaError
 from crawler.client import MiniProgramClient
 from jobs import scheduler
+from storage.post_writer import SQLitePostStore
 
 
 class AutomaticQuotaTest(unittest.TestCase):
@@ -142,6 +143,44 @@ class AutomaticQuotaTest(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(client.request_count, 1)
         client.automatic_quota.claim.assert_called_once_with(1)
+
+    def test_startup_refresh_repairs_queue_and_current_quota_metadata(self):
+        db_path = self.quota_path.with_name("posts.db")
+        with SQLitePostStore(db_path) as store:
+            store.init_schema()
+            store.upsert_post(
+                {
+                    "id": "1",
+                    "content": "old",
+                    "create_time": "2026-07-11 20:00:00",
+                    "comment_count": 1,
+                },
+                [{"id": "c1", "detail": "old comment"}],
+            )
+            store.enqueue_crawler_candidate(
+                post_id="1",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="",
+                list_comment_count=3,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+            store.mark_crawler_queue_item("1", status="done")
+
+        with patch.object(scheduler, "DB_PATH", str(db_path)):
+            scheduler.refresh_runtime_state()
+
+        with SQLitePostStore(db_path) as store:
+            row = store.conn.execute(
+                "select status from crawler_queue where post_id='1'"
+            ).fetchone()
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(
+            [step["time"] for step in self._quota()["release_steps"][-2:]],
+            ["21:00", "22:00"],
+        )
 
 
 if __name__ == "__main__":
