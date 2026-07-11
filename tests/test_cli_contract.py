@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from crawler.cli import build_parser
 from jobs.scheduler import (
@@ -10,6 +11,7 @@ from jobs.scheduler import (
     parse_release_steps,
     planned_job_calls,
     quota_release_fraction,
+    remaining_budget,
 )
 
 
@@ -113,6 +115,21 @@ class CLIContractTest(unittest.TestCase):
             next_quota_release(datetime(2026, 7, 10, 11, 30, tzinfo=china)).hour,
             14,
         )
+
+    def test_scheduler_reserves_released_detail_slots_for_admin(self):
+        with (
+            patch("jobs.scheduler.quota_release_fraction", return_value=1.0),
+            patch("jobs.scheduler.daily_budget", return_value=450),
+            patch("jobs.scheduler.DAILY_ADMIN_DETAIL_BUDGET", 10),
+        ):
+            self.assertEqual(remaining_budget("detail", {"detail_calls": 0}), 440)
+            self.assertEqual(
+                remaining_budget(
+                    "detail",
+                    {"detail_calls": 10, "admin_detail_calls": 10},
+                ),
+                440,
+            )
 
 
 if __name__ == "__main__":

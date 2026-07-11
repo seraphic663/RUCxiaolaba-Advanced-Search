@@ -24,6 +24,24 @@ from app.services.search_service import SearchService
 from app.services.template_service import TemplateService
 
 
+class FakeAdminCrawlService:
+    def preview(self, source, query, pages):
+        return {
+            "preview_id": "preview-1",
+            "source": source,
+            "query": query,
+            "calls": pages,
+            "candidates": [],
+            "quota": {},
+        }
+
+    def create_job(self, preview_id, selected_ids, strategy):
+        return {"id": "job-1", "status": "queued", "items": []}
+
+    def get_job(self, job_id):
+        return {"id": job_id, "status": "completed", "items": []}
+
+
 class HTTPContractTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -119,6 +137,7 @@ class HTTPContractTest(unittest.TestCase):
             posts=PostRepository(self.db_path),
             search=SearchService(self.db_path),
             admin=AdminService(self.db_path),
+            admin_crawl=FakeAdminCrawlService(),
             auth=AdminAuthService(),
             templates=TemplateService(templates),
         )
@@ -209,6 +228,8 @@ class HTTPContractTest(unittest.TestCase):
         self.assertIn("SQLite", dashboard)
         self.assertNotIn("__SHARED_UI_", dashboard)
         self.assertEqual(dashboard.count("function updateThemeButton()"), 1)
+        self.assertIn("上游候选与人工现爬", dashboard)
+        self.assertNotIn("__ADMIN_CSRF_TOKEN__", dashboard)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from app.http.router import dispatch
 from app.repositories.connections import connect_readonly
 from app.repositories.post_repository import PostRepository
 from app.repositories.search_repository import bigram_query, fts_query
+from app.services.admin_crawl_service import AdminCrawlService
 from app.services.admin_service import AdminService
 from app.services.auth_service import AdminAuthService
 from app.services.search_service import SearchService
@@ -165,6 +166,7 @@ class ApplicationContext:
     posts: PostRepository
     search: SearchService
     admin: AdminService
+    admin_crawl: AdminCrawlService
     auth: AdminAuthService
     templates: TemplateService
 
@@ -176,6 +178,15 @@ def build_context() -> ApplicationContext:
         posts=PostRepository(SQLITE_DB),
         search=SearchService(SQLITE_DB, BIGRAM_DB or None, SYMBOL_DB or None),
         admin=AdminService(SQLITE_DB),
+        admin_crawl=AdminCrawlService(
+            SQLITE_DB,
+            config_path=os.environ.get(
+                "CRAWLER_CONFIG",
+                str(Path(SQLITE_DB).with_name("config.txt")),
+            ),
+            bigram_db=BIGRAM_DB or None,
+            symbol_db=SYMBOL_DB or None,
+        ),
         auth=AdminAuthService(SESSION_TTL, CSRF_TTL),
         templates=TemplateService(TEMPLATES_DIR),
     )
@@ -186,7 +197,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def set_cookie(self, name, value, max_age=SESSION_TTL):
         self.send_header(
-            "Set-Cookie", f"{name}={value}; Path=/; HttpOnly; Max-Age={max_age}"
+            "Set-Cookie",
+            f"{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}",
         )
 
     def get_cookie(self, name):

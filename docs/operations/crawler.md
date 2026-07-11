@@ -43,6 +43,8 @@ ys7_ysxy_session=你的cookie
 | 详情 | `/article/article/info?id=ID` | 正文、评论和回复 | 每帖 1 次 detail |
 | 最新 ID 探测 | `lists?page=1` | `plan-gaps` 确定规划上界 | 1 次 new-list |
 | 缺口抽样 | `info?id=ID` | `probe-gaps` 验证某 ID | 每个样本 1 次 probe |
+| Admin 候选预览 | `search/lists/lists2` | 先展示上游候选供管理员勾选 | 每页 1 次相应 list budget |
+| Admin 人工现爬 | `info?id=ID` | 勾选后立即补全并保存正文、评论和回复 | 每帖 1 次 detail |
 
 评论不是逐条请求；一个成功的详情请求同时返回帖子正文和当时可见的评论/回复。
 
@@ -118,6 +120,8 @@ CRAWLER_DAILY_NEW_LIST_BUDGET=80
 CRAWLER_DAILY_ACTIVE_LIST_BUDGET=160
 CRAWLER_DAILY_DETAIL_BUDGET=450
 CRAWLER_DAILY_PROBE_BUDGET=0
+CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET=20
+CRAWLER_DAILY_ADMIN_DETAIL_BUDGET=10
 CRAWLER_TRICKLE_LIMIT_CAP=12
 CRAWLER_TRICKLE_MIN_DELAY=8
 CRAWLER_TRICKLE_MAX_DELAY=14
@@ -128,6 +132,16 @@ CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS=14
 ```
 
 配置总上限为每天 690 次源请求：80 次新帖列表、160 次活跃列表、450 次详情、0 次缺口探测。阶梯累计上限在未触发自适应缩放时约为 11:00 的 138 次、14:00 的 241 次、17:00 的 345 次、20:00 的 483 次、23:00 的 690 次。
+
+Admin 预算是现有分类预算内的子上限，不会把总上限提高到 720：候选预览分别计入 new-list 或 active-list，人工现爬计入 detail。scheduler 会按当前 release fraction 为人工详情保留最多 10 次，避免自动 trickle 在当天较早时把人工额度全部用完。一次预览最多 3 页，一次任务最多 10 个帖子；详情任务第一个帖子立即请求，后续帖子继续使用 8–14 秒串行间隔。
+
+后台方案语义：
+
+- `smart`：本地缺失、仅列表数据或上游评论数增加时立即抓详情并保存；否则跳过。
+- `force`：无论本地状态，勾选后立即抓详情并保存。
+- `queue`：不立刻打详情 API，只加入 priority `-10` 的人工优先队列。
+
+预览只写主库旁的 `.admin_crawl.db`，10 分钟后失效，不会写入 `posts`。人工任务也保存在该 sidecar，服务重启后会恢复未完成任务。详情成功后在同一写入路径更新 SQLite FTS、Bigram 和可用的 Symbol sidecar；上游声称有评论却返回空评论、正文为空或社区不匹配时拒绝覆盖旧数据。
 
 scheduler 在子任务运行前按 `max-pages` 或 `limit` 预留配额，因此 quota 文件记录的是保守预留上界，不保证等于子任务实际完成的请求数。真实收益仍需结合命令结束日志和 `crawl_state` 中的 `pages`、`queued`、`comment_changed`、`written`、`misses` 判断。
 
@@ -157,6 +171,7 @@ CRAWLER_GAP_PROBE_INTERVAL=7200
 /app/data/.crawler_quota.json
 /app/data/.crawler_quota_history.jsonl
 /app/data/.crawler_pause.json
+/app/data/.admin_crawl.db
 ```
 
 ## Railway 只读检查

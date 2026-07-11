@@ -251,6 +251,20 @@ html[data-theme] .comments-panel,
 html[data-theme] .cmt .nested { border-color: var(--ui-border); }
 html[data-theme] .stat-card .num { color: var(--ui-accent); }
 html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var(--ui-surface)); color: var(--ui-text); }
+.live-crawl { max-width:1040px; margin:0 auto 10px; padding:12px 14px; background:var(--ui-surface,#fff); border:1px solid var(--ui-border,#ddd); border-radius:12px; }
+.live-crawl h3 { margin:0 0 8px; font-size:1em; }
+.live-controls { display:grid; grid-template-columns:140px minmax(180px,1fr) 90px auto; gap:7px; }
+.live-controls input,.live-controls select { min-width:0; padding:7px 9px; border:1px solid var(--ui-border,#ccc); border-radius:7px; background:var(--ui-surface,#fff); color:var(--ui-text,#222); }
+.live-controls button,.live-actions button { border:0; border-radius:7px; padding:7px 14px; background:var(--ui-accent,#8b0012); color:#fff; cursor:pointer; }
+.live-summary { margin:8px 0; color:var(--ui-muted,#666); font-size:.86em; }
+.live-candidates { max-height:360px; overflow:auto; border-top:1px solid var(--ui-border,#ddd); }
+.live-candidate { display:grid; grid-template-columns:24px 1fr auto; gap:7px; padding:8px 2px; border-bottom:1px solid var(--ui-border,#eee); }
+.live-candidate .live-meta { color:var(--ui-muted,#666); font-size:.8em; margin-top:3px; }
+.live-candidate .live-state { font-size:.78em; color:var(--ui-accent,#8b0012); white-space:nowrap; }
+.live-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:9px; }
+.live-actions select { padding:7px; border-radius:7px; }
+.live-job { margin-top:9px; padding:8px; background:var(--ui-surface-alt,#f5f5f5); border-radius:8px; font-size:.86em; white-space:pre-line; }
+@media(max-width:700px){.live-controls{grid-template-columns:1fr 1fr}.live-controls input{grid-column:1/-1}.live-candidate{grid-template-columns:24px 1fr}.live-state{grid-column:2}}
 </style>
 </head>
 <body>
@@ -295,6 +309,34 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
   </div>
 </div>
 
+<section class="live-crawl" aria-labelledby="live-crawl-title">
+  <h3 id="live-crawl-title">上游候选与人工现爬</h3>
+  <div class="live-controls">
+    <select id="live-source" aria-label="上游来源">
+      <option value="search">关键词搜索</option>
+      <option value="lists">最新帖子</option>
+      <option value="lists2">活跃帖子</option>
+    </select>
+    <input id="live-query" type="text" placeholder="搜索至少两个字符；列表来源可留空">
+    <select id="live-pages" aria-label="预览页数"><option value="1">1页</option><option value="2">2页</option><option value="3">3页</option></select>
+    <button type="button" id="live-preview-button" onclick="loadUpstreamPreview()">获取候选</button>
+  </div>
+  <div class="live-summary" id="live-summary">每个预览页消耗1次源 API；候选未经勾选不会写入数据库。</div>
+  <div class="live-candidates" id="live-candidates"></div>
+  <div class="live-actions" id="live-actions" hidden>
+    <label><input type="checkbox" id="live-only-recommended" checked onchange="renderLiveCandidates()"> 只看建议补爬</label>
+    <button type="button" onclick="selectVisibleLive(true)">全选当前候选</button>
+    <button type="button" onclick="selectVisibleLive(false)">清空</button>
+    <select id="live-strategy">
+      <option value="smart">智能现爬并立即保存</option>
+      <option value="force">强制现爬并立即保存</option>
+      <option value="queue">只加入最高优先级队列</option>
+    </select>
+    <button type="button" onclick="startLiveCrawl()">执行所选方案</button>
+  </div>
+  <div class="live-job" id="live-job" hidden></div>
+</section>
+
 <div class="filters">
   <div class="filter-row primary">
     <input type="text" id="q" placeholder="搜索关键词（空格 AND）..." autofocus>
@@ -330,6 +372,112 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
 var onUiSettingsSaved = function() { startSearch(); };
 __SHARED_UI_JS__
 updateThemeButton();
+
+var adminCsrfToken = '__ADMIN_CSRF_TOKEN__';
+var livePreview = null;
+var liveSelected = {};
+var livePollTimer = null;
+
+function escapeLive(value) {
+  return String(value || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function adminPost(url, payload) {
+  return fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json', 'X-CSRF-Token':adminCsrfToken},
+    body: JSON.stringify(payload)
+  }).then(function(response) {
+    return response.json().catch(function(){ return {}; }).then(function(data) {
+      if (data.csrf_token) adminCsrfToken = data.csrf_token;
+      if (!response.ok || !data.ok) throw new Error(data.message || data.error || ('HTTP ' + response.status));
+      return data;
+    });
+  });
+}
+
+function loadUpstreamPreview() {
+  var source = document.getElementById('live-source').value;
+  var query = document.getElementById('live-query').value.trim();
+  var pages = Number(document.getElementById('live-pages').value || 1);
+  var button = document.getElementById('live-preview-button');
+  button.disabled = true;
+  document.getElementById('live-summary').textContent = '正在请求上游候选……';
+  adminPost('/api/admin/upstream-preview', {source:source, query:query, pages:pages})
+    .then(function(data) {
+      livePreview = data;
+      liveSelected = {};
+      data.candidates.forEach(function(item){ if (item.recommended) liveSelected[item.id] = true; });
+      renderLiveCandidates();
+      document.getElementById('live-actions').hidden = false;
+      var q = data.quota || {};
+      document.getElementById('live-summary').textContent =
+        '预览消耗 ' + data.calls + ' 次 API；去重后 ' + data.candidates.length + ' 条。人工预览额度 ' +
+        q.preview_used + '/' + q.preview_allowed + '，人工详情额度 ' + q.detail_used + '/' + q.detail_allowed + '。';
+    })
+    .catch(function(error) {
+      document.getElementById('live-summary').textContent = '获取失败：' + error.message;
+    })
+    .finally(function(){ button.disabled = false; });
+}
+
+function renderLiveCandidates() {
+  if (!livePreview) return;
+  var onlyRecommended = document.getElementById('live-only-recommended').checked;
+  var visible = livePreview.candidates.filter(function(item){ return !onlyRecommended || item.recommended; });
+  document.getElementById('live-candidates').innerHTML = visible.map(function(item) {
+    var state = !item.local_exists ? '本地缺失' :
+      (item.local_status !== 'full' ? '仅列表数据' :
+      (item.comment_count > item.local_comment_count ? '评论可能 +' + (item.comment_count-item.local_comment_count) : '本地已完整'));
+    return '<label class="live-candidate"><input class="live-check" type="checkbox" data-id="' + item.id + '" ' +
+      (liveSelected[item.id] ? 'checked' : '') + ' onchange="liveSelected[this.dataset.id]=this.checked">' +
+      '<span><b>#' + item.id + '</b> ' + escapeLive(item.content || '（上游列表未返回正文摘要）') +
+      '<div class="live-meta">' + escapeLive(item.create_time) + ' · 上游评论 ' + item.comment_count +
+      ' · 本地评论 ' + item.local_comment_count + '</div></span><span class="live-state">' + state + '</span></label>';
+  }).join('') || '<div class="live-summary">当前筛选下没有候选。</div>';
+}
+
+function selectVisibleLive(value) {
+  document.querySelectorAll('.live-check').forEach(function(box){ box.checked=value; liveSelected[box.dataset.id]=value; });
+}
+
+function startLiveCrawl() {
+  if (!livePreview) return;
+  var ids = Object.keys(liveSelected).filter(function(id){ return liveSelected[id]; });
+  if (!ids.length) { alert('请先勾选帖子'); return; }
+  if (ids.length > 10) { alert('一次最多选择10个帖子'); return; }
+  var strategy = document.getElementById('live-strategy').value;
+  var estimate = strategy === 'queue' ? 0 : ids.length;
+  if (!confirm('已选择 ' + ids.length + ' 条，预计最多消耗 ' + estimate + ' 次详情 API。确认执行？')) return;
+  var jobBox = document.getElementById('live-job');
+  jobBox.hidden = false;
+  jobBox.textContent = '正在创建人工任务……';
+  adminPost('/api/admin/live-crawl', {preview_id:livePreview.preview_id, selected_ids:ids, strategy:strategy})
+    .then(function(data){ renderLiveJob(data.job); pollLiveJob(data.job.id); })
+    .catch(function(error){ jobBox.textContent = '创建失败：' + error.message; });
+}
+
+function renderLiveJob(job) {
+  var lines = ['任务 ' + job.id.slice(0,8) + '：' + job.status + '（' + job.completed + '/' + job.total + '）'];
+  (job.items || []).forEach(function(item){ lines.push(item.position + '. #' + item.post_id + ' ' + item.status + (item.result ? '：'+item.result : '') + (item.error ? '：'+item.error : '')); });
+  document.getElementById('live-job').textContent = lines.join('\n');
+}
+
+function pollLiveJob(jobId) {
+  if (livePollTimer) clearTimeout(livePollTimer);
+  fetch('/api/admin/live-crawl?id=' + encodeURIComponent(jobId))
+    .then(parseJsonResponse)
+    .then(function(data) {
+      renderLiveJob(data.job);
+      if (data.job.status === 'queued' || data.job.status === 'running') {
+        livePollTimer = setTimeout(function(){ pollLiveJob(jobId); }, 1500);
+      } else if (data.job.written > 0) {
+        pageCache = {};
+        doSearch();
+      }
+    })
+    .catch(function(error){ document.getElementById('live-job').textContent += '\n状态查询失败：' + error.message; });
+}
 
 var currentPage = 1;
 var currentKW = [];

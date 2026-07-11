@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Iterable
 
-from app.domain.search import bigram_tokens
+from app.domain.search import bigram_tokens, symbol_tokens
 
 
 def safe_int(value, default=0) -> int:
@@ -90,7 +90,12 @@ def flatten_comments(
 
 
 class SQLitePostStore:
-    def __init__(self, db_path: str | Path, bigram_path: str | Path | None = None):
+    def __init__(
+        self,
+        db_path: str | Path,
+        bigram_path: str | Path | None = None,
+        symbol_path: str | Path | None = None,
+    ):
         self.db_path = Path(db_path)
         configured_bigram = (
             bigram_path
@@ -99,6 +104,13 @@ class SQLitePostStore:
             or os.environ.get("BIGRAM_DB", "")
         )
         self.bigram_path = Path(configured_bigram).resolve() if configured_bigram else None
+        configured_symbol = (
+            symbol_path
+            if symbol_path is not None
+            else os.environ.get("SYMBOL_INDEX_DB_PATH")
+            or os.environ.get("SYMBOL_INDEX_DB", "")
+        )
+        self.symbol_path = Path(configured_symbol).resolve() if configured_symbol else None
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("pragma journal_mode=wal")
@@ -108,6 +120,7 @@ class SQLitePostStore:
         self.conn.execute("pragma cache_size=-2000")
         self.conn.execute("pragma temp_store=file")
         self._has_bigram_index = False
+        self._has_symbol_index = False
         if self.bigram_path:
             if not self.bigram_path.exists():
                 raise FileNotFoundError(f"bigram index not found: {self.bigram_path}")
@@ -120,6 +133,18 @@ class SQLitePostStore:
             self.conn.execute("pragma bigram.journal_mode=wal")
             self.conn.execute("pragma bigram.synchronous=normal")
             self._has_bigram_index = True
+        if self.symbol_path:
+            if not self.symbol_path.exists():
+                raise FileNotFoundError(f"symbol index not found: {self.symbol_path}")
+            self.conn.execute("attach database ? as symbol", (str(self.symbol_path),))
+            meta = self.conn.execute(
+                "select value from symbol.index_meta where key='schema_version'"
+            ).fetchone()
+            if meta is None or meta[0] != "symbol-v1":
+                raise RuntimeError(f"unsupported symbol index: {self.symbol_path}")
+            self.conn.execute("pragma symbol.journal_mode=wal")
+            self.conn.execute("pragma symbol.synchronous=normal")
+            self._has_symbol_index = True
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
         self._comment_columns = self._columns("comments") if self._table_exists("comments") else set()
         self._has_search_index = self._table_exists("search_index")
@@ -420,6 +445,7 @@ class SQLitePostStore:
             )
         self.refresh_search_index(post_id, values["content"], comments, commit=False)
         self.refresh_bigram_index(post_id, values["content"], comments, commit=False)
+        self.refresh_symbol_index(post_id, values["content"], comments, commit=False)
         if commit:
             self.conn.commit()
 
@@ -680,6 +706,50 @@ class SQLitePostStore:
             self.conn.execute(
                 "insert into bigram.search_bigram(rowid, tokens) values (?,?)",
                 (cursor.lastrowid, bigram_tokens(body)),
+            )
+        if commit:
+            self.conn.commit()
+
+    def refresh_symbol_index(
+        self,
+        post_id: str,
+        content: str | None = None,
+        comments: list[dict] | None = None,
+        commit: bool = True,
+    ) -> None:
+        if not self._has_symbol_index:
+            return
+        self.conn.execute("delete from symbol.symbol_rows where post_id=?", (post_id,))
+        if content is None:
+            row = self.conn.execute(
+                "select content from posts where id=?", (post_id,)
+            ).fetchone()
+            content = row[0] if row else ""
+        if comments is None:
+            rows = self.conn.execute(
+                "select detail from comments where post_id=? and detail != ''",
+                (post_id,),
+            ).fetchall()
+            bodies = [("comment", row[0]) for row in rows]
+        else:
+            bodies = [
+                ("comment", row["detail"])
+                for row in flatten_comments(post_id, comments, now_text())
+                if row["detail"]
+            ]
+        if content:
+            bodies.insert(0, ("post", content))
+        inserts = []
+        for kind, body in bodies:
+            inserts.extend(
+                (token, post_id, kind, position)
+                for position, token in enumerate(symbol_tokens(body or ""))
+            )
+        if inserts:
+            self.conn.executemany(
+                "insert into symbol.symbol_rows(token,post_id,kind,position) "
+                "values (?,?,?,?)",
+                inserts,
             )
         if commit:
             self.conn.commit()
