@@ -89,7 +89,7 @@ Referer: https://servicewechat.com/wxe23b94e06f71e89a/141/page-frame.html
 | 端点 | 参数 | 说明 |
 |------|------|------|
 | `/article/article/info` | community_id, id | 单帖详情（含完整评论树） |
-| `/article/article/search` | community_id, keyword, page | 搜索（单字搜索禁用） |
+| `/article/article/search` | community_id, search, page | 搜索（单字搜索禁用；参数名是 `search`，不是 `keyword`） |
 | `/article/article/userarticles` | community_id, show_user_id, page | 指定用户所有帖子，**跨年度** |
 | `/article/article/categoryarticles` | community_id, category_id, page | 按分类浏览 |
 

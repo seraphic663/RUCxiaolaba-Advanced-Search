@@ -89,7 +89,7 @@ class MiniProgramClient:
     def search(self, keyword: str, page: int):
         return self.get(
             "/article/article/search",
-            {"community_id": COMMUNITY_ID, "keyword": keyword, "page": page},
+            {"community_id": COMMUNITY_ID, "search": keyword, "page": page},
         )
 
     def latest_id(self) -> int:
