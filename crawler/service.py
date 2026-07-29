@@ -508,6 +508,10 @@ class CrawlerService:
                             detail_comment_count=safe_int(post["comment_count"]),
                             retry_delay_seconds=observation_retry_delay,
                             max_same_observation_attempts=max_observation_attempts,
+                            accept_detail_count=(
+                                "comment_rows_incomplete"
+                                in str(item["reason"] or "").split("|")
+                            ),
                             commit=False,
                         )
                         if queue_status == "pending":

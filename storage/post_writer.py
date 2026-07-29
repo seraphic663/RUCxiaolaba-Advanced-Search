@@ -1448,6 +1448,7 @@ class SQLitePostStore:
         detail_comment_count: int,
         retry_delay_seconds: int,
         max_same_observation_attempts: int,
+        accept_detail_count: bool = False,
         commit: bool = True,
     ) -> str:
         """Record the exact list observation consumed by a detail response."""
@@ -1457,6 +1458,11 @@ class SQLitePostStore:
             return "missing"
         list_count = safe_int(row["list_comment_count"])
         detail_count = safe_int(detail_comment_count)
+        if accept_detail_count:
+            # A local row-count audit has no newer list observation to defend.
+            # Once the response passes payload validation, its current count is
+            # authoritative even when comments were deleted upstream.
+            list_count = detail_count
         if detail_count >= list_count:
             status = "done"
             next_attempt_at = ""
@@ -1478,9 +1484,9 @@ class SQLitePostStore:
         self.conn.execute(
             """
             update crawler_queue
-            set status=?, db_comment_count=?, last_error=?,
+            set status=?, list_comment_count=?, db_comment_count=?, last_error=?,
                 attempts=attempts + 1,
-                last_attempt_list_comment_count=list_comment_count,
+                last_attempt_list_comment_count=?,
                 last_attempt_list_update_time=list_update_time,
                 last_detail_comment_count=?,
                 same_observation_attempts=?,
@@ -1489,8 +1495,10 @@ class SQLitePostStore:
             """,
             (
                 status,
+                list_count,
                 detail_count,
                 last_error,
+                list_count,
                 detail_count,
                 observation_attempts,
                 next_attempt_at,
