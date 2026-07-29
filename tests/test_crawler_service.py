@@ -1616,6 +1616,83 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(gap["status"], "complete")
         self.assertEqual(post["crawl_status"], "full")
 
+    def test_probe_gaps_rotates_to_least_sampled_range(self):
+        class RecordingClient(FakeClient):
+            def __init__(self):
+                super().__init__({}, {})
+                self.post_ids = []
+
+            def article(self, post_id):
+                self.post_ids.append(str(post_id))
+                return None, "not_found"
+
+        with SQLitePostStore(self.db) as store:
+            store.ensure_runtime_schema()
+            store.conn.executemany(
+                """
+                insert into crawler_gap_ranges values
+                (?, ?, ?, 'density_gap', 'sampled', 0.0,
+                 ?, 0, ?, 0, 'now', 'now')
+                """,
+                (
+                    ("800-800", 800, 800, 1, 1),
+                    ("900-900", 900, 900, 0, 0),
+                ),
+            )
+            store.conn.commit()
+        client = RecordingClient()
+        self.service(client).probe_gap_ranges(
+            range_limit=1,
+            samples_per_range=1,
+            enqueue_found=True,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(client.post_ids, ["900"])
+
+    def test_probe_gaps_does_not_request_an_already_saved_post_id(self):
+        class RecordingClient(FakeClient):
+            def __init__(self):
+                super().__init__({}, {"501": detail("501")})
+                self.post_ids = []
+
+            def article(self, post_id):
+                self.post_ids.append(str(post_id))
+                return super().article(post_id)
+
+        with SQLitePostStore(self.db) as store:
+            store.upsert_post(
+                {
+                    "id": "500",
+                    "content": "already saved",
+                    "create_time": "2026-06-25 00:00:00",
+                    "comment_count": 0,
+                },
+                [],
+            )
+            store.ensure_runtime_schema()
+            store.conn.execute(
+                """
+                insert into crawler_gap_ranges values
+                ('500-501', 500, 501, 'density_gap', 'pending', 0.5,
+                 0, 0, 0, 0, 'now', 'now')
+                """
+            )
+            store.conn.commit()
+        client = RecordingClient()
+        stats = self.service(client).probe_gap_ranges(
+            range_limit=1,
+            samples_per_range=1,
+            enqueue_found=True,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(client.post_ids, ["501"])
+        self.assertEqual(stats["found"], 1)
+        self.assertEqual(stats["saved"], 1)
+
     def test_gap_sampling_advances_after_existing_probes(self):
         first = CrawlerService.sample_ids(100, 109, 3)
         second = CrawlerService.sample_ids(
