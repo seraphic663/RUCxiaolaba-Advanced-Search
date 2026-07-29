@@ -3,10 +3,10 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from crawler.service import CrawlerService
+from crawler.service import CHINA_TZ, CrawlerService
 from storage.post_writer import SQLitePostStore
 
 
@@ -856,6 +856,12 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(stats["selected_coverage"], 6)
         self.assertEqual(stats["selected_fresh_coverage"], 4)
         self.assertEqual(stats["selected_backlog_coverage"], 2)
+        cutoff = datetime.strptime(
+            stats["fresh_coverage_after"],
+            "%Y-%m-%d %H:%M:%S",
+        ).replace(tzinfo=CHINA_TZ)
+        expected_cutoff = datetime.now(CHINA_TZ) - timedelta(hours=72)
+        self.assertLess(abs((cutoff - expected_cutoff).total_seconds()), 5)
 
     def test_list_detail_gap_gets_one_delayed_retry_then_defers_until_growth(self):
         with SQLitePostStore(self.db) as store:
