@@ -759,6 +759,47 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(sum(row["priority"] > 0 for row in rows), 8)
         self.assertEqual(len({row["post_id"] for row in rows}), 12)
 
+    def test_trickle_scales_refresh_cap_for_a_quota_reduced_batch(self):
+        details = {}
+        with SQLitePostStore(self.db) as store:
+            for index in range(4):
+                post_id = str(640 + index)
+                details[post_id] = detail(post_id, 1)
+                store.enqueue_crawler_candidate(
+                    post_id=post_id,
+                    source="lists2",
+                    priority=0,
+                    list_create_time="",
+                    list_update_time=f"2026-06-25 13:0{index}:00",
+                    list_comment_count=1,
+                    db_comment_count=0,
+                    reason="comment_changed",
+                )
+            for index in range(6):
+                post_id = str(650 + index)
+                details[post_id] = detail(post_id, 1)
+                store.enqueue_crawler_candidate(
+                    post_id=post_id,
+                    source="lists",
+                    priority=10,
+                    list_create_time=f"2026-06-25 12:0{index}:00",
+                    list_update_time="",
+                    list_comment_count=1,
+                    db_comment_count=None,
+                    reason="new_post",
+                )
+        stats = self.service(FakeClient({}, details)).trickle_fill(
+            limit=8,
+            refresh_limit=4,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=2,
+        )
+        self.assertEqual(stats["refresh_limit"], 2)
+        self.assertEqual(stats["selected_refresh"], 2)
+        self.assertEqual(stats["selected_coverage"], 6)
+
     def test_list_detail_gap_gets_one_delayed_retry_then_defers_until_growth(self):
         with SQLitePostStore(self.db) as store:
             store.upsert_post(

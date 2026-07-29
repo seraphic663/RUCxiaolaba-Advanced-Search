@@ -331,6 +331,7 @@ class CrawlerService:
         client = self.client()
         stats = {
             "limit": limit,
+            "refresh_limit": None,
             "selected": 0,
             "written": 0,
             "misses": 0,
@@ -359,9 +360,18 @@ class CrawlerService:
                     store.init_schema()
                 else:
                     store.ensure_runtime_schema()
+                effective_refresh_limit = (
+                    None
+                    if refresh_limit is None
+                    else min(
+                        max(0, int(refresh_limit)),
+                        max(1, max(1, int(limit)) // 3),
+                    )
+                )
+                stats["refresh_limit"] = effective_refresh_limit
                 items = store.next_crawler_queue_items(
                     limit,
-                    refresh_limit=refresh_limit,
+                    refresh_limit=effective_refresh_limit,
                 )
                 stats["selected"] = len(items)
                 stats["selected_urgent"] = sum(
