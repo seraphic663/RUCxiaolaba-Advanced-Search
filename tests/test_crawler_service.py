@@ -108,10 +108,84 @@ class CrawlerServiceTest(unittest.TestCase):
         )
         self.assertEqual(stats["new"], 1)
         conn = sqlite3.connect(self.db)
+        conn.row_factory = sqlite3.Row
         try:
             self.assertEqual(conn.execute("select count(*) from posts").fetchone()[0], 1)
+            queue = conn.execute(
+                "select status,reason from crawler_queue where post_id='101'"
+            ).fetchone()
+            self.assertEqual(dict(queue), {"status": "done", "reason": "new_post"})
         finally:
             conn.close()
+
+    def test_page_scan_retains_whole_paid_page_when_detail_limit_is_reached(self):
+        articles = [
+            {
+                "id": str(post_id),
+                "detail": f"list stub {post_id}",
+                "create_time": "2026-06-25 10:00:00",
+                "update_time": "2026-06-25 10:00:00",
+                "count_comment": 1,
+            }
+            for post_id in (110, 111, 112)
+        ]
+        stats = self.service(
+            FakeClient({1: articles, 2: []}, {"110": detail("110", 1)})
+        ).scan_pages(
+            command="sync-latest",
+            endpoint="lists",
+            start_page=1,
+            pages=10,
+            min_pages=1,
+            stop_unchanged=5,
+            max_details=1,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(stats["pages"], 1)
+        self.assertEqual(stats["seen"], 3)
+        self.assertEqual(stats["observed_ids"], 3)
+        self.assertEqual(stats["retained_ids"], 3)
+        self.assertEqual(stats["details"], 1)
+        self.assertEqual(stats["queue_inserted"], 3)
+        with SQLitePostStore(self.db) as store:
+            posts = [
+                dict(row)
+                for row in store.conn.execute(
+                    """
+                    select id,crawl_status from posts
+                    where id in ('110','111','112')
+                    order by cast(id as integer)
+                    """
+                )
+            ]
+            queue = [
+                dict(row)
+                for row in store.conn.execute(
+                    """
+                    select post_id,status from crawler_queue
+                    where post_id in ('110','111','112')
+                    order by cast(post_id as integer)
+                    """
+                )
+            ]
+        self.assertEqual(
+            posts,
+            [
+                {"id": "110", "crawl_status": "full"},
+                {"id": "111", "crawl_status": "list_only"},
+                {"id": "112", "crawl_status": "list_only"},
+            ],
+        )
+        self.assertEqual(
+            queue,
+            [
+                {"post_id": "110", "status": "done"},
+                {"post_id": "111", "status": "pending"},
+                {"post_id": "112", "status": "pending"},
+            ],
+        )
 
     def test_page_scan_stops_after_unchanged_threshold(self):
         with SQLitePostStore(self.db) as store:

@@ -1239,13 +1239,22 @@ class CrawlerService:
         stats = {
             "pages": 0,
             "seen": 0,
+            "observed_ids": 0,
+            "retained_ids": 0,
             "new": 0,
             "updated": 0,
             "unchanged": 0,
             "misses": 0,
             "details": 0,
             "errors": 0,
+            "queued": 0,
+            "queue_inserted": 0,
+            "queue_reopened": 0,
+            "queue_updated": 0,
+            "queue_unchanged": 0,
         }
+        observed_ids: set[str] = set()
+        retained_ids: set[str] = set()
         progress = PageScanProgress()
         limit_reached = False
         with database_write_lock(self.db_path, self.lock_timeout):
@@ -1270,11 +1279,14 @@ class CrawlerService:
                     stats["pages"] += 1
                     progress.page_read()
                     page_new = page_updated = 0
+                    observations = []
                     for article in articles:
                         post_id = str(article.get("id") or "")
                         if not post_id:
                             continue
                         stats["seen"] += 1
+                        observed_ids.add(post_id)
+                        stats["observed_ids"] = len(observed_ids)
                         comment_count = safe_int(
                             article.get(
                                 "comment_count",
@@ -1282,6 +1294,67 @@ class CrawlerService:
                             )
                         )
                         existing = store.get_post_counts(post_id)
+                        queue_action = ""
+                        if existing is None or existing != comment_count:
+                            stats["queued"] += 1
+                            if not dry_run:
+                                if existing is None:
+                                    store.upsert_list_stub(
+                                        article,
+                                        source=endpoint,
+                                        commit=False,
+                                    )
+                                if existing is None:
+                                    if endpoint == "lists":
+                                        reason = "new_post"
+                                        priority = 10 if comment_count > 0 else 40
+                                    else:
+                                        reason = "active_missing"
+                                        priority = 20 if comment_count > 0 else 50
+                                elif comment_count > existing:
+                                    reason = "comment_changed"
+                                    priority = 0
+                                else:
+                                    reason = "legacy_changed"
+                                    priority = 30
+                                queue_action = store.enqueue_crawler_candidate(
+                                    post_id=post_id,
+                                    source=endpoint,
+                                    priority=priority,
+                                    list_create_time=self.article_time(
+                                        article,
+                                        "create_time",
+                                    ),
+                                    list_update_time=self.article_time(
+                                        article,
+                                        "update_time",
+                                    ),
+                                    list_comment_count=comment_count,
+                                    db_comment_count=existing,
+                                    reason=reason,
+                                    commit=False,
+                                )
+                                stats[f"queue_{queue_action}"] += 1
+                        observations.append(
+                            {
+                                "post_id": post_id,
+                                "comment_count": comment_count,
+                                "existing": existing,
+                                "queue_action": queue_action,
+                            }
+                        )
+                        if not dry_run:
+                            retained_ids.add(post_id)
+                            stats["retained_ids"] = len(retained_ids)
+                    # The paid list response is durable before any detail call.
+                    # A crash, detail miss, or max-details stop can no longer
+                    # discard IDs from the remainder of this page.
+                    if not dry_run:
+                        store.conn.commit()
+                    for observation in observations:
+                        post_id = observation["post_id"]
+                        comment_count = observation["comment_count"]
+                        existing = observation["existing"]
                         if existing is not None and existing == comment_count:
                             stats["unchanged"] += 1
                             progress.unchanged()
@@ -1292,11 +1365,20 @@ class CrawlerService:
                         parsed = self.fetch_detail(client, post_id)
                         if parsed is None:
                             stats["misses"] += 1
+                            if observation["queue_action"] not in {"", "unchanged"}:
+                                progress.changed()
                             continue
                         post, comments = parsed
                         stats["details"] += 1
                         if not dry_run:
                             store.upsert_post(post, comments, commit=False)
+                            store.finish_crawler_queue_detail(
+                                post_id,
+                                detail_comment_count=safe_int(post["comment_count"]),
+                                retry_delay_seconds=6 * 60 * 60,
+                                max_same_observation_attempts=2,
+                                commit=False,
+                            )
                         if existing is None:
                             stats["new"] += 1
                             page_new += 1
