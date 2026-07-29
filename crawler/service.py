@@ -235,7 +235,7 @@ class CrawlerService:
                                 priority = 0
                                 stats["comment_changed"] += 1
                                 page_changed += 1
-                            elif needs_detail and create_after_since:
+                            elif needs_detail and update_after_since:
                                 reason = "active_missing"
                                 priority = 20 if comment_count > 0 else 50
                         if reason:

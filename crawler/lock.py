@@ -89,6 +89,25 @@ def _safe_float(value) -> float:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        # ``os.kill(pid, 0)`` is a harmless existence probe on POSIX, but on
+        # Windows it can deliver a console control event. Querying a process
+        # handle keeps lock recovery read-only and avoids interrupting the
+        # caller when a legacy marker happens to contain its own PID.
+        import ctypes
+
+        process_query_limited_information = 0x1000
+        error_access_denied = 5
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(
+            process_query_limited_information,
+            False,
+            pid,
+        )
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return kernel32.GetLastError() == error_access_denied
     try:
         os.kill(pid, 0)
         return True
@@ -143,10 +162,16 @@ def _refresh_heartbeat(lock_path: Path, owner: dict) -> bool:
             return False
         if not isinstance(current_value, dict) or current_value.get("token") != owner["token"]:
             return False
-        owner["heartbeat_at"] = time.time()
+        owner["heartbeat_at"] = f"{time.time():.6f}"
         payload = _lock_payload(owner)
+        # The owner writes heartbeat timestamps at a fixed width, so an
+        # in-place update never needs to truncate the marker. Readers can see
+        # either timestamp (or a harmless mix of their digits), but never an
+        # empty/partial JSON document. Staying on the opened inode also avoids
+        # replacing a newer owner's marker after a lease race.
+        if len(payload) != len(current.encode("ascii")):
+            return False
         os.lseek(descriptor, 0, os.SEEK_SET)
-        os.ftruncate(descriptor, 0)
         _write_all(descriptor, payload)
         os.fsync(descriptor)
         return True
@@ -222,7 +247,7 @@ def database_write_lock(
         "hostname": hostname,
         "pid": os.getpid(),
         "created_at": now,
-        "heartbeat_at": now,
+        "heartbeat_at": f"{now:.6f}",
     }
     heartbeat_stop = threading.Event()
     heartbeat_thread = None
