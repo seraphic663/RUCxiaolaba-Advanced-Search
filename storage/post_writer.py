@@ -322,6 +322,9 @@ class SQLitePostStore:
         observation_migration = self.migrate_crawler_queue_observations(commit=False)
         terminal_migration = self.migrate_crawler_queue_terminal_states(commit=False)
         comment_gap_migration = self.migrate_crawler_comment_row_gaps(commit=False)
+        comment_gap_priority_migration = (
+            self.migrate_crawler_comment_row_gap_priorities(commit=False)
+        )
         self.conn.commit()
         if observation_migration:
             print(
@@ -336,6 +339,12 @@ class SQLitePostStore:
         if comment_gap_migration:
             print(
                 f"[queue] migrated comment row gaps {comment_gap_migration}",
+                flush=True,
+            )
+        if comment_gap_priority_migration:
+            print(
+                "[queue] migrated comment row gap priorities "
+                f"{comment_gap_priority_migration}",
                 flush=True,
             )
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
@@ -608,7 +617,7 @@ class SQLitePostStore:
                     (
                         str(row["id"]),
                         "local_audit",
-                        5,
+                        35,
                         str(row["create_time"] or ""),
                         str(row["list_update_time"] or row["create_time"] or ""),
                         safe_int(row["comment_count"]),
@@ -637,7 +646,7 @@ class SQLitePostStore:
             self.conn.execute(
                 """
                 update crawler_queue
-                set source=?, priority=min(priority, 5),
+                set source=?, priority=min(priority, 35),
                     list_create_time=?, list_update_time=?,
                     list_comment_count=?, db_comment_count=?,
                     status='pending', reason=?, last_error='',
@@ -665,6 +674,45 @@ class SQLitePostStore:
             "inserted": inserted,
             "requeued": requeued,
         }
+        self.conn.execute(
+            "insert into crawl_state(key,value,updated_at) values (?,?,?)",
+            (migration_key, "1", now),
+        )
+        if commit:
+            self.conn.commit()
+        return result if any(result.values()) else {}
+
+    def migrate_crawler_comment_row_gap_priorities(
+        self,
+        commit: bool = True,
+    ) -> dict:
+        """Move no-yield local audits behind known list/detail coverage."""
+        if not self._table_exists("crawler_queue"):
+            return {}
+        migration_key = "crawler_comment_row_gap_priority_v2"
+        if self.conn.execute(
+            "select 1 from crawl_state where key=?",
+            (migration_key,),
+        ).fetchone():
+            return {}
+        now = now_text()
+        rebalanced = self.conn.execute(
+            """
+            update crawler_queue
+            set priority=case
+                    when reason like '%comment_changed%' then 0
+                    when reason like '%new_post%' then 10
+                    when reason like '%active_missing%' then 20
+                    else 35
+                end,
+                updated_at=?
+            where status='pending'
+              and priority=5
+              and reason like '%comment_rows_incomplete%'
+            """,
+            (now,),
+        ).rowcount
+        result = {"rebalanced": max(0, int(rebalanced or 0))}
         self.conn.execute(
             "insert into crawl_state(key,value,updated_at) values (?,?,?)",
             (migration_key, "1", now),
