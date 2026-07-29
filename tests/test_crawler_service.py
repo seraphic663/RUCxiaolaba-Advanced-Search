@@ -1050,9 +1050,21 @@ class CrawlerServiceTest(unittest.TestCase):
                     db_comment_count=None,
                     reason="new_post",
                 )
+            for index in range(3):
+                store.enqueue_crawler_candidate(
+                    post_id=str(680 + index),
+                    source="lists",
+                    priority=40,
+                    list_create_time=f"2026-06-25 12:0{index}:00",
+                    list_update_time="",
+                    list_comment_count=0,
+                    db_comment_count=None,
+                    reason="new_post",
+                )
             rows = store.next_crawler_queue_items(12, refresh_limit=4)
         self.assertEqual(sum(row["priority"] == 0 for row in rows), 4)
         self.assertEqual(sum(row["priority"] > 0 for row in rows), 8)
+        self.assertEqual(sum(row["priority"] >= 40 for row in rows), 1)
         self.assertEqual(len({row["post_id"] for row in rows}), 12)
 
     def test_trickle_scales_refresh_cap_for_a_quota_reduced_batch(self):
@@ -1098,6 +1110,19 @@ class CrawlerServiceTest(unittest.TestCase):
                     db_comment_count=None,
                     reason="new_post",
                 )
+            for index in range(2):
+                post_id = str(670 + index)
+                details[post_id] = detail(post_id, 0)
+                store.enqueue_crawler_candidate(
+                    post_id=post_id,
+                    source="lists",
+                    priority=40,
+                    list_create_time=fresh_time,
+                    list_update_time=fresh_time,
+                    list_comment_count=0,
+                    db_comment_count=None,
+                    reason="new_post",
+                )
         stats = self.service(FakeClient({}, details)).trickle_fill(
             limit=8,
             refresh_limit=4,
@@ -1110,15 +1135,18 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(stats["selected_refresh"], 2)
         self.assertEqual(stats["selected_coverage"], 6)
         self.assertEqual(stats["selected_fresh_coverage"], 4)
-        self.assertEqual(stats["selected_backlog_coverage"], 2)
+        self.assertEqual(stats["selected_backlog_coverage"], 1)
+        self.assertEqual(stats["selected_quiet_coverage"], 1)
         self.assertEqual(stats["written_refresh"], 2)
         self.assertEqual(stats["written_coverage"], 6)
         self.assertEqual(stats["completed_refresh"], 2)
         self.assertEqual(stats["completed_coverage"], 6)
         self.assertEqual(stats["completed_fresh_coverage"], 4)
-        self.assertEqual(stats["completed_backlog_coverage"], 2)
+        self.assertEqual(stats["completed_backlog_coverage"], 1)
+        self.assertEqual(stats["completed_quiet_coverage"], 1)
         self.assertEqual(stats["new_comment_rows_refresh"], 2)
-        self.assertEqual(stats["new_comment_rows_coverage"], 6)
+        self.assertEqual(stats["new_comment_rows_coverage"], 5)
+        self.assertEqual(stats["unchanged_comment_rows_coverage"], 1)
         cutoff = datetime.strptime(
             stats["fresh_coverage_after"],
             "%Y-%m-%d %H:%M:%S",

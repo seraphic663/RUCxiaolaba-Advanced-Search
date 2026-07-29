@@ -385,6 +385,7 @@ class CrawlerService:
             "selected_coverage": 0,
             "selected_fresh_coverage": 0,
             "selected_backlog_coverage": 0,
+            "selected_quiet_coverage": 0,
             "retry_scheduled": 0,
             "deferred_observations": 0,
             "transient_retries": 0,
@@ -417,6 +418,7 @@ class CrawlerService:
                 stats[f"{metric}_{lane}"] = 0
         stats["completed_fresh_coverage"] = 0
         stats["completed_backlog_coverage"] = 0
+        stats["completed_quiet_coverage"] = 0
         consecutive_misses = 0
         with database_write_lock(self.db_path, self.lock_timeout):
             with SQLitePostStore(self.db_path) as store:
@@ -459,9 +461,13 @@ class CrawlerService:
                     if 0 < safe_int(item["priority"]) < 40
                     and str(item["list_create_time"] or "") >= fresh_coverage_after
                 )
+                stats["selected_quiet_coverage"] = sum(
+                    1 for item in items if safe_int(item["priority"]) >= 40
+                )
                 stats["selected_backlog_coverage"] = (
                     stats["selected_coverage"]
                     - stats["selected_fresh_coverage"]
+                    - stats["selected_quiet_coverage"]
                 )
                 for item in items:
                     post_id = str(item["post_id"])
@@ -478,6 +484,7 @@ class CrawlerService:
                         and str(item["list_create_time"] or "")
                         >= fresh_coverage_after
                     )
+                    is_quiet_coverage = priority >= 40
                     time.sleep(random.uniform(min_delay, max_delay))
                     parsed, error = self.fetch_detail_with_error(client, post_id)
                     if error:
@@ -641,10 +648,15 @@ class CrawlerService:
                             stats["completed_details"] += 1
                             stats[f"completed_{lane}"] += 1
                             if lane == "coverage":
-                                coverage_age = (
-                                    "fresh" if is_fresh_coverage else "backlog"
-                                )
-                                stats[f"completed_{coverage_age}_coverage"] += 1
+                                if is_quiet_coverage:
+                                    stats["completed_quiet_coverage"] += 1
+                                else:
+                                    coverage_age = (
+                                        "fresh" if is_fresh_coverage else "backlog"
+                                    )
+                                    stats[
+                                        f"completed_{coverage_age}_coverage"
+                                    ] += 1
                         else:
                             stats["refreshed_details"] += 1
                             stats[f"refreshed_{lane}"] += 1
