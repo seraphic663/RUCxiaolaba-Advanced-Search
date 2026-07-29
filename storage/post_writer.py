@@ -319,11 +319,17 @@ class SQLitePostStore:
             )
         self.ensure_crawler_queue(commit=False)
         self.ensure_gap_tables(commit=False)
-        migration = self.migrate_crawler_queue_observations(commit=False)
+        observation_migration = self.migrate_crawler_queue_observations(commit=False)
+        terminal_migration = self.migrate_crawler_queue_terminal_states(commit=False)
         self.conn.commit()
-        if migration:
+        if observation_migration:
             print(
-                f"[queue] migrated observation state {migration}",
+                f"[queue] migrated observation state {observation_migration}",
+                flush=True,
+            )
+        if terminal_migration:
+            print(
+                f"[queue] migrated terminal state {terminal_migration}",
                 flush=True,
             )
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
@@ -473,6 +479,57 @@ class SQLitePostStore:
             "seeded": max(0, int(seeded or 0)),
             "stale_gaps": safe_int(stale),
             "deferred": safe_int(deferred),
+        }
+        self.conn.execute(
+            "insert into crawl_state(key,value,updated_at) values (?,?,?)",
+            (migration_key, "1", now),
+        )
+        if commit:
+            self.conn.commit()
+        return result if any(result.values()) else {}
+
+    def migrate_crawler_queue_terminal_states(self, commit: bool = True) -> dict:
+        """One-time normalization of terminal states written by the old worker."""
+        if not self._table_exists("crawler_queue"):
+            return {}
+        self.conn.execute(
+            """
+            create table if not exists crawl_state (
+                key text primary key,
+                value text not null,
+                updated_at text not null
+            )
+            """
+        )
+        migration_key = "crawler_queue_terminal_state_v2"
+        if self.conn.execute(
+            "select 1 from crawl_state where key=?",
+            (migration_key,),
+        ).fetchone():
+            return {}
+        now = now_text()
+        normalized = self.conn.execute(
+            """
+            update crawler_queue
+            set status='skipped', updated_at=?
+            where status='failed'
+              and last_error in ('not_found','foreign_or_invalid')
+            """,
+            (now,),
+        ).rowcount
+        requeued = self.conn.execute(
+            """
+            update crawler_queue
+            set status='pending', next_attempt_at='', updated_at=?
+            where status='failed'
+              and attempts < 3
+              and last_error not like 'suspicious_payload:%'
+            """,
+            (now,),
+        ).rowcount
+        result = {
+            "normalized_skipped": max(0, int(normalized or 0)),
+            "requeued_transient": max(0, int(requeued or 0)),
         }
         self.conn.execute(
             "insert into crawl_state(key,value,updated_at) values (?,?,?)",
