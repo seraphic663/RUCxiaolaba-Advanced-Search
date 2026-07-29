@@ -534,6 +534,41 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(row["priority"], 0)
         self.assertEqual(row["reason"], "comment_changed")
 
+    def test_discover_active_saves_old_missing_post_with_recent_update(self):
+        article = {
+            "id": "201",
+            "detail": "old post active again",
+            "create_time": "2025-10-01 10:00:00",
+            "update_time": "2026-06-25 10:00:00",
+            "count_comment": 3,
+        }
+        stats = self.service(FakeClient({1: [article], 2: []}, {})).discover_queue(
+            command="discover-active",
+            endpoint="lists2",
+            since="2026-06-25 00:00:00",
+            max_pages=2,
+            old_page_threshold=2,
+            min_pages=1,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(stats["queue_inserted"], 1)
+        with SQLitePostStore(self.db) as store:
+            queue = store.conn.execute(
+                "select priority,reason,status from crawler_queue where post_id='201'"
+            ).fetchone()
+            post = store.conn.execute(
+                "select id,crawl_status from posts where id='201'"
+            ).fetchone()
+        self.assertEqual(dict(queue), {
+            "priority": 20,
+            "reason": "active_missing",
+            "status": "pending",
+        })
+        self.assertEqual(dict(post), {"id": "201", "crawl_status": "list_only"})
+
     def test_comment_growth_reopens_done_queue_item_and_refreshes_detail(self):
         with SQLitePostStore(self.db) as store:
             old_post = detail("205", 1)[0]
