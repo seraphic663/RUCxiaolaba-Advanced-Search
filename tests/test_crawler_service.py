@@ -348,6 +348,9 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertTrue(row["started_at"])
         self.assertTrue(row["finished_at"])
         self.assertEqual(json.loads(row["stats_json"]), stats)
+        self.assertEqual(stats["queue_before_total"], 0)
+        self.assertEqual(stats["queue_after_total"], 1)
+        self.assertEqual(stats["queue_delta_total"], 1)
 
     def test_discover_stops_cleanly_when_request_quota_closes(self):
         stats = self.service(QuotaStoppedClient({}, {})).discover_queue(
@@ -1147,6 +1150,12 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(stats["new_comment_rows_refresh"], 2)
         self.assertEqual(stats["new_comment_rows_coverage"], 5)
         self.assertEqual(stats["unchanged_comment_rows_coverage"], 1)
+        self.assertEqual(stats["queue_before_total"], 18)
+        self.assertEqual(stats["queue_after_total"], 10)
+        self.assertEqual(stats["queue_delta_total"], -8)
+        self.assertEqual(stats["queue_delta_refresh"], -2)
+        self.assertEqual(stats["queue_delta_commented_coverage"], -5)
+        self.assertEqual(stats["queue_delta_quiet_coverage"], -1)
         cutoff = datetime.strptime(
             stats["fresh_coverage_after"],
             "%Y-%m-%d %H:%M:%S",
