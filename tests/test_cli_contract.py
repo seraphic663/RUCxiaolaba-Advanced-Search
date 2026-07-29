@@ -69,14 +69,14 @@ class CLIContractTest(unittest.TestCase):
     def test_scheduler_budgets_source_call_types(self):
         self.assertEqual(job_budget_kind("discover_new"), "new_list")
         self.assertEqual(job_budget_kind("discover_active"), "active_list")
-        self.assertEqual(job_budget_kind("plan_gaps"), "new_list")
+        self.assertEqual(job_budget_kind("plan_gaps"), "")
         self.assertEqual(job_budget_kind("trickle_fill"), "detail")
         self.assertEqual(job_budget_kind("probe_gaps"), "probe")
         self.assertEqual(
             planned_job_calls("discover_new", ["discover-latest", "--max-pages", "7"]),
             7,
         )
-        self.assertEqual(planned_job_calls("plan_gaps", ["plan-gaps"]), 1)
+        self.assertEqual(planned_job_calls("plan_gaps", ["plan-gaps"]), 0)
         trickle_args = job_args("trickle_fill")
         self.assertLessEqual(int(trickle_args[trickle_args.index("--limit") + 1]), 12)
         self.assertLessEqual(

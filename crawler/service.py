@@ -540,7 +540,6 @@ class CrawlerService:
         dry_run: bool,
     ) -> dict:
         since = self.normalize_cutoff_time(since)
-        client = self.client()
         chunk_size = max(1, int(chunk_size))
         density_threshold = max(0.0, min(1.0, float(density_threshold)))
         stats = {
@@ -569,7 +568,12 @@ class CrawlerService:
                     raise RuntimeError(f"cannot determine gap start for {since}")
                 resolved_end = safe_int(end_id)
                 if resolved_end <= 0:
-                    resolved_end = self._latest_id(client)
+                    row = store.conn.execute(
+                        "select max(cast(id as integer)) from posts"
+                    ).fetchone()
+                    resolved_end = safe_int(row[0] if row else 0)
+                if resolved_end <= 0:
+                    raise RuntimeError("cannot determine gap end from local posts")
                 if resolved_end < resolved_start:
                     raise ValueError("end id is earlier than start id")
                 stats["start_id"] = resolved_start
