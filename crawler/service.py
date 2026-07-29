@@ -1174,20 +1174,122 @@ class CrawlerService:
         min_delay: float,
         max_delay: float,
     ) -> dict:
-        if not ids:
+        requested_ids = [str(post_id).strip() for post_id in ids if str(post_id).strip()]
+        unique_ids = list(dict.fromkeys(requested_ids))
+        if not unique_ids:
             raise RuntimeError("no ids provided")
+        batch_size = max(1, int(batch_size))
+        run_started_at = datetime.now(CHINA_TZ).isoformat()
         client = self.client()
-        stats = {"ids": ids, "written": 0, "misses": 0}
+        stats = {
+            "ids": unique_ids,
+            "requested": len(requested_ids),
+            "selected": len(unique_ids),
+            "written": 0,
+            "misses": 0,
+            "skipped": 0,
+            "failed": 0,
+            "transient_retries": 0,
+            "rate_limited": False,
+            "quota_stop": False,
+            "source_calls": 0,
+            "queue_inserted": 0,
+            "queue_reopened": 0,
+            "queue_updated": 0,
+            "queue_unchanged": 0,
+        }
+        fatal_error = ""
         with database_write_lock(self.db_path, self.lock_timeout):
             with SQLitePostStore(self.db_path) as store:
                 if self.init_schema:
                     store.init_schema()
-                for index, post_id in enumerate(ids, 1):
+                else:
+                    store.ensure_runtime_schema()
+                queue_before = store.crawler_queue_pending_snapshot()
+                self.add_queue_snapshot(stats, before=queue_before)
+                if not dry_run:
+                    for post_id in unique_ids:
+                        snapshot = store.get_post_crawl_snapshot(post_id)
+                        db_comment_count = (
+                            None
+                            if snapshot is None
+                            else safe_int(snapshot["comment_count"])
+                        )
+                        action = store.enqueue_crawler_candidate(
+                            post_id=post_id,
+                            source="manual_ids",
+                            priority=-10,
+                            list_create_time="",
+                            list_update_time="",
+                            list_comment_count=safe_int(db_comment_count),
+                            db_comment_count=db_comment_count,
+                            reason="explicit_id",
+                            commit=False,
+                        )
+                        stats[f"queue_{action}"] += 1
+                    # Every explicit ID is durable before the first source call.
+                    store.conn.commit()
+                for index, post_id in enumerate(unique_ids, 1):
                     time.sleep(random.uniform(min_delay, max_delay))
-                    parsed = self.fetch_detail(client, post_id)
-                    if parsed is None:
+                    parsed, error = self.fetch_detail_with_error(client, post_id)
+                    if error:
+                        if self.is_source_quota_stop(error):
+                            stats["quota_stop"] = True
+                            print(f"[fill-details] stop {error}", flush=True)
+                            break
                         stats["misses"] += 1
-                        print(f"[fill-details] miss #{post_id}", flush=True)
+                        if self.is_rate_limited(error):
+                            stats["rate_limited"] = True
+                        if not dry_run:
+                            if error in {"not_found", "foreign_or_invalid"}:
+                                store.mark_crawler_queue_item(
+                                    post_id,
+                                    status="skipped",
+                                    last_error=error,
+                                    increment_attempts=True,
+                                    record_observation=True,
+                                    commit=False,
+                                )
+                                stats["skipped"] += 1
+                            elif error.startswith("suspicious_payload:"):
+                                store.mark_crawler_queue_item(
+                                    post_id,
+                                    status="failed",
+                                    last_error=error,
+                                    increment_attempts=True,
+                                    record_observation=True,
+                                    commit=False,
+                                )
+                                stats["failed"] += 1
+                            elif stats["rate_limited"] or error == "cookie_expired":
+                                store.mark_crawler_queue_item(
+                                    post_id,
+                                    status="pending",
+                                    last_error=error,
+                                    increment_attempts=True,
+                                    record_observation=True,
+                                    commit=False,
+                                )
+                            else:
+                                status = store.defer_crawler_queue_failure(
+                                    post_id,
+                                    last_error=error,
+                                    retry_delay_seconds=60 * 60,
+                                    max_same_observation_attempts=3,
+                                    commit=False,
+                                )
+                                if status == "pending":
+                                    stats["transient_retries"] += 1
+                                else:
+                                    stats["failed"] += 1
+                            store.conn.commit()
+                        print(
+                            f"[fill-details] miss #{post_id} err={error}",
+                            flush=True,
+                        )
+                        if stats["rate_limited"] or error == "cookie_expired":
+                            fatal_error = error
+                            break
                         continue
                     post, comments = parsed
                     if dry_run:
@@ -1198,27 +1300,49 @@ class CrawlerService:
                         )
                     else:
                         store.upsert_post(post, comments, commit=False)
+                        store.finish_crawler_queue_detail(
+                            post_id,
+                            detail_comment_count=safe_int(post["comment_count"]),
+                            retry_delay_seconds=6 * 60 * 60,
+                            max_same_observation_attempts=2,
+                            accept_detail_count=True,
+                            commit=False,
+                        )
                         stats["written"] += 1
                         if stats["written"] % batch_size == 0:
                             store.conn.commit()
                     if index % 20 == 0:
                         print(
-                            f"[fill-details] progress {index}/{len(ids)} "
+                            f"[fill-details] progress {index}/{len(unique_ids)} "
                             f"written={stats['written']} "
                             f"miss={stats['misses']}",
                             flush=True,
                         )
+                queue_after = store.crawler_queue_pending_snapshot()
+                self.add_queue_snapshot(
+                    stats,
+                    before=queue_before,
+                    after=queue_after,
+                )
                 if not dry_run:
+                    stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
                     store.set_state(
                         "crawler_fill_details",
                         json.dumps(stats, ensure_ascii=False),
                         commit=False,
                     )
-                    store.conn.commit()
+                    store.record_crawler_run(
+                        command="fill-details",
+                        stats=stats,
+                        started_at=run_started_at,
+                        commit=True,
+                    )
         print(
             f"[fill-details] done written={stats['written']} "
             f"misses={stats['misses']} dry_run={dry_run}"
         )
+        if fatal_error:
+            raise RuntimeError(fatal_error)
         return stats
 
     def scan_pages(

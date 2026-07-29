@@ -237,6 +237,99 @@ class CrawlerServiceTest(unittest.TestCase):
                 max_delay=0,
             )
 
+    def test_fill_details_tracks_success_and_missing_explicit_ids(self):
+        stats = self.service(
+            FakeClient(
+                {},
+                {
+                    "130": detail("130", 1),
+                    "131": (None, "not_found"),
+                },
+            )
+        ).fill_details(
+            ["130", "131", "130"],
+            dry_run=False,
+            batch_size=10,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(stats["requested"], 3)
+        self.assertEqual(stats["selected"], 2)
+        self.assertEqual(stats["queue_inserted"], 2)
+        self.assertEqual(stats["written"], 1)
+        self.assertEqual(stats["skipped"], 1)
+        with SQLitePostStore(self.db) as store:
+            queue = [
+                dict(row)
+                for row in store.conn.execute(
+                    """
+                    select post_id,status,last_error from crawler_queue
+                    where post_id in ('130','131')
+                    order by cast(post_id as integer)
+                    """
+                )
+            ]
+            history = store.conn.execute(
+                """
+                select command,selected,written,misses,stats_json
+                from crawler_run_history where command='fill-details'
+                """
+            ).fetchone()
+        self.assertEqual(
+            queue,
+            [
+                {"post_id": "130", "status": "done", "last_error": ""},
+                {
+                    "post_id": "131",
+                    "status": "skipped",
+                    "last_error": "not_found",
+                },
+            ],
+        )
+        self.assertEqual(history["selected"], 2)
+        self.assertEqual(history["written"], 1)
+        self.assertEqual(history["misses"], 1)
+        self.assertEqual(json.loads(history["stats_json"]), stats)
+
+    def test_fill_details_retains_unattempted_ids_after_rate_limit(self):
+        with self.assertRaisesRegex(RuntimeError, "rate_limited"):
+            self.service(RateLimitedClient({}, {})).fill_details(
+                ["140", "141"],
+                dry_run=False,
+                batch_size=10,
+                min_delay=0,
+                max_delay=0,
+            )
+        with SQLitePostStore(self.db) as store:
+            queue = [
+                dict(row)
+                for row in store.conn.execute(
+                    """
+                    select post_id,status,attempts,last_error
+                    from crawler_queue
+                    where post_id in ('140','141')
+                    order by cast(post_id as integer)
+                    """
+                )
+            ]
+        self.assertEqual(
+            queue,
+            [
+                {
+                    "post_id": "140",
+                    "status": "pending",
+                    "attempts": 1,
+                    "last_error": "rate_limited:今天刷的太久了，休息一下吧",
+                },
+                {
+                    "post_id": "141",
+                    "status": "pending",
+                    "attempts": 0,
+                    "last_error": "",
+                },
+            ],
+        )
+
     def test_discover_latest_queues_missing_posts_until_old_pages(self):
         with SQLitePostStore(self.db) as store:
             store.upsert_post(
