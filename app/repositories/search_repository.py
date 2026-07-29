@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -17,6 +18,14 @@ def _safe_int(value, default=0) -> int:
         return int(value or default)
     except (TypeError, ValueError):
         return default
+
+
+def _media_object(value) -> dict:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def fts_query(keywords: list[str]) -> str | None:
@@ -43,6 +52,13 @@ class SearchRepository:
             self.posts_db,
             self.bigram_db if include_bigram else None,
             self.symbol_db if include_symbol else None,
+        )
+
+    @staticmethod
+    def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
+        return any(
+            str(row["name"]) == column
+            for row in conn.execute(f"pragma table_info({table})")
         )
 
     def has_search_index(self) -> bool:
@@ -501,7 +517,7 @@ class SearchRepository:
 
     @staticmethod
     def _public_post(row) -> dict:
-        return {
+        item = {
             "id": row["id"],
             "content": row["content"],
             "category": row["category_name"],
@@ -511,6 +527,12 @@ class SearchRepository:
             "stars": _safe_int(row["star_count"]),
             "trace": _safe_int(row["trace_count"]),
         }
+        media = _media_object(
+            row["media_json"] if "media_json" in row.keys() else "{}"
+        )
+        if media:
+            item["media"] = media
+        return item
 
     def search(self, request: SearchQuery) -> dict:
         if not self.posts_db.exists():
@@ -528,6 +550,11 @@ class SearchRepository:
             request, use_fts=use_fts, use_bigram=use_bigram, use_symbol=use_symbol
         )
         with self.connect(include_bigram=use_bigram, include_symbol=use_symbol) as conn:
+            media_sql = (
+                "p.media_json"
+                if self._has_column(conn, "posts", "media_json")
+                else "'{}'"
+            )
             total = conn.execute(
                 f"select count(*) from posts p{where_sql}", args
             ).fetchone()[0]
@@ -539,7 +566,8 @@ class SearchRepository:
                 select p.id, p.content, p.category_name, p.user_name,
                        p.create_time, p.comment_count, p.star_count,
                        p.trace_count,
-                       p.show_user_id, p.real_user_id
+                       p.show_user_id, p.real_user_id,
+                       {media_sql} as media_json
                 from posts p
                 {where_sql}
                 order by {order_by}
@@ -616,6 +644,11 @@ class SearchRepository:
             min(batch_size or default_batch, max_batch),
         )
         with self.connect() as conn:
+            media_sql = (
+                "p.media_json"
+                if self._has_column(conn, "posts", "media_json")
+                else "'{}'"
+            )
             candidate_total = conn.execute(
                 f"select count(*) from posts p{candidate_where}",
                 candidate_args,
@@ -634,7 +667,8 @@ class SearchRepository:
                     select p.id, p.content, p.category_name, p.user_name,
                            p.create_time, p.comment_count, p.star_count,
                            p.trace_count,
-                           p.show_user_id, p.real_user_id
+                           p.show_user_id, p.real_user_id,
+                           {media_sql} as media_json
                     from posts p
                     {candidate_where}
                     order by {order_by}
@@ -707,12 +741,18 @@ class SearchRepository:
         fetch_limit = request.limit + 1
 
         with self.connect() as conn:
+            media_sql = (
+                "p.media_json"
+                if self._has_column(conn, "posts", "media_json")
+                else "'{}'"
+            )
             rows = conn.execute(
                 f"""
                 select p.id, p.content, p.category_name, p.user_name,
                        p.create_time, p.comment_count, p.star_count,
                        p.trace_count,
-                       p.show_user_id, p.real_user_id
+                       p.show_user_id, p.real_user_id,
+                       {media_sql} as media_json
                 from posts p
                 {candidate_where}
                 order by {order_by}
@@ -782,6 +822,11 @@ class SearchRepository:
         if not self.posts_db.exists():
             return None
         with self.connect() as conn:
+            comment_media_sql = (
+                "media_json"
+                if self._has_column(conn, "comments", "media_json")
+                else "'{}'"
+            )
             post = conn.execute(
                 "select user_name, comment_count from posts where id=?",
                 (post_id,),
@@ -789,10 +834,11 @@ class SearchRepository:
             if post is None:
                 return None
             rows = conn.execute(
-                """
+                f"""
                 select comment_id, parent_comment_id, detail, show_user_name,
                        create_time, show_user_id, real_user_id, is_publisher,
-                       reply_show_user_name, reply_show_user_id
+                       reply_show_user_name, reply_show_user_id,
+                       {comment_media_sql} as media_json
                 from comments
                 where post_id=?
                 order by create_time, row_key
@@ -820,6 +866,9 @@ class SearchRepository:
                 item["show_user_id"] = row["show_user_id"]
                 item["real_user_id"] = row["real_user_id"]
                 item["reply_show_user_id"] = row["reply_show_user_id"]
+            media = _media_object(row["media_json"])
+            if media:
+                item["media"] = media
             if (
                 normalize_publisher_name
                 and row["is_publisher"] == 1
