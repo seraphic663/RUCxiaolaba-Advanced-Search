@@ -536,13 +536,48 @@ class CrawlerServiceTest(unittest.TestCase):
             "requeued": 1,
         })
         self.assertEqual(repeated, {})
-        self.assertEqual(rows["158"]["priority"], 5)
+        self.assertEqual(rows["158"]["priority"], 35)
         self.assertEqual(rows["158"]["status"], "pending")
         self.assertEqual(rows["158"]["db_comment_count"], 1)
         self.assertIn("local_audit", rows["159"]["source"])
         self.assertIn("comment_rows_incomplete", rows["159"]["reason"])
-        self.assertEqual(rows["159"]["priority"], 5)
+        self.assertEqual(rows["159"]["priority"], 20)
         self.assertEqual(rows["159"]["status"], "pending")
+
+    def test_runtime_schema_rebalances_legacy_comment_audit_priorities(self):
+        with SQLitePostStore(self.db) as store:
+            for post_id, reason in (
+                ("160", "comment_rows_incomplete"),
+                ("161", "active_missing|comment_rows_incomplete"),
+                ("162", "comment_changed|comment_rows_incomplete"),
+            ):
+                store.enqueue_crawler_candidate(
+                    post_id=post_id,
+                    source="local_audit",
+                    priority=5,
+                    list_create_time="2024-01-01 00:00:00",
+                    list_update_time="2024-01-01 00:00:00",
+                    list_comment_count=2,
+                    db_comment_count=1,
+                    reason=reason,
+                )
+            store.conn.execute(
+                "delete from crawl_state where key='crawler_comment_row_gap_priority_v2'"
+            )
+            migration = store.migrate_crawler_comment_row_gap_priorities()
+            priorities = {
+                row["post_id"]: row["priority"]
+                for row in store.conn.execute(
+                    """
+                    select post_id,priority from crawler_queue
+                    where post_id in ('160','161','162')
+                    """
+                )
+            }
+            repeated = store.migrate_crawler_comment_row_gap_priorities()
+        self.assertEqual(migration, {"rebalanced": 3})
+        self.assertEqual(repeated, {})
+        self.assertEqual(priorities, {"160": 35, "161": 20, "162": 0})
 
     def test_discover_active_stops_on_repeated_page_signature(self):
         with SQLitePostStore(self.db) as store:
