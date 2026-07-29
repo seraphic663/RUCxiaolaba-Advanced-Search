@@ -793,7 +793,7 @@ class CrawlerService:
                     """
                     select * from crawler_gap_ranges
                     where status in ('pending', 'sampled')
-                    order by start_id
+                    order by sampled asc, start_id asc
                     limit ?
                     """,
                     (max(1, range_limit),),
@@ -815,6 +815,19 @@ class CrawlerService:
                             (range_id,),
                         )
                     }
+                    already.update(
+                        str(row["id"])
+                        for row in store.conn.execute(
+                            """
+                            select id from posts
+                            where cast(id as integer) between ? and ?
+                            """,
+                            (
+                                safe_int(gap["start_id"]),
+                                safe_int(gap["end_id"]),
+                            ),
+                        )
+                    )
                     ids = self.sample_ids(
                         safe_int(gap["start_id"]),
                         safe_int(gap["end_id"]),

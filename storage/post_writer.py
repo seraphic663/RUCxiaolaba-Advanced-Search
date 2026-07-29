@@ -307,6 +307,8 @@ class SQLitePostStore:
             create index if not exists idx_crawler_queue_status_priority on crawler_queue(status, priority, updated_at);
             create index if not exists idx_crawler_queue_due on crawler_queue(status, next_attempt_at, priority);
             create index if not exists idx_crawler_gap_status on crawler_gap_ranges(status, start_id);
+            create index if not exists idx_crawler_gap_sampling
+                on crawler_gap_ranges(status, sampled, start_id);
             create index if not exists idx_crawler_probe_range on crawler_id_probe(range_id, status);
             create index if not exists idx_crawler_run_finished
                 on crawler_run_history(finished_at, command);
@@ -854,6 +856,8 @@ class SQLitePostStore:
             );
 
             create index if not exists idx_crawler_gap_status on crawler_gap_ranges(status, start_id);
+            create index if not exists idx_crawler_gap_sampling
+                on crawler_gap_ranges(status, sampled, start_id);
             create index if not exists idx_crawler_probe_range on crawler_id_probe(range_id, status);
             """
         )
