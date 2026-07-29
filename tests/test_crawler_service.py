@@ -1151,6 +1151,33 @@ class CrawlerServiceTest(unittest.TestCase):
                 3,
             )
 
+    def test_plan_gaps_uses_saved_max_id_without_a_source_list_call(self):
+        class NoSourceListClient(FakeClient):
+            def list_page(self, endpoint, page):
+                raise AssertionError("gap planning must not call the source")
+
+        with SQLitePostStore(self.db) as store:
+            for post_id in ("1000", "1005"):
+                store.upsert_post(
+                    {
+                        "id": post_id,
+                        "content": "saved id",
+                        "create_time": "2026-06-25 00:00:00",
+                        "comment_count": 0,
+                    },
+                    [],
+                )
+        stats = self.service(NoSourceListClient({}, {})).plan_gap_ranges(
+            since="",
+            start_id=1000,
+            end_id=0,
+            chunk_size=3,
+            density_threshold=0.8,
+            dry_run=False,
+        )
+        self.assertEqual(stats["end_id"], 1005)
+        self.assertEqual(stats["planned"], 2)
+
     def test_probe_gaps_records_found_without_writing_post(self):
         with SQLitePostStore(self.db) as store:
             store.ensure_runtime_schema()

@@ -732,8 +732,6 @@ def job_budget_kind(name: str) -> str:
         return "new_list"
     if name == "discover_active":
         return "active_list"
-    if name == "plan_gaps":
-        return "new_list"
     if name == "trickle_fill":
         return "detail"
     if name == "probe_gaps":
@@ -744,10 +742,6 @@ def job_budget_kind(name: str) -> str:
 def planned_job_calls(name: str, args: list[str]) -> int:
     if name in {"discover_new", "discover_active"}:
         return int(args[args.index("--max-pages") + 1])
-    if name == "plan_gaps":
-        # plan-gaps asks the source for the current latest id when --end-id is
-        # omitted. Count it so gap planning cannot silently consume list quota.
-        return 1
     if name == "trickle_fill":
         return int(args[args.index("--limit") + 1])
     if name == "probe_gaps":
