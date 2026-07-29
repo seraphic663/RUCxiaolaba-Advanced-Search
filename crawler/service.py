@@ -7,7 +7,7 @@ import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from math import gcd
 from pathlib import Path
 
@@ -16,6 +16,8 @@ from crawler.lock import database_write_lock
 from crawler.normalizer import normalize_detail, validate_normalized_detail
 from crawler.strategies.page_scan import PageScanProgress
 from storage.post_writer import SQLitePostStore, safe_int
+
+CHINA_TZ = timezone(timedelta(hours=8))
 
 
 class CrawlerService:
@@ -333,6 +335,7 @@ class CrawlerService:
         stats = {
             "limit": limit,
             "refresh_limit": None,
+            "fresh_coverage_after": "",
             "selected": 0,
             "written": 0,
             "misses": 0,
@@ -373,9 +376,10 @@ class CrawlerService:
                 )
                 stats["refresh_limit"] = effective_refresh_limit
                 fresh_coverage_after = (
-                    datetime.now()
+                    datetime.now(CHINA_TZ)
                     - timedelta(hours=max(1, int(fresh_coverage_hours)))
                 ).strftime("%Y-%m-%d %H:%M:%S")
+                stats["fresh_coverage_after"] = fresh_coverage_after
                 items = store.next_crawler_queue_items(
                     limit,
                     refresh_limit=effective_refresh_limit,

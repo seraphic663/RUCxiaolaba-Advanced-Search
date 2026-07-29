@@ -940,6 +940,7 @@ def main() -> int:
             f"since={TRICKLE_SINCE!r} discover={DISCOVER_INTERVAL}s "
             f"trickle={TRICKLE_INTERVAL}s limit={TRICKLE_LIMIT} "
             f"refresh_limit={TRICKLE_REFRESH_LIMIT} "
+            f"fresh_hours={TRICKLE_FRESH_COVERAGE_HOURS} "
             f"gap={GAP_ENABLED} gap_since={GAP_SINCE!r}",
             flush=True,
         )
