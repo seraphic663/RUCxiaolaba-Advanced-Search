@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from crawler.config import COMMUNITY_ID
-from storage.post_writer import safe_int
+from storage.post_writer import extract_media_json, safe_int
 
 
 def count_comment_nodes(comments: list[dict]) -> int:
@@ -30,6 +30,7 @@ def normalize_detail(
     post = {
         "id": str(post_id),
         "content": (f"{data.get('title') or ''} {data.get('detail') or ''}".strip()),
+        "media_json": extract_media_json(data),
         "category_name": data.get("category_name", ""),
         "user_name": data.get("show_user_name", ""),
         "show_user_id": data.get("show_user_id", ""),
@@ -47,7 +48,8 @@ def validate_normalized_detail(
     comments: list[dict],
 ) -> str | None:
     """Reject partial upstream payloads that would destroy good local data."""
-    if not str(post.get("content") or "").strip():
+    media_json = str(post.get("media_json") or "{}").strip()
+    if not str(post.get("content") or "").strip() and media_json in {"", "{}"}:
         return "empty_content"
     declared = safe_int(post.get("comment_count"))
     returned = count_comment_nodes(comments)

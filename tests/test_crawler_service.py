@@ -1810,6 +1810,91 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertIsNotNone(invalid)
         self.assertIsNone(quarantine)
 
+    def test_image_only_detail_is_saved_as_complete_content(self):
+        image_only = detail("710")
+        image_only[0]["title"] = ""
+        image_only[0]["detail"] = ""
+        image_only[0]["show_images"] = [
+            "https://example.test/image-710.jpg",
+        ]
+        image_only[0]["count_comment"] = 1
+        image_only[0]["comment_list"] = [
+            {
+                "id": "c710",
+                "detail": "",
+                "images": "https://example.test/comment-710.jpg",
+            }
+        ]
+        with SQLitePostStore(self.db) as store:
+            store.enqueue_crawler_candidate(
+                post_id="710",
+                source="lists",
+                priority=10,
+                list_create_time="2026-06-25 00:00:00",
+                list_update_time="2026-06-25 00:00:00",
+                list_comment_count=0,
+                db_comment_count=None,
+                reason="new_post",
+            )
+        stats = self.service(FakeClient({}, {"710": image_only})).trickle_fill(
+            limit=1,
+            refresh_limit=0,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=1,
+        )
+        with SQLitePostStore(self.db) as store:
+            post = store.conn.execute(
+                "select content,media_json,crawl_status from posts where id='710'"
+            ).fetchone()
+            comment = store.conn.execute(
+                "select media_json from comments where post_id='710'"
+            ).fetchone()
+        self.assertEqual(stats["written"], 1)
+        self.assertEqual(post["content"], "")
+        self.assertEqual(post["crawl_status"], "full")
+        self.assertEqual(
+            json.loads(post["media_json"])["show_images"],
+            ["https://example.test/image-710.jpg"],
+        )
+        self.assertEqual(
+            json.loads(comment["media_json"])["images"],
+            "https://example.test/comment-710.jpg",
+        )
+
+    def test_empty_content_audit_samples_four_ids_without_losing_the_rest(self):
+        with SQLitePostStore(self.db) as store:
+            for index in range(6):
+                store.upsert_post(
+                    {
+                        "id": str(720 + index),
+                        "content": "",
+                        "create_time": f"2025-01-0{index + 1} 00:00:00",
+                        "comment_count": 0,
+                    },
+                    [],
+                )
+            store.conn.execute(
+                "delete from crawl_state where key='crawler_empty_content_audit_v1'"
+            )
+            store.conn.commit()
+            result = store.migrate_empty_content_audit()
+            rows = list(
+                store.conn.execute(
+                    """
+                    select post_id,priority,reason from crawler_queue
+                    where post_id between '720' and '725'
+                    order by cast(post_id as integer)
+                    """
+                )
+            )
+        self.assertEqual(result["candidates"], 6)
+        self.assertEqual(result["sample_priority"], 4)
+        self.assertEqual(sum(row["priority"] == 5 for row in rows), 4)
+        self.assertEqual(sum(row["priority"] == 35 for row in rows), 2)
+        self.assertTrue(all(row["reason"] == "empty_content_audit" for row in rows))
+
 
 if __name__ == "__main__":
     unittest.main()
