@@ -79,6 +79,10 @@ class CLIContractTest(unittest.TestCase):
         self.assertEqual(planned_job_calls("plan_gaps", ["plan-gaps"]), 1)
         trickle_args = job_args("trickle_fill")
         self.assertLessEqual(int(trickle_args[trickle_args.index("--limit") + 1]), 12)
+        self.assertLessEqual(
+            int(trickle_args[trickle_args.index("--refresh-limit") + 1]),
+            4,
+        )
 
     def test_scheduler_parses_quota_release_steps(self):
         self.assertEqual(

@@ -107,6 +107,11 @@ def command_trickle_fill(args) -> int:
         min_delay=args.min_delay,
         max_delay=args.max_delay,
         stop_after_misses=args.stop_after_misses,
+        refresh_limit=args.refresh_limit,
+        observation_retry_delay=args.observation_retry_delay,
+        max_observation_attempts=args.max_observation_attempts,
+        transient_retry_delay=args.transient_retry_delay,
+        max_transient_attempts=args.max_transient_attempts,
     )
     return 0
 
@@ -314,6 +319,21 @@ def build_parser() -> argparse.ArgumentParser:
     trickle.add_argument("--min-delay", type=float, default=5.0)
     trickle.add_argument("--max-delay", type=float, default=10.0)
     trickle.add_argument("--stop-after-misses", type=int, default=3)
+    trickle.add_argument(
+        "--refresh-limit",
+        type=int,
+        default=4,
+        help="maximum natural priority-0 refreshes before coverage candidates",
+    )
+    trickle.add_argument(
+        "--observation-retry-delay",
+        type=int,
+        default=6 * 60 * 60,
+        help="seconds before one bounded retry of a list/detail count mismatch",
+    )
+    trickle.add_argument("--max-observation-attempts", type=int, default=2)
+    trickle.add_argument("--transient-retry-delay", type=int, default=60 * 60)
+    trickle.add_argument("--max-transient-attempts", type=int, default=3)
     trickle.set_defaults(func=command_trickle_fill, canonical_command="trickle-fill")
 
     gaps = sub.add_parser(

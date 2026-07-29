@@ -168,6 +168,19 @@ class AutomaticQuotaTest(unittest.TestCase):
                 reason="comment_changed",
             )
             store.mark_crawler_queue_item("1", status="done")
+            store.conn.execute(
+                "delete from crawl_state where key='crawler_queue_observation_state_v1'"
+            )
+            store.conn.execute(
+                """
+                update crawler_queue
+                set last_attempt_list_comment_count=null,
+                    last_attempt_list_update_time='',
+                    same_observation_attempts=0
+                where post_id='1'
+                """
+            )
+            store.conn.commit()
 
         with patch.object(scheduler, "DB_PATH", str(db_path)):
             scheduler.refresh_runtime_state()

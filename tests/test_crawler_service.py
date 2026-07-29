@@ -31,6 +31,11 @@ class RateLimitedClient(FakeClient):
         return None, "rate_limited:今天刷的太久了，休息一下吧"
 
 
+class TransientDetailClient(FakeClient):
+    def article(self, post_id):
+        return None, "network down"
+
+
 class QuotaStoppedClient(FakeClient):
     def list_page(self, endpoint, page):
         return None, "source_quota_window_locked"
@@ -367,7 +372,7 @@ class CrawlerServiceTest(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row["updated_at"], "sentinel")
 
-    def test_runtime_schema_repairs_done_rows_with_unfetched_comment_delta(self):
+    def test_runtime_schema_migrates_legacy_comment_gap_only_once(self):
         with SQLitePostStore(self.db) as store:
             post, comments = self.service(
                 FakeClient({}, {"153": detail("153", 1)})
@@ -384,13 +389,68 @@ class CrawlerServiceTest(unittest.TestCase):
                 reason="comment_changed",
             )
             store.mark_crawler_queue_item("153", status="done")
-            reopened = store.reopen_stale_comment_deltas()
+            store.upsert_post(
+                {
+                    "id": "154",
+                    "content": "old hot loop",
+                    "create_time": "2026-06-25 09:00:00",
+                    "comment_count": 1,
+                },
+                [{"id": "c1", "detail": "old"}],
+            )
+            store.enqueue_crawler_candidate(
+                post_id="154",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="2026-06-25 10:00:00",
+                list_comment_count=4,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+            store.conn.execute(
+                "update crawler_queue set status='pending',attempts=620 where post_id='154'"
+            )
+            store.conn.execute(
+                "delete from crawl_state where key='crawler_queue_observation_state_v1'"
+            )
+            store.conn.execute(
+                """
+                update crawler_queue
+                set last_attempt_list_comment_count=null,
+                    last_attempt_list_update_time='',
+                    same_observation_attempts=0
+                where post_id in ('153','154')
+                """
+            )
+            store.conn.commit()
+            migration = store.migrate_crawler_queue_observations()
             row = store.conn.execute(
-                "select status,priority from crawler_queue where post_id='153'"
+                """
+                select status,priority,last_attempt_list_comment_count
+                from crawler_queue where post_id='153'
+                """
             ).fetchone()
-        self.assertEqual(reopened, 1)
+            store.mark_crawler_queue_item("153", status="done")
+            store.ensure_runtime_schema()
+            stable = store.conn.execute(
+                "select status from crawler_queue where post_id='153'"
+            ).fetchone()
+            hot_loop = store.conn.execute(
+                """
+                select status,attempts,last_attempt_list_comment_count
+                from crawler_queue where post_id='154'
+                """
+            ).fetchone()
+        self.assertEqual(migration["stale_gaps"], 2)
+        self.assertEqual(migration["deferred"], 1)
         self.assertEqual(row["status"], "pending")
         self.assertEqual(row["priority"], 0)
+        self.assertEqual(row["last_attempt_list_comment_count"], 3)
+        self.assertEqual(stable["status"], "done")
+        self.assertEqual(hot_loop["status"], "deferred")
+        self.assertEqual(hot_loop["attempts"], 620)
+        self.assertEqual(hot_loop["last_attempt_list_comment_count"], 4)
 
     def test_discover_active_stops_on_repeated_page_signature(self):
         with SQLitePostStore(self.db) as store:
@@ -670,6 +730,184 @@ class CrawlerServiceTest(unittest.TestCase):
             rows = store.next_crawler_queue_items(3)
         self.assertEqual([row["post_id"] for row in rows], ["602", "603", "601"])
 
+    def test_queue_refresh_cap_reserves_detail_slots_for_unfetched_ids(self):
+        with SQLitePostStore(self.db) as store:
+            for index in range(6):
+                store.enqueue_crawler_candidate(
+                    post_id=str(610 + index),
+                    source="lists2",
+                    priority=0,
+                    list_create_time="",
+                    list_update_time=f"2026-06-25 13:0{index}:00",
+                    list_comment_count=10,
+                    db_comment_count=1,
+                    reason="comment_changed",
+                )
+            for index in range(8):
+                store.enqueue_crawler_candidate(
+                    post_id=str(620 + index),
+                    source="lists",
+                    priority=10,
+                    list_create_time=f"2026-06-25 12:0{index}:00",
+                    list_update_time="",
+                    list_comment_count=2,
+                    db_comment_count=None,
+                    reason="new_post",
+                )
+            rows = store.next_crawler_queue_items(12, refresh_limit=4)
+        self.assertEqual(sum(row["priority"] == 0 for row in rows), 4)
+        self.assertEqual(sum(row["priority"] > 0 for row in rows), 8)
+        self.assertEqual(len({row["post_id"] for row in rows}), 12)
+
+    def test_list_detail_gap_gets_one_delayed_retry_then_defers_until_growth(self):
+        with SQLitePostStore(self.db) as store:
+            store.upsert_post(
+                {
+                    "id": "630",
+                    "content": "existing",
+                    "create_time": "2026-06-25 10:00:00",
+                    "comment_count": 1,
+                },
+                [{"id": "c1", "detail": "one"}],
+            )
+            store.enqueue_crawler_candidate(
+                post_id="630",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="2026-06-25 13:00:00",
+                list_comment_count=3,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+
+        service = self.service(FakeClient({}, {"630": detail("630", 1)}))
+        first = service.trickle_fill(
+            limit=1,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=1,
+            observation_retry_delay=3600,
+            max_observation_attempts=2,
+        )
+        self.assertEqual(first["retry_scheduled"], 1)
+        with SQLitePostStore(self.db) as store:
+            row = store.conn.execute(
+                """
+                select status,same_observation_attempts,next_attempt_at
+                from crawler_queue where post_id='630'
+                """
+            ).fetchone()
+            self.assertEqual(row["status"], "pending")
+            self.assertEqual(row["same_observation_attempts"], 1)
+            self.assertTrue(row["next_attempt_at"])
+            self.assertEqual(store.next_crawler_queue_items(1), [])
+            store.conn.execute(
+                "update crawler_queue set next_attempt_at='' where post_id='630'"
+            )
+            store.conn.commit()
+
+        second = service.trickle_fill(
+            limit=1,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=1,
+            observation_retry_delay=3600,
+            max_observation_attempts=2,
+        )
+        self.assertEqual(second["deferred_observations"], 1)
+        with SQLitePostStore(self.db) as store:
+            row = store.conn.execute(
+                "select status from crawler_queue where post_id='630'"
+            ).fetchone()
+            self.assertEqual(row["status"], "deferred")
+            unchanged = store.enqueue_crawler_candidate(
+                post_id="630",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="2026-06-25 13:00:00",
+                list_comment_count=3,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+            self.assertEqual(unchanged, "unchanged")
+            update_only = store.enqueue_crawler_candidate(
+                post_id="630",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="2026-06-25 13:30:00",
+                list_comment_count=3,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+            self.assertEqual(update_only, "unchanged")
+            reopened = store.enqueue_crawler_candidate(
+                post_id="630",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="2026-06-25 14:00:00",
+                list_comment_count=4,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+            status = store.conn.execute(
+                "select status from crawler_queue where post_id='630'"
+            ).fetchone()["status"]
+        self.assertEqual(reopened, "reopened")
+        self.assertEqual(status, "pending")
+
+    def test_new_observation_clears_a_pending_gap_delay(self):
+        with SQLitePostStore(self.db) as store:
+            store.upsert_post(
+                {
+                    "id": "631",
+                    "content": "existing",
+                    "create_time": "2026-06-25 10:00:00",
+                    "comment_count": 1,
+                },
+                [{"id": "c1", "detail": "one"}],
+            )
+            store.enqueue_crawler_candidate(
+                post_id="631",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="2026-06-25 13:00:00",
+                list_comment_count=3,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+            store.finish_crawler_queue_detail(
+                "631",
+                detail_comment_count=1,
+                retry_delay_seconds=3600,
+                max_same_observation_attempts=2,
+            )
+            store.enqueue_crawler_candidate(
+                post_id="631",
+                source="lists2",
+                priority=0,
+                list_create_time="",
+                list_update_time="2026-06-25 14:00:00",
+                list_comment_count=4,
+                db_comment_count=1,
+                reason="comment_changed",
+            )
+            row = store.conn.execute(
+                """
+                select status,next_attempt_at,same_observation_attempts
+                from crawler_queue where post_id='631'
+                """
+            ).fetchone()
+        self.assertEqual(row["status"], "pending")
+        self.assertEqual(row["next_attempt_at"], "")
+        self.assertEqual(row["same_observation_attempts"], 0)
+
     def test_trickle_fill_stops_on_rate_limit_and_keeps_pending(self):
         with SQLitePostStore(self.db) as store:
             store.enqueue_crawler_candidate(
@@ -697,6 +935,50 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(row["status"], "pending")
         self.assertEqual(row["attempts"], 1)
         self.assertIn("rate_limited", row["last_error"])
+
+    def test_transient_detail_failure_retries_with_delay_then_stops(self):
+        with SQLitePostStore(self.db) as store:
+            store.enqueue_crawler_candidate(
+                post_id="302",
+                source="lists",
+                priority=10,
+                list_create_time="2026-06-25 00:00:00",
+                list_update_time="2026-06-25 00:00:00",
+                list_comment_count=1,
+                db_comment_count=None,
+                reason="new_post",
+            )
+        service = self.service(TransientDetailClient({}, {}))
+        for attempt in range(1, 4):
+            stats = service.trickle_fill(
+                limit=1,
+                dry_run=False,
+                min_delay=0,
+                max_delay=0,
+                stop_after_misses=2,
+                transient_retry_delay=3600,
+                max_transient_attempts=3,
+            )
+            with SQLitePostStore(self.db) as store:
+                row = store.conn.execute(
+                    """
+                    select status,attempts,next_attempt_at
+                    from crawler_queue where post_id='302'
+                    """
+                ).fetchone()
+                self.assertEqual(row["attempts"], attempt)
+                if attempt < 3:
+                    self.assertEqual(stats["transient_retries"], 1)
+                    self.assertEqual(row["status"], "pending")
+                    self.assertTrue(row["next_attempt_at"])
+                    store.conn.execute(
+                        "update crawler_queue set next_attempt_at='' where post_id='302'"
+                    )
+                    store.conn.commit()
+                else:
+                    self.assertEqual(stats["terminal_failures"], 1)
+                    self.assertEqual(row["status"], "failed")
+                    self.assertEqual(row["next_attempt_at"], "")
 
     def test_trickle_quota_stop_keeps_item_pending_without_attempt(self):
         with SQLitePostStore(self.db) as store:
