@@ -6,10 +6,11 @@ older full schema by filling posts.comments_json when that column exists.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -266,6 +267,28 @@ class SQLitePostStore:
                 probed_at text not null
             );
 
+            create table if not exists crawler_run_history (
+                run_id integer primary key autoincrement,
+                command text not null,
+                started_at text not null,
+                finished_at text not null,
+                source_calls integer not null,
+                seen integer not null,
+                selected integer not null,
+                written integer not null,
+                queue_inserted integer not null,
+                queue_reopened integer not null,
+                queue_updated integer not null,
+                completed_details integer not null,
+                refreshed_details integer not null,
+                new_comment_rows integer not null,
+                comment_row_delta integer not null,
+                misses integer not null,
+                errors integer not null,
+                rate_limited integer not null,
+                stats_json text not null
+            );
+
             create index if not exists idx_posts_create_time on posts(create_time);
             create index if not exists idx_posts_id_int on posts(cast(id as integer));
             create index if not exists idx_posts_stars on posts(star_count desc, id desc);
@@ -285,6 +308,8 @@ class SQLitePostStore:
             create index if not exists idx_crawler_queue_due on crawler_queue(status, next_attempt_at, priority);
             create index if not exists idx_crawler_gap_status on crawler_gap_ranges(status, start_id);
             create index if not exists idx_crawler_probe_range on crawler_id_probe(range_id, status);
+            create index if not exists idx_crawler_run_finished
+                on crawler_run_history(finished_at, command);
             """
         )
         if not self._table_exists("search_index"):
@@ -319,6 +344,7 @@ class SQLitePostStore:
             )
         self.ensure_crawler_queue(commit=False)
         self.ensure_gap_tables(commit=False)
+        self.ensure_crawler_run_history(commit=False)
         observation_migration = self.migrate_crawler_queue_observations(commit=False)
         terminal_migration = self.migrate_crawler_queue_terminal_states(commit=False)
         comment_gap_migration = self.migrate_crawler_comment_row_gaps(commit=False)
@@ -720,6 +746,83 @@ class SQLitePostStore:
         if commit:
             self.conn.commit()
         return result if any(result.values()) else {}
+
+    def ensure_crawler_run_history(self, commit: bool = True) -> None:
+        self.conn.execute(
+            """
+            create table if not exists crawler_run_history (
+                run_id integer primary key autoincrement,
+                command text not null,
+                started_at text not null,
+                finished_at text not null,
+                source_calls integer not null,
+                seen integer not null,
+                selected integer not null,
+                written integer not null,
+                queue_inserted integer not null,
+                queue_reopened integer not null,
+                queue_updated integer not null,
+                completed_details integer not null,
+                refreshed_details integer not null,
+                new_comment_rows integer not null,
+                comment_row_delta integer not null,
+                misses integer not null,
+                errors integer not null,
+                rate_limited integer not null,
+                stats_json text not null
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            create index if not exists idx_crawler_run_finished
+            on crawler_run_history(finished_at, command)
+            """
+        )
+        if commit:
+            self.conn.commit()
+
+    def record_crawler_run(
+        self,
+        *,
+        command: str,
+        stats: dict,
+        started_at: str,
+        commit: bool = True,
+    ) -> None:
+        self.ensure_crawler_run_history(commit=False)
+        self.conn.execute(
+            """
+            insert into crawler_run_history(
+                command,started_at,finished_at,source_calls,seen,selected,
+                written,queue_inserted,queue_reopened,queue_updated,
+                completed_details,refreshed_details,new_comment_rows,
+                comment_row_delta,misses,errors,rate_limited,stats_json
+            ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                str(command),
+                str(started_at),
+                datetime.now(timezone(timedelta(hours=8))).isoformat(),
+                safe_int(stats.get("source_calls")),
+                safe_int(stats.get("seen", stats.get("sampled", 0))),
+                safe_int(stats.get("selected", stats.get("queued", 0))),
+                safe_int(stats.get("written", stats.get("saved", 0))),
+                safe_int(stats.get("queue_inserted")),
+                safe_int(stats.get("queue_reopened")),
+                safe_int(stats.get("queue_updated")),
+                safe_int(stats.get("completed_details")),
+                safe_int(stats.get("refreshed_details")),
+                safe_int(stats.get("new_comment_rows")),
+                safe_int(stats.get("comment_row_delta")),
+                safe_int(stats.get("misses", stats.get("missing", 0))),
+                safe_int(stats.get("errors")),
+                int(bool(stats.get("rate_limited"))),
+                json.dumps(stats, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+        if commit:
+            self.conn.commit()
 
     def ensure_gap_tables(self, commit: bool = True) -> None:
         self.conn.executescript(

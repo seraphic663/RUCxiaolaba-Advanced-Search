@@ -142,6 +142,7 @@ class CrawlerService:
         min_delay: float = 0.1,
         max_delay: float = 0.3,
     ) -> dict:
+        run_started_at = datetime.now(CHINA_TZ).isoformat()
         since = self.normalize_cutoff_time(since)
         client = self.client()
         stats = {
@@ -308,6 +309,12 @@ class CrawlerService:
                     store.set_state(
                         f"crawler_{command.replace('-', '_')}",
                         json.dumps(stats, ensure_ascii=False),
+                        commit=False,
+                    )
+                    store.record_crawler_run(
+                        command=command,
+                        stats=stats,
+                        started_at=run_started_at,
                         commit=True,
                     )
         print(
@@ -331,6 +338,7 @@ class CrawlerService:
         max_transient_attempts: int = 3,
         fresh_coverage_hours: int = 72,
     ) -> dict:
+        run_started_at = datetime.now(CHINA_TZ).isoformat()
         client = self.client()
         stats = {
             "limit": limit,
@@ -547,6 +555,12 @@ class CrawlerService:
                     store.set_state(
                         "crawler_trickle_fill",
                         json.dumps(stats, ensure_ascii=False),
+                        commit=False,
+                    )
+                    store.record_crawler_run(
+                        command="trickle-fill",
+                        stats=stats,
+                        started_at=run_started_at,
                         commit=True,
                     )
         print(
@@ -565,6 +579,7 @@ class CrawlerService:
         density_threshold: float,
         dry_run: bool,
     ) -> dict:
+        run_started_at = datetime.now(CHINA_TZ).isoformat()
         since = self.normalize_cutoff_time(since)
         chunk_size = max(1, int(chunk_size))
         density_threshold = max(0.0, min(1.0, float(density_threshold)))
@@ -700,7 +715,12 @@ class CrawlerService:
                         json.dumps(stats, ensure_ascii=False),
                         commit=False,
                     )
-                    store.conn.commit()
+                    store.record_crawler_run(
+                        command="plan-gaps",
+                        stats=stats,
+                        started_at=run_started_at,
+                        commit=True,
+                    )
         print(
             f"[plan-gaps] done {json.dumps(stats, ensure_ascii=False)} dry_run={dry_run}",
             flush=True,
@@ -749,6 +769,7 @@ class CrawlerService:
         min_delay: float,
         max_delay: float,
     ) -> dict:
+        run_started_at = datetime.now(CHINA_TZ).isoformat()
         client = self.client()
         stats = {
             "ranges": 0,
@@ -957,6 +978,12 @@ class CrawlerService:
                     store.set_state(
                         "crawler_probe_gaps",
                         json.dumps(stats, ensure_ascii=False),
+                        commit=False,
+                    )
+                    store.record_crawler_run(
+                        command="probe-gaps",
+                        stats=stats,
+                        started_at=run_started_at,
                         commit=True,
                     )
         print(
