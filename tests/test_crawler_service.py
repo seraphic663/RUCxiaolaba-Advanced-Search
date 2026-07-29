@@ -453,6 +453,46 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(hot_loop["attempts"], 620)
         self.assertEqual(hot_loop["last_attempt_list_comment_count"], 4)
 
+    def test_runtime_schema_normalizes_legacy_terminal_states(self):
+        with SQLitePostStore(self.db) as store:
+            for post_id, error in (
+                ("155", "not_found"),
+                ("156", "network timeout"),
+                ("157", "suspicious_payload:empty_comments"),
+            ):
+                store.enqueue_crawler_candidate(
+                    post_id=post_id,
+                    source="lists",
+                    priority=10,
+                    list_create_time="2026-06-25 10:00:00",
+                    list_update_time="2026-06-25 10:00:00",
+                    list_comment_count=1,
+                    db_comment_count=None,
+                    reason="new_post",
+                )
+                store.mark_crawler_queue_item(
+                    post_id,
+                    status="failed",
+                    last_error=error,
+                    record_observation=True,
+                )
+            store.conn.execute(
+                "delete from crawl_state where key='crawler_queue_terminal_state_v2'"
+            )
+            store.conn.commit()
+            migration = store.migrate_crawler_queue_terminal_states()
+            rows = {
+                row["post_id"]: row["status"]
+                for row in store.conn.execute(
+                    "select post_id,status from crawler_queue where post_id in ('155','156','157')"
+                )
+            }
+        self.assertEqual(migration["normalized_skipped"], 1)
+        self.assertEqual(migration["requeued_transient"], 1)
+        self.assertEqual(rows["155"], "skipped")
+        self.assertEqual(rows["156"], "pending")
+        self.assertEqual(rows["157"], "failed")
+
     def test_discover_active_stops_on_repeated_page_signature(self):
         with SQLitePostStore(self.db) as store:
             store.upsert_post(
