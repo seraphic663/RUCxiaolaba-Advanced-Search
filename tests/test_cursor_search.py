@@ -46,6 +46,13 @@ class CursorSearchTest(unittest.TestCase):
                 ("4", "评论也有猫", "cu4", "0", "", "另一人", ""),
             ],
         )
+        conn.execute(
+            "alter table posts add column media_json text not null default '{}'"
+        )
+        conn.execute(
+            "update posts set media_json=? where id='5'",
+            ('{"show_images":[{"ori":"https://example.test/post-5.jpg"}]}',),
+        )
         conn.commit()
         conn.close()
         self.repository = SearchRepository(self.db)
@@ -119,6 +126,10 @@ class CursorSearchTest(unittest.TestCase):
         self.assertIsNone(first["candidate_total"])
         self.assertFalse(first["total_exact"])
         self.assertEqual([row["id"] for row in first["results"]], ["5", "4"])
+        self.assertEqual(
+            first["results"][0]["media"]["show_images"][0]["ori"],
+            "https://example.test/post-5.jpg",
+        )
 
         second = self.repository.search_cursor(
             SearchQuery(text="", sort_by="time", page=2, limit=2),

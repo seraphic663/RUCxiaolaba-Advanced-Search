@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from app.repositories.search_repository import SearchRepository
 from crawler.service import CHINA_TZ, CrawlerService
 from storage.post_writer import SQLitePostStore
 
@@ -1866,6 +1867,11 @@ class CrawlerServiceTest(unittest.TestCase):
         )
         self.assertEqual(
             json.loads(comment["media_json"])["images"],
+            "https://example.test/comment-710.jpg",
+        )
+        api_comment = SearchRepository(self.db).comments("710")["comment_list"][0]
+        self.assertEqual(
+            api_comment["media"]["images"],
             "https://example.test/comment-710.jpg",
         )
 
