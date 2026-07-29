@@ -116,8 +116,8 @@ GAP_ENABLED = os.environ.get("CRAWLER_GAP_ENABLED", "1" if TRICKLE_ENABLED else 
 GAP_SINCE = os.environ.get("CRAWLER_GAP_SINCE", TRICKLE_SINCE)
 GAP_PLAN_INTERVAL = env_int("CRAWLER_GAP_PLAN_INTERVAL", 6 * 60 * 60)
 GAP_PROBE_INTERVAL = env_int("CRAWLER_GAP_PROBE_INTERVAL", 2 * 60 * 60)
-GAP_RANGE_LIMIT = env_int("CRAWLER_GAP_RANGE_LIMIT", 1)
-GAP_SAMPLES = env_int("CRAWLER_GAP_SAMPLES", 12)
+GAP_RANGE_LIMIT = env_int("CRAWLER_GAP_RANGE_LIMIT", 12)
+GAP_SAMPLES = env_int("CRAWLER_GAP_SAMPLES", 1)
 GAP_CHUNK_SIZE = env_int("CRAWLER_GAP_CHUNK_SIZE", 1000)
 GAP_DENSITY_THRESHOLD = env_float("CRAWLER_GAP_DENSITY_THRESHOLD", 0.35)
 COOKIE_ERROR_COOLDOWN = env_int("CRAWLER_COOKIE_ERROR_COOLDOWN", 6 * 60 * 60)
@@ -813,11 +813,18 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
         elif name == "probe_gaps":
             if DAILY_PROBE_BUDGET <= 0:
                 return None, "probe_budget_disabled"
+            range_limit = max(
+                1,
+                min(int(args[args.index("--range-limit") + 1]), remaining),
+            )
             samples = max(
                 1,
-                min(int(args[args.index("--samples-per-range") + 1]), remaining),
+                min(
+                    int(args[args.index("--samples-per-range") + 1]),
+                    max(1, remaining // range_limit),
+                ),
             )
-            args = replace_arg(args, "--range-limit", 1)
+            args = replace_arg(args, "--range-limit", range_limit)
             args = replace_arg(args, "--samples-per-range", samples)
         planned = planned_job_calls(name, args)
         return args, f"{kind}_calls_available={remaining} planned_max={planned}"

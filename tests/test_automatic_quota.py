@@ -114,6 +114,40 @@ class AutomaticQuotaTest(unittest.TestCase):
         self.assertIn("planned_max=2", note)
         self.assertEqual(self._quota()["new_list_calls"], 1)
 
+    def test_prepare_gap_probe_spreads_small_budget_across_ranges(self):
+        self.quota_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-07-11",
+                    "new_list_calls": 0,
+                    "active_list_calls": 0,
+                    "detail_calls": 0,
+                    "probe_calls": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(scheduler, "DAILY_PROBE_BUDGET", 12),
+            patch.object(scheduler, "daily_budget", return_value=5),
+            patch.object(
+                scheduler,
+                "job_args",
+                return_value=[
+                    "probe-gaps",
+                    "--range-limit",
+                    "12",
+                    "--samples-per-range",
+                    "1",
+                ],
+            ),
+        ):
+            args, note = scheduler.prepare_job("probe_gaps")
+        self.assertEqual(args[args.index("--range-limit") + 1], "5")
+        self.assertEqual(args[args.index("--samples-per-range") + 1], "1")
+        self.assertIn("planned_max=5", note)
+        self.assertEqual(self._quota()["probe_calls"], 0)
+
     def test_client_does_not_send_http_when_local_quota_rejects(self):
         client = MiniProgramClient("cookie")
         client.automatic_quota = Mock()
