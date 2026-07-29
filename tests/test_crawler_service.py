@@ -493,6 +493,57 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(rows["156"], "pending")
         self.assertEqual(rows["157"], "failed")
 
+    def test_runtime_schema_queues_declared_comment_row_gaps_once(self):
+        with SQLitePostStore(self.db) as store:
+            for post_id in ("158", "159"):
+                store.upsert_post(
+                    {
+                        "id": post_id,
+                        "content": "historical",
+                        "create_time": "2024-01-01 00:00:00",
+                        "comment_count": 2,
+                    },
+                    [{"id": f"c-{post_id}", "detail": "saved"}],
+                )
+            store.enqueue_crawler_candidate(
+                post_id="159",
+                source="lists2",
+                priority=20,
+                list_create_time="2024-01-01 00:00:00",
+                list_update_time="2024-01-02 00:00:00",
+                list_comment_count=2,
+                db_comment_count=1,
+                reason="active_missing",
+            )
+            store.mark_crawler_queue_item("159", status="skipped")
+            store.conn.execute(
+                "delete from crawl_state where key='crawler_comment_row_gap_v1'"
+            )
+            migration = store.migrate_crawler_comment_row_gaps()
+            rows = {
+                row["post_id"]: row
+                for row in store.conn.execute(
+                    """
+                    select post_id,source,priority,status,reason,db_comment_count
+                    from crawler_queue where post_id in ('158','159')
+                    """
+                )
+            }
+            repeated = store.migrate_crawler_comment_row_gaps()
+        self.assertEqual(migration, {
+            "candidates": 2,
+            "inserted": 1,
+            "requeued": 1,
+        })
+        self.assertEqual(repeated, {})
+        self.assertEqual(rows["158"]["priority"], 5)
+        self.assertEqual(rows["158"]["status"], "pending")
+        self.assertEqual(rows["158"]["db_comment_count"], 1)
+        self.assertIn("local_audit", rows["159"]["source"])
+        self.assertIn("comment_rows_incomplete", rows["159"]["reason"])
+        self.assertEqual(rows["159"]["priority"], 5)
+        self.assertEqual(rows["159"]["status"], "pending")
+
     def test_discover_active_stops_on_repeated_page_signature(self):
         with SQLitePostStore(self.db) as store:
             store.upsert_post(
@@ -1213,6 +1264,44 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual([row["detail"] for row in rows], ["comment 0"])
         self.assertEqual(queue["status"], "failed")
         self.assertIn("suspicious_payload", queue["last_error"])
+
+    def test_trickle_rejects_partial_comments_without_erasing_old_rows(self):
+        with SQLitePostStore(self.db) as store:
+            parsed, error = self.service(FakeClient({}, {})).fetch_detail_with_error(
+                FakeClient({}, {"411": detail("411", 1)}), "411"
+            )
+            self.assertIsNone(error)
+            store.upsert_post(*parsed)
+            store.enqueue_crawler_candidate(
+                post_id="411",
+                source="local_audit",
+                priority=5,
+                list_create_time="",
+                list_update_time="",
+                list_comment_count=2,
+                db_comment_count=1,
+                reason="comment_rows_incomplete",
+            )
+        partial = detail("411", 2)
+        partial[0]["comment_list"] = partial[0]["comment_list"][:1]
+        stats = self.service(FakeClient({}, {"411": partial})).trickle_fill(
+            limit=1,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=1,
+        )
+        self.assertEqual(stats["suspicious_payloads"], 1)
+        with SQLitePostStore(self.db) as store:
+            rows = store.conn.execute(
+                "select detail from comments where post_id='411'"
+            ).fetchall()
+            queue = store.conn.execute(
+                "select status,last_error from crawler_queue where post_id='411'"
+            ).fetchone()
+        self.assertEqual([row["detail"] for row in rows], ["comment 0"])
+        self.assertEqual(queue["status"], "failed")
+        self.assertIn("incomplete_comments", queue["last_error"])
 
     def test_plan_gaps_records_sparse_ranges(self):
         with SQLitePostStore(self.db) as store:
