@@ -1714,6 +1714,102 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(len(second), 3)
         self.assertTrue(set(first).isdisjoint(second))
 
+    def test_invalid_zero_post_is_quarantined_only_after_duplicate_verification(self):
+        duplicate = {
+            "id": "c100",
+            "article_id": "100",
+            "detail": "already stored",
+        }
+        with SQLitePostStore(self.db) as store:
+            store.upsert_post(
+                {
+                    "id": "100",
+                    "content": "real post",
+                    "create_time": "2026-06-25 00:00:00",
+                    "comment_count": 1,
+                },
+                [duplicate],
+            )
+            store.upsert_post(
+                {
+                    "id": "0",
+                    "content": json.dumps([duplicate]),
+                    "create_time": "",
+                    "comment_count": 0,
+                },
+                [],
+            )
+            store.conn.execute(
+                "delete from crawl_state where key='crawler_invalid_zero_post_v1'"
+            )
+            store.conn.commit()
+            result = store.migrate_invalid_zero_post()
+            target = store.conn.execute(
+                "select content from posts where id='100'"
+            ).fetchone()
+            invalid = store.conn.execute(
+                "select 1 from posts where id='0'"
+            ).fetchone()
+            quarantine = store.conn.execute(
+                """
+                select reason,target_post_id,payload_json
+                from crawler_quarantine_posts where post_id='0'
+                """
+            ).fetchone()
+            indexed = store.conn.execute(
+                "select count(*) from search_index where post_id='0'"
+            ).fetchone()[0]
+        self.assertEqual(result["duplicate_comments"], 1)
+        self.assertEqual(target["content"], "real post")
+        self.assertIsNone(invalid)
+        self.assertEqual(quarantine["target_post_id"], "100")
+        self.assertEqual(
+            quarantine["reason"],
+            "invalid_import_duplicate_comment_json",
+        )
+        self.assertEqual(json.loads(quarantine["payload_json"])["id"], "0")
+        self.assertEqual(indexed, 0)
+
+    def test_invalid_zero_post_stays_visible_when_duplicate_is_unproven(self):
+        unknown = {
+            "id": "c-missing",
+            "article_id": "100",
+            "detail": "not in target",
+        }
+        with SQLitePostStore(self.db) as store:
+            store.upsert_post(
+                {
+                    "id": "100",
+                    "content": "real post",
+                    "create_time": "2026-06-25 00:00:00",
+                    "comment_count": 0,
+                },
+                [],
+            )
+            store.upsert_post(
+                {
+                    "id": "0",
+                    "content": json.dumps([unknown]),
+                    "create_time": "",
+                    "comment_count": 0,
+                },
+                [],
+            )
+            store.conn.execute(
+                "delete from crawl_state where key='crawler_invalid_zero_post_v1'"
+            )
+            store.conn.commit()
+            result = store.migrate_invalid_zero_post()
+            invalid = store.conn.execute(
+                "select 1 from posts where id='0'"
+            ).fetchone()
+            quarantine = store.conn.execute(
+                "select 1 from crawler_quarantine_posts where post_id='0'"
+            ).fetchone()
+        self.assertEqual(result, {})
+        self.assertIsNotNone(invalid)
+        self.assertIsNone(quarantine)
+
 
 if __name__ == "__main__":
     unittest.main()

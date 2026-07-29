@@ -289,6 +289,14 @@ class SQLitePostStore:
                 stats_json text not null
             );
 
+            create table if not exists crawler_quarantine_posts (
+                post_id text primary key,
+                reason text not null,
+                target_post_id text not null,
+                payload_json text not null,
+                quarantined_at text not null
+            );
+
             create index if not exists idx_posts_create_time on posts(create_time);
             create index if not exists idx_posts_id_int on posts(cast(id as integer));
             create index if not exists idx_posts_stars on posts(star_count desc, id desc);
@@ -347,12 +355,14 @@ class SQLitePostStore:
         self.ensure_crawler_queue(commit=False)
         self.ensure_gap_tables(commit=False)
         self.ensure_crawler_run_history(commit=False)
+        self.ensure_crawler_quarantine(commit=False)
         observation_migration = self.migrate_crawler_queue_observations(commit=False)
         terminal_migration = self.migrate_crawler_queue_terminal_states(commit=False)
         comment_gap_migration = self.migrate_crawler_comment_row_gaps(commit=False)
         comment_gap_priority_migration = (
             self.migrate_crawler_comment_row_gap_priorities(commit=False)
         )
+        invalid_zero_post_migration = self.migrate_invalid_zero_post(commit=False)
         self.conn.commit()
         if observation_migration:
             print(
@@ -373,6 +383,12 @@ class SQLitePostStore:
             print(
                 "[queue] migrated comment row gap priorities "
                 f"{comment_gap_priority_migration}",
+                flush=True,
+            )
+        if invalid_zero_post_migration:
+            print(
+                "[posts] quarantined invalid zero post "
+                f"{invalid_zero_post_migration}",
                 flush=True,
             )
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
@@ -783,6 +799,127 @@ class SQLitePostStore:
         )
         if commit:
             self.conn.commit()
+
+    def ensure_crawler_quarantine(self, commit: bool = True) -> None:
+        self.conn.execute(
+            """
+            create table if not exists crawler_quarantine_posts (
+                post_id text primary key,
+                reason text not null,
+                target_post_id text not null,
+                payload_json text not null,
+                quarantined_at text not null
+            )
+            """
+        )
+        if commit:
+            self.conn.commit()
+
+    def migrate_invalid_zero_post(self, commit: bool = True) -> dict:
+        """Quarantine the known import row whose body is duplicate comment JSON."""
+        migration_key = "crawler_invalid_zero_post_v1"
+        if not self._table_exists("posts") or not self._table_exists("comments"):
+            return {}
+        if self.conn.execute(
+            "select 1 from crawl_state where key=?",
+            (migration_key,),
+        ).fetchone():
+            return {}
+        invalid = self.conn.execute("select * from posts where id='0'").fetchone()
+        if invalid is None:
+            return {}
+        try:
+            comments = json.loads(str(invalid["content"] or ""))
+        except (TypeError, ValueError):
+            return {}
+        if not isinstance(comments, list) or not comments:
+            return {}
+        article_ids = {
+            str(item.get("article_id") or "")
+            for item in comments
+            if isinstance(item, dict)
+        }
+        if len(article_ids) != 1:
+            return {}
+        target_post_id = next(iter(article_ids))
+        if safe_int(target_post_id) <= 0:
+            return {}
+        if self.conn.execute(
+            "select 1 from posts where id=?",
+            (target_post_id,),
+        ).fetchone() is None:
+            return {}
+        flattened = flatten_comments(target_post_id, comments, now_text())
+        comment_ids = {
+            str(row["comment_id"])
+            for row in flattened
+            if str(row["comment_id"] or "")
+        }
+        if not comment_ids:
+            return {}
+        placeholders = ",".join("?" for _ in comment_ids)
+        stored_ids = {
+            str(row["comment_id"])
+            for row in self.conn.execute(
+                f"""
+                select distinct comment_id from comments
+                where post_id=? and comment_id in ({placeholders})
+                """,
+                (target_post_id, *sorted(comment_ids)),
+            )
+        }
+        if stored_ids != comment_ids:
+            return {}
+        if self.conn.execute(
+            "select 1 from comments where post_id='0' limit 1"
+        ).fetchone():
+            return {}
+        if self.conn.execute(
+            "select 1 from crawler_queue where post_id='0'"
+        ).fetchone():
+            return {}
+
+        quarantined_at = now_text()
+        self.ensure_crawler_quarantine(commit=False)
+        self.conn.execute(
+            """
+            insert into crawler_quarantine_posts(
+                post_id,reason,target_post_id,payload_json,quarantined_at
+            ) values (?,?,?,?,?)
+            on conflict(post_id) do update set
+                reason=excluded.reason,
+                target_post_id=excluded.target_post_id,
+                payload_json=excluded.payload_json,
+                quarantined_at=excluded.quarantined_at
+            """,
+            (
+                "0",
+                "invalid_import_duplicate_comment_json",
+                target_post_id,
+                json.dumps(dict(invalid), ensure_ascii=False, sort_keys=True),
+                quarantined_at,
+            ),
+        )
+        self.refresh_search_index("0", "", [], commit=False)
+        self.refresh_bigram_index("0", "", [], commit=False)
+        self.refresh_symbol_index("0", "", [], commit=False)
+        self.conn.execute("delete from posts where id='0'")
+        result = {
+            "post_id": "0",
+            "target_post_id": target_post_id,
+            "duplicate_comments": len(comment_ids),
+        }
+        self.conn.execute(
+            "insert into crawl_state(key,value,updated_at) values (?,?,?)",
+            (
+                migration_key,
+                json.dumps(result, ensure_ascii=False, sort_keys=True),
+                quarantined_at,
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return result
 
     def record_crawler_run(
         self,
