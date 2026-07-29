@@ -122,6 +122,93 @@ class Phase1Test(unittest.TestCase):
         self.assertEqual(state["next_id"], 900)
         self.assertEqual(state["errors"], 1)
 
+    def test_valid_padding_post_is_saved_even_outside_requested_date(self) -> None:
+        def fake_api_get(_session, _path, params=None):
+            return {
+                "community_id": "4",
+                "title": "boundary post",
+                "detail": "already paid detail",
+                "create_time": "2026-05-31 23:59:59",
+                "count_comment": 0,
+                "comment_list": [],
+            }, None
+
+        scan_args = args_for(
+            self.db_path,
+            self.config_path,
+            from_date="2026-06-01",
+            start_id=900,
+            end_id=900,
+            workers=1,
+            chunk_size=1,
+        )
+        with patch.object(crawler_db, "api_get", side_effect=fake_api_get):
+            self.assertEqual(crawler_db.command_phase1(scan_args), 0)
+
+        with SQLitePostStore(self.db_path) as store:
+            post = store.conn.execute(
+                "select content,crawl_status from posts where id='900'"
+            ).fetchone()
+            state = json.loads(
+                store.conn.execute(
+                    "select value from crawl_state where key='crawler_db_phase1_900_900'"
+                ).fetchone()[0]
+            )
+        self.assertIn("already paid detail", post["content"])
+        self.assertEqual(post["crawl_status"], "full")
+        self.assertEqual(state["new"], 0)
+        self.assertEqual(state["filtered"], 1)
+        self.assertEqual(state["saved_filtered"], 1)
+
+    def test_suspicious_range_payload_keeps_id_without_overwriting_post(self) -> None:
+        def fake_api_get(_session, _path, params=None):
+            return {
+                "community_id": "4",
+                "title": "partial",
+                "detail": "body",
+                "create_time": "2026-06-01 01:00:00",
+                "count_comment": 1,
+                "comment_list": [],
+            }, None
+
+        scan_args = args_for(
+            self.db_path,
+            self.config_path,
+            from_date="",
+            start_id=900,
+            end_id=900,
+            workers=1,
+            chunk_size=1,
+        )
+        with patch.object(crawler_db, "api_get", side_effect=fake_api_get):
+            self.assertEqual(crawler_db.command_phase1(scan_args), 0)
+
+        with SQLitePostStore(self.db_path) as store:
+            post = store.conn.execute(
+                "select 1 from posts where id='900'"
+            ).fetchone()
+            queue = store.conn.execute(
+                """
+                select priority,status,reason from crawler_queue
+                where post_id='900'
+                """
+            ).fetchone()
+            state = json.loads(
+                store.conn.execute(
+                    "select value from crawl_state where key='crawler_db_phase1_900_900'"
+                ).fetchone()[0]
+            )
+        self.assertIsNone(post)
+        self.assertEqual(
+            dict(queue),
+            {
+                "priority": 15,
+                "status": "pending",
+                "reason": "id_range_suspicious",
+            },
+        )
+        self.assertEqual(state["suspicious"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

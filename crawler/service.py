@@ -1628,6 +1628,8 @@ class CrawlerService:
                 data, error = self._article(local.client, str(post_id))
                 if error == "cookie_expired":
                     return post_id, None, "cookie_expired"
+                if self.is_rate_limited(error):
+                    return post_id, None, str(error)
                 if error == "not_found":
                     return post_id, None, "missing"
                 if error:
@@ -1641,6 +1643,10 @@ class CrawlerService:
                 parsed = normalize_detail(str(post_id), data)
                 if parsed is None:
                     return post_id, None, "foreign"
+                post, comments = parsed
+                payload_error = validate_normalized_detail(post, comments)
+                if payload_error:
+                    return post_id, parsed, f"suspicious:{payload_error}"
                 return post_id, parsed, "ok"
             return post_id, None, f"error:{last_error}"
 
@@ -1652,6 +1658,8 @@ class CrawlerService:
             "new": safe_int(saved.get("new")),
             "refreshed": safe_int(saved.get("refreshed")),
             "filtered": safe_int(saved.get("filtered")),
+            "saved_filtered": safe_int(saved.get("saved_filtered")),
+            "suspicious": safe_int(saved.get("suspicious")),
             "missing": safe_int(saved.get("missing")),
             "foreign": safe_int(saved.get("foreign")),
             "errors": safe_int(saved.get("errors")),
@@ -1667,7 +1675,7 @@ class CrawlerService:
                     while chunk_start <= resolved_end:
                         chunk_end = min(resolved_end, chunk_start + chunk_size - 1)
                         results = executor.map(scan_one, range(chunk_start, chunk_end + 1))
-                        cookie_expired = False
+                        stop_error = ""
                         chunk_errors = 0
                         for post_id, parsed, status in results:
                             stats["processed"] += 1
@@ -1676,20 +1684,42 @@ class CrawlerService:
                                 in_range = (not from_time or post["create_time"] >= from_time) and (
                                     not to_time or post["create_time"] <= to_time
                                 )
+                                existing = store.get_post_counts(post_id)
+                                if not dry_run:
+                                    store.upsert_post(post, comments, commit=False)
                                 if in_range:
-                                    existing = store.get_post_counts(post_id)
-                                    if not dry_run:
-                                        store.upsert_post(post, comments, commit=False)
                                     key = "new" if existing is None else "refreshed"
                                     stats[key] += 1
                                 else:
                                     stats["filtered"] += 1
+                                    if not dry_run:
+                                        stats["saved_filtered"] += 1
+                            elif status.startswith("suspicious:"):
+                                stats["suspicious"] += 1
+                                if not dry_run:
+                                    post, _comments = parsed
+                                    store.enqueue_crawler_candidate(
+                                        post_id=str(post_id),
+                                        source="id_range",
+                                        priority=15,
+                                        list_create_time=str(post.get("create_time") or ""),
+                                        list_update_time=str(post.get("create_time") or ""),
+                                        list_comment_count=safe_int(
+                                            post.get("comment_count")
+                                        ),
+                                        db_comment_count=store.get_post_counts(post_id),
+                                        reason="id_range_suspicious",
+                                        commit=False,
+                                    )
                             elif status in ("missing", "foreign"):
                                 stats[status] += 1
                             else:
                                 stats["errors"] += 1
                                 chunk_errors += 1
-                                cookie_expired |= status == "cookie_expired"
+                                if status == "cookie_expired" or status.startswith(
+                                    "rate_limited:"
+                                ):
+                                    stop_error = status
                         stats["next_id"] = chunk_start if chunk_errors else chunk_end + 1
                         state = {
                             **stats,
@@ -1712,7 +1742,7 @@ class CrawlerService:
                             flush=True,
                         )
                         if chunk_errors:
-                            reason = "cookie_expired" if cookie_expired else "request errors"
+                            reason = stop_error or "request errors"
                             raise RuntimeError(f"{reason}; retry from id {chunk_start}")
                         chunk_start = chunk_end + 1
                 final_state = {
