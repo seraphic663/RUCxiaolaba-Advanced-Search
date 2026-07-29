@@ -1334,6 +1334,77 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(queue["status"], "done")
         self.assertEqual(queue["attempts"], 1)
 
+    def test_probe_gaps_retries_transient_error_before_completing_range(self):
+        class RecoveringClient(FakeClient):
+            def __init__(self):
+                super().__init__({}, {})
+                self.calls = 0
+
+            def article(self, post_id):
+                self.calls += 1
+                if self.calls < 3:
+                    return None, "network down"
+                return detail(post_id)
+
+        with SQLitePostStore(self.db) as store:
+            store.ensure_runtime_schema()
+            store.conn.execute(
+                """
+                insert into crawler_gap_ranges values
+                ('700-700', 700, 700, 'density_gap', 'pending', 0.0,
+                 0, 0, 0, 0, 'now', 'now')
+                """
+            )
+            store.conn.commit()
+        client = RecoveringClient()
+        service = self.service(client)
+        for expected_attempts in (1, 2):
+            stats = service.probe_gap_ranges(
+                range_limit=1,
+                samples_per_range=1,
+                enqueue_found=True,
+                dry_run=False,
+                min_delay=0,
+                max_delay=0,
+            )
+            self.assertEqual(stats["errors"], 1)
+            with SQLitePostStore(self.db) as store:
+                probe = store.conn.execute(
+                    "select status,attempts from crawler_id_probe where post_id='700'"
+                ).fetchone()
+                gap = store.conn.execute(
+                    "select status from crawler_gap_ranges where range_id='700-700'"
+                ).fetchone()
+            self.assertEqual(dict(probe), {
+                "status": "error",
+                "attempts": expected_attempts,
+            })
+            self.assertEqual(gap["status"], "sampled")
+
+        recovered = service.probe_gap_ranges(
+            range_limit=1,
+            samples_per_range=1,
+            enqueue_found=True,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(recovered["found"], 1)
+        self.assertEqual(recovered["saved"], 1)
+        with SQLitePostStore(self.db) as store:
+            probe = store.conn.execute(
+                "select status,attempts from crawler_id_probe where post_id='700'"
+            ).fetchone()
+            gap = store.conn.execute(
+                "select status from crawler_gap_ranges where range_id='700-700'"
+            ).fetchone()
+            post = store.conn.execute(
+                "select crawl_status from posts where id='700'"
+            ).fetchone()
+        self.assertEqual(dict(probe), {"status": "found", "attempts": 3})
+        self.assertEqual(gap["status"], "complete")
+        self.assertEqual(post["crawl_status"], "full")
+
     def test_gap_sampling_advances_after_existing_probes(self):
         first = CrawlerService.sample_ids(100, 109, 3)
         second = CrawlerService.sample_ids(

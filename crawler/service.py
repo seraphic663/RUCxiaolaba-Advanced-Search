@@ -779,7 +779,14 @@ class CrawlerService:
                     already = {
                         str(row["post_id"])
                         for row in store.conn.execute(
-                            "select post_id from crawler_id_probe where range_id=?",
+                            """
+                            select post_id from crawler_id_probe
+                            where range_id=?
+                              and (
+                                status in ('found','not_found')
+                                or (status='error' and attempts >= 3)
+                              )
+                            """,
                             (range_id,),
                         )
                     }
@@ -899,8 +906,20 @@ class CrawlerService:
                             1,
                             safe_int(gap["end_id"]) - safe_int(gap["start_id"]) + 1,
                         )
-                        total_sampled = safe_int(gap["sampled"]) + sampled
-                        next_status = "complete" if total_sampled >= span else "sampled"
+                        terminal_ids = safe_int(
+                            store.conn.execute(
+                                """
+                                select count(*) from crawler_id_probe
+                                where range_id=?
+                                  and (
+                                    status in ('found','not_found')
+                                    or (status='error' and attempts >= 3)
+                                  )
+                                """,
+                                (range_id,),
+                            ).fetchone()[0]
+                        )
+                        next_status = "complete" if terminal_ids >= span else "sampled"
                         store.conn.execute(
                             """
                             update crawler_gap_ranges
