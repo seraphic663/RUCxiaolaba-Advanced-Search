@@ -1812,20 +1812,42 @@ class SQLitePostStore:
         append_lane("priority < 0", limit)
         append_lane("priority = 0", max(0, int(refresh_limit)))
         coverage_capacity = max(0, limit - len(selected))
-        if fresh_coverage_after and coverage_capacity:
-            fresh_limit = max(1, (coverage_capacity * 2 + 2) // 3)
-            backlog_limit = max(0, coverage_capacity - fresh_limit)
+        if coverage_capacity:
+            quiet_available = bool(
+                self.conn.execute(
+                    """
+                    select exists(
+                        select 1 from crawler_queue
+                        where status='pending'
+                          and (next_attempt_at='' or next_attempt_at <= ?)
+                          and priority >= 40
+                    )
+                    """,
+                    (now_text(),),
+                ).fetchone()[0]
+            )
+            # Keep one bounded slot for zero-comment or otherwise quiet posts.
+            # Without this lane, a continuous priority-10 backlog can starve
+            # priorities 40/50/60 forever even though their IDs are known.
+            quiet_limit = 1 if quiet_available and coverage_capacity >= 3 else 0
+            commented_capacity = coverage_capacity - quiet_limit
             commented = "priority > 0 and priority < 40"
-            append_lane(
-                f"{commented} and list_create_time >= ?",
-                fresh_limit,
-                (fresh_coverage_after,),
-            )
-            append_lane(
-                f"{commented} and (list_create_time < ? or list_create_time='')",
-                backlog_limit,
-                (fresh_coverage_after,),
-            )
+            if fresh_coverage_after:
+                fresh_limit = max(1, (commented_capacity * 2 + 2) // 3)
+                backlog_limit = max(0, commented_capacity - fresh_limit)
+                append_lane(
+                    f"{commented} and list_create_time >= ?",
+                    fresh_limit,
+                    (fresh_coverage_after,),
+                )
+                append_lane(
+                    f"{commented} and (list_create_time < ? or list_create_time='')",
+                    backlog_limit,
+                    (fresh_coverage_after,),
+                )
+            else:
+                append_lane(commented, commented_capacity)
+            append_lane("priority >= 40", quiet_limit)
         append_lane("priority > 0", limit)
         append_lane("priority = 0", limit)
         return selected
