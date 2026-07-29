@@ -714,6 +714,7 @@ class CrawlerService:
             "ranges": 0,
             "sampled": 0,
             "found": 0,
+            "saved": 0,
             "missing": 0,
             "errors": 0,
             "completed": 0,
@@ -801,13 +802,14 @@ class CrawlerService:
                                 errors += 1
                                 stats["errors"] += 1
                         else:
-                            post, _comments = parsed
+                            post, comments = parsed
                             status = "found"
                             create_time = post["create_time"]
                             comment_count = safe_int(post["comment_count"])
                             found += 1
                             stats["found"] += 1
                             if enqueue_found and not dry_run:
+                                store.upsert_post(post, comments, commit=False)
                                 store.enqueue_crawler_candidate(
                                     post_id=str(post_id),
                                     source="id_probe",
@@ -819,6 +821,14 @@ class CrawlerService:
                                     reason="id_probe_found",
                                     commit=False,
                                 )
+                                store.finish_crawler_queue_detail(
+                                    str(post_id),
+                                    detail_comment_count=comment_count,
+                                    retry_delay_seconds=0,
+                                    max_same_observation_attempts=1,
+                                    commit=False,
+                                )
+                                stats["saved"] += 1
                         if not dry_run:
                             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             store.conn.execute(

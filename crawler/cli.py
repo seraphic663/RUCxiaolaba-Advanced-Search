@@ -363,7 +363,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(probe)
     probe.add_argument("--range-limit", type=int, default=2)
     probe.add_argument("--samples-per-range", type=int, default=20)
-    probe.add_argument("--no-enqueue-found", action="store_true")
+    probe.add_argument(
+        "--no-enqueue-found",
+        action="store_true",
+        help="only record probe results; do not save found post content",
+    )
     probe.add_argument("--dry-run", action="store_true")
     probe.add_argument("--min-delay", type=float, default=8.0)
     probe.add_argument("--max-delay", type=float, default=15.0)

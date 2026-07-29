@@ -1235,7 +1235,7 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(stats["end_id"], 1005)
         self.assertEqual(stats["planned"], 2)
 
-    def test_probe_gaps_records_found_without_writing_post(self):
+    def test_probe_gaps_saves_found_detail_without_a_second_source_call(self):
         with SQLitePostStore(self.db) as store:
             store.ensure_runtime_schema()
             store.conn.execute(
@@ -1255,17 +1255,24 @@ class CrawlerServiceTest(unittest.TestCase):
             max_delay=0,
         )
         self.assertEqual(stats["found"], 1)
+        self.assertEqual(stats["saved"], 1)
         with SQLitePostStore(self.db) as store:
-            self.assertIsNone(store.conn.execute("select 1 from posts where id='500'").fetchone())
+            post = store.conn.execute(
+                "select crawl_status,comment_count from posts where id='500'"
+            ).fetchone()
             probe = store.conn.execute(
                 "select status from crawler_id_probe where post_id='500'"
             ).fetchone()
             queue = store.conn.execute(
-                "select priority, reason from crawler_queue where post_id='500'"
+                "select priority,reason,status,attempts from crawler_queue where post_id='500'"
             ).fetchone()
+        self.assertEqual(post["crawl_status"], "full")
+        self.assertEqual(post["comment_count"], 0)
         self.assertEqual(probe["status"], "found")
         self.assertEqual(queue["priority"], 15)
         self.assertEqual(queue["reason"], "id_probe_found")
+        self.assertEqual(queue["status"], "done")
+        self.assertEqual(queue["attempts"], 1)
 
     def test_gap_sampling_advances_after_existing_probes(self):
         first = CrawlerService.sample_ids(100, 109, 3)
