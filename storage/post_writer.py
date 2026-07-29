@@ -44,6 +44,34 @@ def article_text(item: dict) -> str:
     return f"{item.get('title') or ''} {item.get('detail') or ''}".strip()
 
 
+MEDIA_FIELDS = (
+    "images",
+    "show_images",
+    "image_list",
+    "video",
+    "videos",
+    "file_list",
+    "attachments",
+)
+
+
+def extract_media_json(item: dict) -> str:
+    payload = {}
+    for field in MEDIA_FIELDS:
+        value = item.get(field)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, str) and value.strip().lower() in {
+            "",
+            "[]",
+            "{}",
+            "null",
+        }:
+            continue
+        payload[field] = value
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+
+
 def comment_row(
     post_id: str,
     parent_id: str,
@@ -58,6 +86,7 @@ def comment_row(
         "post_id": post_id,
         "parent_comment_id": parent_id,
         "detail": str(item.get("detail") or ""),
+        "media_json": extract_media_json(item),
         "show_user_name": str(item.get("show_user_name") or ""),
         "show_user_id": str(item.get("show_user_id") or ""),
         "real_user_id": str(item.get("real_user_id") or "0"),
@@ -184,6 +213,7 @@ class SQLitePostStore:
             create table if not exists posts (
                 id text primary key,
                 content text not null,
+                media_json text not null default '{}',
                 category_name text not null,
                 user_name text not null,
                 show_user_id text not null,
@@ -204,6 +234,7 @@ class SQLitePostStore:
                 post_id text not null,
                 parent_comment_id text not null,
                 detail text not null,
+                media_json text not null default '{}',
                 show_user_name text not null,
                 show_user_id text not null,
                 real_user_id text not null,
@@ -346,12 +377,19 @@ class SQLitePostStore:
                 "crawl_status": "alter table posts add column crawl_status text not null default 'full'",
                 "list_update_time": "alter table posts add column list_update_time text not null default ''",
                 "list_source": "alter table posts add column list_source text not null default ''",
+                "media_json": "alter table posts add column media_json text not null default '{}'",
             }.items():
                 if name not in columns:
                     self.conn.execute(ddl)
             self.conn.execute(
                 "create index if not exists idx_posts_id_int on posts(cast(id as integer))"
             )
+        if self._table_exists("comments"):
+            comment_columns = self._columns("comments")
+            if "media_json" not in comment_columns:
+                self.conn.execute(
+                    "alter table comments add column media_json text not null default '{}'"
+                )
         self.ensure_crawler_queue(commit=False)
         self.ensure_gap_tables(commit=False)
         self.ensure_crawler_run_history(commit=False)
@@ -363,6 +401,7 @@ class SQLitePostStore:
             self.migrate_crawler_comment_row_gap_priorities(commit=False)
         )
         invalid_zero_post_migration = self.migrate_invalid_zero_post(commit=False)
+        empty_content_migration = self.migrate_empty_content_audit(commit=False)
         self.conn.commit()
         if observation_migration:
             print(
@@ -389,6 +428,12 @@ class SQLitePostStore:
             print(
                 "[posts] quarantined invalid zero post "
                 f"{invalid_zero_post_migration}",
+                flush=True,
+            )
+        if empty_content_migration:
+            print(
+                "[queue] migrated empty content audit "
+                f"{empty_content_migration}",
                 flush=True,
             )
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
@@ -921,6 +966,60 @@ class SQLitePostStore:
             self.conn.commit()
         return result
 
+    def migrate_empty_content_audit(self, commit: bool = True) -> dict:
+        """Queue text-empty historical rows without assuming they are corrupt."""
+        migration_key = "crawler_empty_content_audit_v1"
+        if not self._table_exists("posts"):
+            return {}
+        if self.conn.execute(
+            "select 1 from crawl_state where key=?",
+            (migration_key,),
+        ).fetchone():
+            return {}
+        rows = self.conn.execute(
+            """
+            select id,create_time,list_update_time,comment_count
+            from posts
+            where id!='0'
+              and crawl_status='full'
+              and trim(coalesce(content,''))=''
+              and trim(coalesce(media_json,'{}')) in ('', '{}')
+            order by create_time desc,cast(id as integer) desc
+            """
+        ).fetchall()
+        actions = {"inserted": 0, "reopened": 0, "updated": 0, "unchanged": 0}
+        for index, row in enumerate(rows):
+            action = self.enqueue_crawler_candidate(
+                post_id=str(row["id"]),
+                source="local_audit",
+                priority=5 if index < 4 else 35,
+                list_create_time=str(row["create_time"] or ""),
+                list_update_time=str(
+                    row["list_update_time"] or row["create_time"] or ""
+                ),
+                list_comment_count=safe_int(row["comment_count"]),
+                db_comment_count=safe_int(row["comment_count"]),
+                reason="empty_content_audit",
+                commit=False,
+            )
+            actions[action] += 1
+        result = {
+            "candidates": len(rows),
+            "sample_priority": min(4, len(rows)),
+            **actions,
+        }
+        self.conn.execute(
+            "insert into crawl_state(key,value,updated_at) values (?,?,?)",
+            (
+                migration_key,
+                json.dumps(result, ensure_ascii=False, sort_keys=True),
+                now_text(),
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return result if rows else {}
+
     def record_crawler_run(
         self,
         *,
@@ -1011,8 +1110,11 @@ class SQLitePostStore:
 
         existing_meta = {}
         if {"list_update_time", "list_source"}.issubset(self._post_columns):
+            selected_meta = ["list_update_time", "list_source"]
+            if "media_json" in self._post_columns:
+                selected_meta.append("media_json")
             row = self.conn.execute(
-                "select list_update_time, list_source from posts where id=?",
+                f"select {','.join(selected_meta)} from posts where id=?",
                 (post_id,),
             ).fetchone()
             if row is not None:
@@ -1020,10 +1122,17 @@ class SQLitePostStore:
                     "list_update_time": str(row["list_update_time"] or ""),
                     "list_source": str(row["list_source"] or ""),
                 }
+                if "media_json" in row.keys():
+                    existing_meta["media_json"] = str(row["media_json"] or "{}")
 
         values = {
             "id": post_id,
             "content": str(post.get("content") or ""),
+            "media_json": str(
+                post.get("media_json")
+                if "media_json" in post
+                else existing_meta.get("media_json") or "{}"
+            ),
             "category_name": str(post.get("category_name") or post.get("category") or ""),
             "user_name": str(post.get("user_name") or post.get("user") or ""),
             "show_user_id": str(post.get("show_user_id") or ""),
@@ -1097,6 +1206,7 @@ class SQLitePostStore:
         values = {
             "id": post_id,
             "content": content,
+            "media_json": extract_media_json(article),
             "category_name": str(article.get("category_name") or ""),
             "user_name": str(article.get("show_user_name") or article.get("user_name") or ""),
             "show_user_id": str(article.get("show_user_id") or ""),
@@ -1118,7 +1228,7 @@ class SQLitePostStore:
             select crawl_status, content, category_name, user_name,
                    show_user_id, real_user_id, create_time,
                    comment_count, star_count, trace_count,
-                   list_update_time, list_source
+                   list_update_time, list_source, media_json
             from posts where id=?
             """,
             (post_id,),
@@ -1135,8 +1245,15 @@ class SQLitePostStore:
         else:
             status = str(existing["crawl_status"] or "full")
             if status == "full":
+                existing_media = str(existing["media_json"] or "{}")
+                promoted_media = (
+                    values["media_json"]
+                    if existing_media in {"", "{}"}
+                    else existing_media
+                )
                 metadata_changed = any(
                     (
+                        existing_media != promoted_media,
                         safe_int(existing["comment_count"]) != values["comment_count"],
                         safe_int(existing["star_count"]) != values["star_count"],
                         safe_int(existing["trace_count"]) != values["trace_count"],
@@ -1148,11 +1265,12 @@ class SQLitePostStore:
                     self.conn.execute(
                         """
                         update posts
-                        set comment_count=?, star_count=?, trace_count=?,
+                        set media_json=?, comment_count=?, star_count=?, trace_count=?,
                             list_update_time=?, list_source=?, updated_at=?
                         where id=?
                         """,
                         (
+                            promoted_media,
                             values["comment_count"],
                             values["star_count"],
                             values["trace_count"],
@@ -1168,6 +1286,7 @@ class SQLitePostStore:
                 metadata_changed = any(
                     (
                         content_changed,
+                        str(existing["media_json"] or "{}") != values["media_json"],
                         str(existing["category_name"] or "") != values["category_name"],
                         str(existing["user_name"] or "") != values["user_name"],
                         str(existing["show_user_id"] or "") != values["show_user_id"],
@@ -1184,7 +1303,7 @@ class SQLitePostStore:
                     self.conn.execute(
                         """
                         update posts
-                        set content=?, category_name=?, user_name=?,
+                        set content=?, media_json=?, category_name=?, user_name=?,
                             show_user_id=?, real_user_id=?, create_time=?,
                             comment_count=?, star_count=?, trace_count=?,
                             crawl_status='list_only', list_update_time=?,
@@ -1193,6 +1312,7 @@ class SQLitePostStore:
                         """,
                         (
                             content,
+                            values["media_json"],
                             values["category_name"],
                             values["user_name"],
                             values["show_user_id"],
@@ -1235,6 +1355,7 @@ class SQLitePostStore:
                     "post_id",
                     "parent_comment_id",
                     "detail",
+                    "media_json",
                     "show_user_name",
                     "show_user_id",
                     "real_user_id",
