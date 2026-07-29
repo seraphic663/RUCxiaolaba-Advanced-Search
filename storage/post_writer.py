@@ -72,6 +72,10 @@ def extract_media_json(item: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def has_media_json(value: object) -> bool:
+    return str(value or "{}").strip().lower() not in {"", "{}", "null"}
+
+
 def comment_row(
     post_id: str,
     parent_id: str,
@@ -1524,6 +1528,8 @@ class SQLitePostStore:
         columns = ["comment_count"]
         if "crawl_status" in self._post_columns:
             columns.append("crawl_status")
+        if "media_json" in self._post_columns:
+            columns.append("media_json")
         row = self.conn.execute(
             f"select {','.join(columns)} from posts where id=?",
             (str(post_id),),
@@ -1535,6 +1541,9 @@ class SQLitePostStore:
             "crawl_status": str(row["crawl_status"] or "full")
             if "crawl_status" in row.keys()
             else "full",
+            "media_json": str(row["media_json"] or "{}")
+            if "media_json" in row.keys()
+            else "{}",
         }
 
     def post_exists(self, post_id: str) -> bool:

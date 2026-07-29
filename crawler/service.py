@@ -15,7 +15,7 @@ from crawler.client import MiniProgramClient
 from crawler.lock import database_write_lock
 from crawler.normalizer import normalize_detail, validate_normalized_detail
 from crawler.strategies.page_scan import PageScanProgress
-from storage.post_writer import SQLitePostStore, safe_int
+from storage.post_writer import SQLitePostStore, has_media_json, safe_int
 
 CHINA_TZ = timezone(timedelta(hours=8))
 
@@ -365,6 +365,11 @@ class CrawlerService:
             "removed_comment_rows": 0,
             "comment_row_delta": 0,
             "unchanged_comment_rows": 0,
+            "posts_with_media": 0,
+            "new_media_posts": 0,
+            "comment_media_rows": 0,
+            "new_comment_media_rows": 0,
+            "removed_comment_media_rows": 0,
             "source_calls": 0,
         }
         for lane in ("urgent", "refresh", "coverage"):
@@ -376,6 +381,8 @@ class CrawlerService:
                 "new_comment_rows",
                 "comment_row_delta",
                 "unchanged_comment_rows",
+                "new_media_posts",
+                "new_comment_media_rows",
             ):
                 stats[f"{metric}_{lane}"] = 0
         stats["completed_fresh_coverage"] = 0
@@ -532,6 +539,15 @@ class CrawlerService:
                             (post_id,),
                         ).fetchone()[0]
                     )
+                    before_comment_media_rows = safe_int(
+                        store.conn.execute(
+                            """
+                            select count(*) from comments
+                            where post_id=? and media_json not in ('', '{}')
+                            """,
+                            (post_id,),
+                        ).fetchone()[0]
+                    )
                     if dry_run:
                         print(
                             f"[trickle-fill] dry #{post_id} "
@@ -562,6 +578,35 @@ class CrawlerService:
                                 (post_id,),
                             ).fetchone()[0]
                         )
+                        after_comment_media_rows = safe_int(
+                            store.conn.execute(
+                                """
+                                select count(*) from comments
+                                where post_id=? and media_json not in ('', '{}')
+                                """,
+                                (post_id,),
+                            ).fetchone()[0]
+                        )
+                        post_has_media = has_media_json(post.get("media_json"))
+                        if post_has_media:
+                            stats["posts_with_media"] += 1
+                            if before is None or not has_media_json(
+                                before.get("media_json")
+                            ):
+                                stats["new_media_posts"] += 1
+                                stats[f"new_media_posts_{lane}"] += 1
+                        stats["comment_media_rows"] += after_comment_media_rows
+                        added_comment_media = max(
+                            0,
+                            after_comment_media_rows - before_comment_media_rows,
+                        )
+                        removed_comment_media = max(
+                            0,
+                            before_comment_media_rows - after_comment_media_rows,
+                        )
+                        stats["new_comment_media_rows"] += added_comment_media
+                        stats[f"new_comment_media_rows_{lane}"] += added_comment_media
+                        stats["removed_comment_media_rows"] += removed_comment_media
                         if before is None or before["crawl_status"] != "full":
                             stats["completed_details"] += 1
                             stats[f"completed_{lane}"] += 1

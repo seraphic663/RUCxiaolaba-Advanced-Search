@@ -1852,6 +1852,12 @@ class CrawlerServiceTest(unittest.TestCase):
                 "select media_json from comments where post_id='710'"
             ).fetchone()
         self.assertEqual(stats["written"], 1)
+        self.assertEqual(stats["posts_with_media"], 1)
+        self.assertEqual(stats["new_media_posts"], 1)
+        self.assertEqual(stats["new_media_posts_coverage"], 1)
+        self.assertEqual(stats["comment_media_rows"], 1)
+        self.assertEqual(stats["new_comment_media_rows"], 1)
+        self.assertEqual(stats["new_comment_media_rows_coverage"], 1)
         self.assertEqual(post["content"], "")
         self.assertEqual(post["crawl_status"], "full")
         self.assertEqual(
