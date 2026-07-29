@@ -367,6 +367,19 @@ class CrawlerService:
             "unchanged_comment_rows": 0,
             "source_calls": 0,
         }
+        for lane in ("urgent", "refresh", "coverage"):
+            for metric in (
+                "written",
+                "misses",
+                "completed",
+                "refreshed",
+                "new_comment_rows",
+                "comment_row_delta",
+                "unchanged_comment_rows",
+            ):
+                stats[f"{metric}_{lane}"] = 0
+        stats["completed_fresh_coverage"] = 0
+        stats["completed_backlog_coverage"] = 0
         consecutive_misses = 0
         with database_write_lock(self.db_path, self.lock_timeout):
             with SQLitePostStore(self.db_path) as store:
@@ -415,6 +428,19 @@ class CrawlerService:
                 )
                 for item in items:
                     post_id = str(item["post_id"])
+                    priority = safe_int(item["priority"])
+                    lane = (
+                        "urgent"
+                        if priority < 0
+                        else "refresh"
+                        if priority == 0
+                        else "coverage"
+                    )
+                    is_fresh_coverage = (
+                        0 < priority < 40
+                        and str(item["list_create_time"] or "")
+                        >= fresh_coverage_after
+                    )
                     time.sleep(random.uniform(min_delay, max_delay))
                     parsed, error = self.fetch_detail_with_error(client, post_id)
                     if error:
@@ -434,6 +460,7 @@ class CrawlerService:
                                 )
                                 store.conn.commit()
                             stats["misses"] += 1
+                            stats[f"misses_{lane}"] += 1
                             print(
                                 f"[trickle-fill] skip #{post_id} err={error}",
                                 flush=True,
@@ -451,6 +478,7 @@ class CrawlerService:
                                 )
                                 store.conn.commit()
                             stats["misses"] += 1
+                            stats[f"misses_{lane}"] += 1
                             stats["suspicious_payloads"] += 1
                             print(
                                 f"[trickle-fill] reject #{post_id} err={error}",
@@ -458,6 +486,7 @@ class CrawlerService:
                             )
                             continue
                         stats["misses"] += 1
+                        stats[f"misses_{lane}"] += 1
                         consecutive_misses += 1
                         if self.is_rate_limited(error):
                             stats["rate_limited"] = True
@@ -535,16 +564,28 @@ class CrawlerService:
                         )
                         if before is None or before["crawl_status"] != "full":
                             stats["completed_details"] += 1
+                            stats[f"completed_{lane}"] += 1
+                            if lane == "coverage":
+                                coverage_age = (
+                                    "fresh" if is_fresh_coverage else "backlog"
+                                )
+                                stats[f"completed_{coverage_age}_coverage"] += 1
                         else:
                             stats["refreshed_details"] += 1
+                            stats[f"refreshed_{lane}"] += 1
                         added_rows = max(0, after_rows - before_rows)
                         removed_rows = max(0, before_rows - after_rows)
                         stats["new_comment_rows"] += added_rows
+                        stats[f"new_comment_rows_{lane}"] += added_rows
                         stats["removed_comment_rows"] += removed_rows
-                        stats["comment_row_delta"] += after_rows - before_rows
+                        row_delta = after_rows - before_rows
+                        stats["comment_row_delta"] += row_delta
+                        stats[f"comment_row_delta_{lane}"] += row_delta
                         if after_rows == before_rows:
                             stats["unchanged_comment_rows"] += 1
+                            stats[f"unchanged_comment_rows_{lane}"] += 1
                     stats["written"] += 1
+                    stats[f"written_{lane}"] += 1
                     print(
                         f"[trickle-fill] ok #{post_id} "
                         f"written={stats['written']}/{stats['selected']}",

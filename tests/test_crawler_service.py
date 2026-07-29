@@ -1015,6 +1015,14 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(stats["selected_coverage"], 6)
         self.assertEqual(stats["selected_fresh_coverage"], 4)
         self.assertEqual(stats["selected_backlog_coverage"], 2)
+        self.assertEqual(stats["written_refresh"], 2)
+        self.assertEqual(stats["written_coverage"], 6)
+        self.assertEqual(stats["completed_refresh"], 2)
+        self.assertEqual(stats["completed_coverage"], 6)
+        self.assertEqual(stats["completed_fresh_coverage"], 4)
+        self.assertEqual(stats["completed_backlog_coverage"], 2)
+        self.assertEqual(stats["new_comment_rows_refresh"], 2)
+        self.assertEqual(stats["new_comment_rows_coverage"], 6)
         cutoff = datetime.strptime(
             stats["fresh_coverage_after"],
             "%Y-%m-%d %H:%M:%S",
