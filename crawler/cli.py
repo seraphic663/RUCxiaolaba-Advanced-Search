@@ -112,6 +112,7 @@ def command_trickle_fill(args) -> int:
         max_observation_attempts=args.max_observation_attempts,
         transient_retry_delay=args.transient_retry_delay,
         max_transient_attempts=args.max_transient_attempts,
+        fresh_coverage_hours=args.fresh_coverage_hours,
     )
     return 0
 
@@ -334,6 +335,12 @@ def build_parser() -> argparse.ArgumentParser:
     trickle.add_argument("--max-observation-attempts", type=int, default=2)
     trickle.add_argument("--transient-retry-delay", type=int, default=60 * 60)
     trickle.add_argument("--max-transient-attempts", type=int, default=3)
+    trickle.add_argument(
+        "--fresh-coverage-hours",
+        type=int,
+        default=72,
+        help="reserve about two thirds of coverage slots for recent commented posts",
+    )
     trickle.set_defaults(func=command_trickle_fill, canonical_command="trickle-fill")
 
     gaps = sub.add_parser(

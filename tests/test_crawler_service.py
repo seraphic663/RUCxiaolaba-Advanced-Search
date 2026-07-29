@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from crawler.service import CrawlerService
@@ -788,6 +789,20 @@ class CrawlerServiceTest(unittest.TestCase):
                     db_comment_count=None,
                     reason="new_post",
                 )
+            fresh_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for index in range(6):
+                post_id = str(660 + index)
+                details[post_id] = detail(post_id, 1)
+                store.enqueue_crawler_candidate(
+                    post_id=post_id,
+                    source="lists",
+                    priority=10,
+                    list_create_time=fresh_time,
+                    list_update_time=fresh_time,
+                    list_comment_count=1,
+                    db_comment_count=None,
+                    reason="new_post",
+                )
         stats = self.service(FakeClient({}, details)).trickle_fill(
             limit=8,
             refresh_limit=4,
@@ -799,6 +814,8 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(stats["refresh_limit"], 2)
         self.assertEqual(stats["selected_refresh"], 2)
         self.assertEqual(stats["selected_coverage"], 6)
+        self.assertEqual(stats["selected_fresh_coverage"], 4)
+        self.assertEqual(stats["selected_backlog_coverage"], 2)
 
     def test_list_detail_gap_gets_one_delayed_retry_then_defers_until_growth(self):
         with SQLitePostStore(self.db) as store:

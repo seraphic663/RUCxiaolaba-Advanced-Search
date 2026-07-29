@@ -1125,6 +1125,7 @@ class SQLitePostStore:
         self,
         limit: int,
         refresh_limit: int | None = None,
+        fresh_coverage_after: str = "",
     ) -> list[sqlite3.Row]:
         self.ensure_crawler_queue()
         limit = max(1, int(limit))
@@ -1153,10 +1154,15 @@ class SQLitePostStore:
         selected: list[sqlite3.Row] = []
         selected_ids: set[str] = set()
 
-        def append_lane(where: str, lane_limit: int) -> None:
+        def append_lane(
+            where: str,
+            lane_limit: int,
+            where_params: tuple[object, ...] = (),
+        ) -> None:
             if lane_limit <= 0 or len(selected) >= limit:
                 return
             params: list[object] = [now_text()]
+            params.extend(where_params)
             exclude = ""
             if selected_ids:
                 placeholders = ",".join("?" for _ in selected_ids)
@@ -1192,6 +1198,21 @@ class SQLitePostStore:
         # so they cannot starve never-fetched IDs from the same detail budget.
         append_lane("priority < 0", limit)
         append_lane("priority = 0", max(0, int(refresh_limit)))
+        coverage_capacity = max(0, limit - len(selected))
+        if fresh_coverage_after and coverage_capacity:
+            fresh_limit = max(1, (coverage_capacity * 2 + 2) // 3)
+            backlog_limit = max(0, coverage_capacity - fresh_limit)
+            commented = "priority > 0 and priority < 40"
+            append_lane(
+                f"{commented} and list_create_time >= ?",
+                fresh_limit,
+                (fresh_coverage_after,),
+            )
+            append_lane(
+                f"{commented} and (list_create_time < ? or list_create_time='')",
+                backlog_limit,
+                (fresh_coverage_after,),
+            )
         append_lane("priority > 0", limit)
         append_lane("priority = 0", limit)
         return selected
