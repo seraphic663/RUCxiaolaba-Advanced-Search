@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +25,12 @@ def safe_int(value, default=0) -> int:
 
 def now_text() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def later_text(seconds: int) -> str:
+    return (datetime.now() + timedelta(seconds=max(0, int(seconds)))).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
 
 
 def comment_time(item: dict) -> str:
@@ -224,6 +231,11 @@ class SQLitePostStore:
                 reason text not null,
                 attempts integer not null,
                 last_error text not null,
+                last_attempt_list_comment_count integer,
+                last_attempt_list_update_time text not null default '',
+                last_detail_comment_count integer,
+                same_observation_attempts integer not null default 0,
+                next_attempt_at text not null default '',
                 created_at text not null,
                 updated_at text not null
             );
@@ -270,6 +282,7 @@ class SQLitePostStore:
             create index if not exists idx_comments_show_user_name_lower on comments(lower(show_user_name));
             create index if not exists idx_comments_reply_user_name_lower on comments(lower(reply_show_user_name));
             create index if not exists idx_crawler_queue_status_priority on crawler_queue(status, priority, updated_at);
+            create index if not exists idx_crawler_queue_due on crawler_queue(status, next_attempt_at, priority);
             create index if not exists idx_crawler_gap_status on crawler_gap_ranges(status, start_id);
             create index if not exists idx_crawler_probe_range on crawler_id_probe(range_id, status);
             """
@@ -306,11 +319,11 @@ class SQLitePostStore:
             )
         self.ensure_crawler_queue(commit=False)
         self.ensure_gap_tables(commit=False)
-        reopened = self.reopen_stale_comment_deltas(commit=False)
+        migration = self.migrate_crawler_queue_observations(commit=False)
         self.conn.commit()
-        if reopened:
+        if migration:
             print(
-                f"[queue] reopened stale comment deltas count={reopened}",
+                f"[queue] migrated observation state {migration}",
                 flush=True,
             )
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
@@ -333,39 +346,113 @@ class SQLitePostStore:
                 reason text not null,
                 attempts integer not null,
                 last_error text not null,
+                last_attempt_list_comment_count integer,
+                last_attempt_list_update_time text not null default '',
+                last_detail_comment_count integer,
+                same_observation_attempts integer not null default 0,
+                next_attempt_at text not null default '',
                 created_at text not null,
                 updated_at text not null
             )
             """
         )
+        columns = self._columns("crawler_queue")
+        for name, ddl in {
+            "last_attempt_list_comment_count": (
+                "alter table crawler_queue "
+                "add column last_attempt_list_comment_count integer"
+            ),
+            "last_attempt_list_update_time": (
+                "alter table crawler_queue "
+                "add column last_attempt_list_update_time text not null default ''"
+            ),
+            "last_detail_comment_count": (
+                "alter table crawler_queue add column last_detail_comment_count integer"
+            ),
+            "same_observation_attempts": (
+                "alter table crawler_queue "
+                "add column same_observation_attempts integer not null default 0"
+            ),
+            "next_attempt_at": (
+                "alter table crawler_queue "
+                "add column next_attempt_at text not null default ''"
+            ),
+        }.items():
+            if name not in columns:
+                self.conn.execute(ddl)
         self.conn.execute(
             "create index if not exists idx_crawler_queue_status_priority "
             "on crawler_queue(status, priority, updated_at)"
         )
+        self.conn.execute(
+            "create index if not exists idx_crawler_queue_due "
+            "on crawler_queue(status, next_attempt_at, priority)"
+        )
         if commit:
             self.conn.commit()
 
-    def reopen_stale_comment_deltas(self, commit: bool = True) -> int:
-        """Repair terminal queue rows left behind by the old reopen bug."""
+    def migrate_crawler_queue_observations(self, commit: bool = True) -> dict:
+        """One-time repair for queue rows created before observation tracking."""
         if not self._table_exists("posts") or not self._table_exists("crawler_queue"):
-            return 0
+            return {}
+        self.conn.execute(
+            """
+            create table if not exists crawl_state (
+                key text primary key,
+                value text not null,
+                updated_at text not null
+            )
+            """
+        )
+        migration_key = "crawler_queue_observation_state_v1"
+        if self.conn.execute(
+            "select 1 from crawl_state where key=?",
+            (migration_key,),
+        ).fetchone():
+            return {}
         now = now_text()
-        cursor = self.conn.execute(
+        seeded = self.conn.execute(
             """
             update crawler_queue
-            set status='pending', priority=0,
-                reason=case
-                    when reason='comment_changed'
-                      or reason like 'comment_changed|%'
-                      or reason like '%|comment_changed'
-                      or reason like '%|comment_changed|%'
-                    then reason
-                    when reason='' then 'comment_changed'
-                    else reason || '|comment_changed'
-                end,
+            set last_attempt_list_comment_count=list_comment_count,
+                last_attempt_list_update_time=list_update_time,
+                same_observation_attempts=case
+                    when attempts >= 2 then 2
+                    when attempts > 0 then attempts
+                    else 0
+                end
+            where attempts > 0
+              and last_attempt_list_comment_count is null
+            """
+        ).rowcount
+        stale = self.conn.execute(
+            """
+            select count(*)
+            from crawler_queue q
+            join posts p on p.id=q.post_id
+            where q.priority=0
+              and q.attempts > 0
+              and coalesce(p.crawl_status,'full')='full'
+              and coalesce(q.list_comment_count,0) > coalesce(p.comment_count,0)
+            """
+        ).fetchone()[0]
+        self.conn.execute(
+            """
+            update crawler_queue
+            set status=case when attempts >= 2 then 'deferred' else 'pending' end,
+                db_comment_count=(
+                    select p.comment_count from posts p
+                    where p.id=crawler_queue.post_id
+                ),
+                last_detail_comment_count=(
+                    select p.comment_count from posts p
+                    where p.id=crawler_queue.post_id
+                ),
+                next_attempt_at='',
+                last_error='legacy_list_detail_gap',
                 updated_at=?
-            where status='done'
-              and db_comment_count is not null
+            where priority=0
+              and attempts > 0
               and exists(
                   select 1 from posts p
                   where p.id=crawler_queue.post_id
@@ -376,9 +463,24 @@ class SQLitePostStore:
             """,
             (now,),
         )
+        deferred = self.conn.execute(
+            """
+            select count(*) from crawler_queue
+            where status='deferred' and last_error='legacy_list_detail_gap'
+            """
+        ).fetchone()[0]
+        result = {
+            "seeded": max(0, int(seeded or 0)),
+            "stale_gaps": safe_int(stale),
+            "deferred": safe_int(deferred),
+        }
+        self.conn.execute(
+            "insert into crawl_state(key,value,updated_at) values (?,?,?)",
+            (migration_key, "1", now),
+        )
         if commit:
             self.conn.commit()
-        return max(0, int(cursor.rowcount or 0))
+        return result if any(result.values()) else {}
 
     def ensure_gap_tables(self, commit: bool = True) -> None:
         self.conn.executescript(
@@ -856,7 +958,10 @@ class SQLitePostStore:
         existing = self.conn.execute(
             """
             select source, priority, reason, status, list_create_time,
-                   list_update_time, list_comment_count, db_comment_count
+                   list_update_time, list_comment_count, db_comment_count,
+                   last_attempt_list_comment_count,
+                   last_attempt_list_update_time,
+                   same_observation_attempts, next_attempt_at
             from crawler_queue where post_id=?
             """,
             (str(post_id),),
@@ -867,8 +972,12 @@ class SQLitePostStore:
                 insert into crawler_queue(
                     post_id, source, priority, list_create_time,
                     list_update_time, list_comment_count, db_comment_count,
-                    status, reason, attempts, last_error, created_at, updated_at
-                ) values (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    status, reason, attempts, last_error,
+                    last_attempt_list_comment_count,
+                    last_attempt_list_update_time, last_detail_comment_count,
+                    same_observation_attempts, next_attempt_at,
+                    created_at, updated_at
+                ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     str(post_id),
@@ -882,6 +991,11 @@ class SQLitePostStore:
                     reason,
                     0,
                     "",
+                    None,
+                    "",
+                    None,
+                    0,
+                    "",
                     now,
                     now,
                 ),
@@ -892,29 +1006,62 @@ class SQLitePostStore:
             sources.add(source)
             reasons = set(filter(None, str(existing["reason"]).split("|")))
             reasons.add(reason)
-            status = existing["status"]
-            if status == "failed":
-                status = "pending"
-            elif status in {"done", "skipped"}:
-                has_new_evidence = any(
-                    (
-                        reason in {"comment_changed", "admin_selected"},
-                        list_comment_count > safe_int(existing["list_comment_count"]),
+            old_status = str(existing["status"] or "")
+            status = old_status
+            old_list_count = safe_int(existing["list_comment_count"])
+            attempted_count = existing["last_attempt_list_comment_count"]
+            attempted_update = str(existing["last_attempt_list_update_time"] or "")
+            snapshot = self.get_post_crawl_snapshot(str(post_id))
+            is_full = bool(snapshot and snapshot["crawl_status"] == "full")
+            current_db_count = (
+                safe_int(snapshot["comment_count"])
+                if snapshot is not None
+                else safe_int(existing["db_comment_count"])
+            )
+            count_growth = (
+                list_comment_count > old_list_count
+                and list_comment_count > current_db_count
+            )
+            never_attempted = attempted_count is None and not attempted_update
+            incomplete_changed = (
+                not is_full
+                and (
+                    list_comment_count != safe_int(attempted_count)
+                    or (
                         bool(list_update_time)
-                        and list_update_time > str(existing["list_update_time"] or ""),
+                        and list_update_time > attempted_update
                     )
                 )
-                if has_new_evidence:
-                    status = "pending"
+            )
+            has_new_evidence = (
+                reason == "admin_selected"
+                or never_attempted
+                or count_growth
+                or incomplete_changed
+            )
+            if old_status in {"done", "skipped", "failed", "deferred"} and has_new_evidence:
+                status = "pending"
             new_source = ",".join(sorted(sources))
             new_reason = "|".join(sorted(reasons))
             new_priority = min(safe_int(existing["priority"]), priority)
             new_create_time = (
                 list_create_time if list_create_time else str(existing["list_create_time"] or "")
             )
-            new_update_time = (
-                list_update_time if list_update_time else str(existing["list_update_time"] or "")
-            )
+            # For a full post, an update-time-only change is not detail evidence.
+            # Keeping the previous timestamp also lets discovery count this as a
+            # true no-op instead of extending list scans with metadata churn.
+            if (
+                is_full
+                and list_comment_count == old_list_count
+                and reason != "admin_selected"
+            ):
+                new_update_time = str(existing["list_update_time"] or "")
+            else:
+                new_update_time = (
+                    list_update_time
+                    if list_update_time
+                    else str(existing["list_update_time"] or "")
+                )
             unchanged = all(
                 (
                     str(existing["source"] or "") == new_source,
@@ -932,7 +1079,12 @@ class SQLitePostStore:
                 if commit:
                     self.conn.commit()
                 return "unchanged"
-            reopened = str(existing["status"] or "") != "pending" and status == "pending"
+            reopened = old_status != "pending" and status == "pending"
+            reset_observation = has_new_evidence and (
+                attempted_count is None
+                or list_comment_count != safe_int(attempted_count)
+                or str(list_update_time or "") != attempted_update
+            )
             self.conn.execute(
                 """
                 update crawler_queue
@@ -940,7 +1092,12 @@ class SQLitePostStore:
                     list_create_time=?,
                     list_update_time=?,
                     list_comment_count=?, db_comment_count=?,
-                    status=?, reason=?, updated_at=?
+                    status=?, reason=?,
+                    same_observation_attempts=case when ? then 0
+                        else same_observation_attempts end,
+                    next_attempt_at=case when ? then '' else next_attempt_at end,
+                    last_error=case when ? then '' else last_error end,
+                    updated_at=?
                 where post_id=?
                 """,
                 (
@@ -952,6 +1109,9 @@ class SQLitePostStore:
                     db_comment_count,
                     status,
                     new_reason,
+                    reset_observation,
+                    reset_observation,
+                    reset_observation,
                     now,
                     str(post_id),
                 ),
@@ -961,12 +1121,19 @@ class SQLitePostStore:
             self.conn.commit()
         return action
 
-    def next_crawler_queue_items(self, limit: int) -> list[sqlite3.Row]:
+    def next_crawler_queue_items(
+        self,
+        limit: int,
+        refresh_limit: int | None = None,
+    ) -> list[sqlite3.Row]:
         self.ensure_crawler_queue()
-        return self.conn.execute(
-            """
+        limit = max(1, int(limit))
+        if refresh_limit is None:
+            return self.conn.execute(
+                """
             select * from crawler_queue
             where status='pending'
+              and (next_attempt_at='' or next_attempt_at <= ?)
             order by
                 priority asc,
                 max(
@@ -980,8 +1147,54 @@ class SQLitePostStore:
                 cast(post_id as integer) desc
             limit ?
             """,
-            (max(1, int(limit)),),
-        ).fetchall()
+                (now_text(), limit),
+            ).fetchall()
+
+        selected: list[sqlite3.Row] = []
+        selected_ids: set[str] = set()
+
+        def append_lane(where: str, lane_limit: int) -> None:
+            if lane_limit <= 0 or len(selected) >= limit:
+                return
+            params: list[object] = [now_text()]
+            exclude = ""
+            if selected_ids:
+                placeholders = ",".join("?" for _ in selected_ids)
+                exclude = f" and post_id not in ({placeholders})"
+                params.extend(sorted(selected_ids))
+            params.append(min(lane_limit, limit - len(selected)))
+            rows = self.conn.execute(
+                f"""
+                select * from crawler_queue
+                where status='pending'
+                  and (next_attempt_at='' or next_attempt_at <= ?)
+                  and ({where})
+                  {exclude}
+                order by
+                    priority asc,
+                    max(
+                        0,
+                        coalesce(list_comment_count, 0)
+                        - coalesce(db_comment_count, 0)
+                    ) desc,
+                    coalesce(list_update_time, list_create_time, '') desc,
+                    coalesce(list_comment_count, 0) desc,
+                    updated_at asc,
+                    cast(post_id as integer) desc
+                limit ?
+                """,
+                params,
+            ).fetchall()
+            selected.extend(rows)
+            selected_ids.update(str(row["post_id"]) for row in rows)
+
+        # Explicit admin work stays urgent. Natural comment refreshes are capped
+        # so they cannot starve never-fetched IDs from the same detail budget.
+        append_lane("priority < 0", limit)
+        append_lane("priority = 0", max(0, int(refresh_limit)))
+        append_lane("priority > 0", limit)
+        append_lane("priority = 0", limit)
+        return selected
 
     def mark_crawler_queue_item(
         self,
@@ -990,20 +1203,160 @@ class SQLitePostStore:
         status: str,
         last_error: str = "",
         increment_attempts: bool = True,
+        record_observation: bool = False,
+        next_attempt_at: str = "",
         commit: bool = True,
     ) -> None:
-        self.ensure_crawler_queue()
+        self.ensure_crawler_queue(commit=False)
         attempts_sql = "attempts + 1" if increment_attempts else "attempts"
+        observation_sql = ""
+        if record_observation:
+            observation_sql = """
+                , last_attempt_list_comment_count=list_comment_count
+                , last_attempt_list_update_time=list_update_time
+                , same_observation_attempts=same_observation_attempts + 1
+            """
         self.conn.execute(
             f"""
             update crawler_queue
-            set status=?, last_error=?, attempts={attempts_sql}, updated_at=?
+            set status=?, last_error=?, attempts={attempts_sql},
+                next_attempt_at=?, updated_at=?
+                {observation_sql}
             where post_id=?
             """,
-            (status, last_error, now_text(), str(post_id)),
+            (status, last_error, next_attempt_at, now_text(), str(post_id)),
         )
         if commit:
             self.conn.commit()
+
+    def finish_crawler_queue_detail(
+        self,
+        post_id: str,
+        *,
+        detail_comment_count: int,
+        retry_delay_seconds: int,
+        max_same_observation_attempts: int,
+        commit: bool = True,
+    ) -> str:
+        """Record the exact list observation consumed by a detail response."""
+        self.ensure_crawler_queue(commit=False)
+        row, observation_attempts = self._crawler_queue_observation_attempt(post_id)
+        if row is None:
+            return "missing"
+        list_count = safe_int(row["list_comment_count"])
+        detail_count = safe_int(detail_comment_count)
+        if detail_count >= list_count:
+            status = "done"
+            next_attempt_at = ""
+            last_error = ""
+        elif observation_attempts < max(1, int(max_same_observation_attempts)):
+            status = "pending"
+            next_attempt_at = later_text(retry_delay_seconds)
+            last_error = (
+                f"list_detail_comment_gap:list={list_count},detail={detail_count},"
+                f"retry={observation_attempts}"
+            )
+        else:
+            status = "deferred"
+            next_attempt_at = ""
+            last_error = (
+                f"list_detail_comment_gap:list={list_count},detail={detail_count},"
+                f"deferred={observation_attempts}"
+            )
+        self.conn.execute(
+            """
+            update crawler_queue
+            set status=?, db_comment_count=?, last_error=?,
+                attempts=attempts + 1,
+                last_attempt_list_comment_count=list_comment_count,
+                last_attempt_list_update_time=list_update_time,
+                last_detail_comment_count=?,
+                same_observation_attempts=?,
+                next_attempt_at=?, updated_at=?
+            where post_id=?
+            """,
+            (
+                status,
+                detail_count,
+                last_error,
+                detail_count,
+                observation_attempts,
+                next_attempt_at,
+                now_text(),
+                str(post_id),
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return status
+
+    def defer_crawler_queue_failure(
+        self,
+        post_id: str,
+        *,
+        last_error: str,
+        retry_delay_seconds: int,
+        max_same_observation_attempts: int,
+        commit: bool = True,
+    ) -> str:
+        self.ensure_crawler_queue(commit=False)
+        row, observation_attempts = self._crawler_queue_observation_attempt(post_id)
+        if row is None:
+            return "missing"
+        terminal = observation_attempts >= max(1, int(max_same_observation_attempts))
+        status = "failed" if terminal else "pending"
+        next_attempt_at = "" if terminal else later_text(retry_delay_seconds)
+        self.conn.execute(
+            """
+            update crawler_queue
+            set status=?, last_error=?, attempts=attempts + 1,
+                last_attempt_list_comment_count=list_comment_count,
+                last_attempt_list_update_time=list_update_time,
+                same_observation_attempts=?, next_attempt_at=?, updated_at=?
+            where post_id=?
+            """,
+            (
+                status,
+                last_error,
+                observation_attempts,
+                next_attempt_at,
+                now_text(),
+                str(post_id),
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return status
+
+    def _crawler_queue_observation_attempt(
+        self,
+        post_id: str,
+    ) -> tuple[sqlite3.Row | None, int]:
+        row = self.conn.execute(
+            """
+            select list_comment_count, list_update_time,
+                   last_attempt_list_comment_count,
+                   last_attempt_list_update_time,
+                   same_observation_attempts
+            from crawler_queue where post_id=?
+            """,
+            (str(post_id),),
+        ).fetchone()
+        if row is None:
+            return None, 0
+        same_observation = (
+            row["last_attempt_list_comment_count"] is not None
+            and safe_int(row["last_attempt_list_comment_count"])
+            == safe_int(row["list_comment_count"])
+            and str(row["last_attempt_list_update_time"] or "")
+            == str(row["list_update_time"] or "")
+        )
+        attempts = (
+            safe_int(row["same_observation_attempts"]) + 1
+            if same_observation
+            else 1
+        )
+        return row, attempts
 
     def set_state(self, key: str, value: str, commit: bool = True) -> None:
         self.conn.execute(

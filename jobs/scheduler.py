@@ -81,6 +81,26 @@ DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 30 * 60)
 TRICKLE_INTERVAL = env_int("CRAWLER_TRICKLE_INTERVAL", 10 * 60)
 TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 12)
 TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 12), TRICKLE_LIMIT_CAP)
+TRICKLE_REFRESH_LIMIT = min(
+    env_nonnegative_int("CRAWLER_TRICKLE_REFRESH_LIMIT", 4),
+    TRICKLE_LIMIT,
+)
+TRICKLE_OBSERVATION_RETRY_DELAY = env_int(
+    "CRAWLER_TRICKLE_OBSERVATION_RETRY_DELAY",
+    6 * 60 * 60,
+)
+TRICKLE_MAX_OBSERVATION_ATTEMPTS = env_int(
+    "CRAWLER_TRICKLE_MAX_OBSERVATION_ATTEMPTS",
+    2,
+)
+TRICKLE_TRANSIENT_RETRY_DELAY = env_int(
+    "CRAWLER_TRICKLE_TRANSIENT_RETRY_DELAY",
+    60 * 60,
+)
+TRICKLE_MAX_TRANSIENT_ATTEMPTS = env_int(
+    "CRAWLER_TRICKLE_MAX_TRANSIENT_ATTEMPTS",
+    3,
+)
 TRICKLE_MIN_DELAY = env_float("CRAWLER_TRICKLE_MIN_DELAY", 8.0)
 TRICKLE_MAX_DELAY = max(
     TRICKLE_MIN_DELAY,
@@ -202,6 +222,16 @@ TRICKLE_JOBS = {
         "trickle-fill",
         "--limit",
         str(TRICKLE_LIMIT),
+        "--refresh-limit",
+        str(TRICKLE_REFRESH_LIMIT),
+        "--observation-retry-delay",
+        str(TRICKLE_OBSERVATION_RETRY_DELAY),
+        "--max-observation-attempts",
+        str(TRICKLE_MAX_OBSERVATION_ATTEMPTS),
+        "--transient-retry-delay",
+        str(TRICKLE_TRANSIENT_RETRY_DELAY),
+        "--max-transient-attempts",
+        str(TRICKLE_MAX_TRANSIENT_ATTEMPTS),
         "--min-delay",
         str(TRICKLE_MIN_DELAY),
         "--max-delay",
@@ -909,6 +939,7 @@ def main() -> int:
             "[scheduler] trickle enabled "
             f"since={TRICKLE_SINCE!r} discover={DISCOVER_INTERVAL}s "
             f"trickle={TRICKLE_INTERVAL}s limit={TRICKLE_LIMIT} "
+            f"refresh_limit={TRICKLE_REFRESH_LIMIT} "
             f"gap={GAP_ENABLED} gap_since={GAP_SINCE!r}",
             flush=True,
         )

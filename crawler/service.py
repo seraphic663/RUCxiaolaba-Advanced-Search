@@ -322,6 +322,11 @@ class CrawlerService:
         min_delay: float,
         max_delay: float,
         stop_after_misses: int,
+        refresh_limit: int | None = None,
+        observation_retry_delay: int = 6 * 60 * 60,
+        max_observation_attempts: int = 2,
+        transient_retry_delay: int = 60 * 60,
+        max_transient_attempts: int = 3,
     ) -> dict:
         client = self.client()
         stats = {
@@ -332,6 +337,13 @@ class CrawlerService:
             "rate_limited": False,
             "quota_stop": False,
             "suspicious_payloads": 0,
+            "selected_urgent": 0,
+            "selected_refresh": 0,
+            "selected_coverage": 0,
+            "retry_scheduled": 0,
+            "deferred_observations": 0,
+            "transient_retries": 0,
+            "terminal_failures": 0,
             "completed_details": 0,
             "refreshed_details": 0,
             "new_comment_rows": 0,
@@ -347,8 +359,20 @@ class CrawlerService:
                     store.init_schema()
                 else:
                     store.ensure_runtime_schema()
-                items = store.next_crawler_queue_items(limit)
+                items = store.next_crawler_queue_items(
+                    limit,
+                    refresh_limit=refresh_limit,
+                )
                 stats["selected"] = len(items)
+                stats["selected_urgent"] = sum(
+                    1 for item in items if safe_int(item["priority"]) < 0
+                )
+                stats["selected_refresh"] = sum(
+                    1 for item in items if safe_int(item["priority"]) == 0
+                )
+                stats["selected_coverage"] = sum(
+                    1 for item in items if safe_int(item["priority"]) > 0
+                )
                 for item in items:
                     post_id = str(item["post_id"])
                     time.sleep(random.uniform(min_delay, max_delay))
@@ -365,6 +389,7 @@ class CrawlerService:
                                     status="skipped",
                                     last_error=error,
                                     increment_attempts=True,
+                                    record_observation=True,
                                     commit=False,
                                 )
                                 store.conn.commit()
@@ -381,6 +406,7 @@ class CrawlerService:
                                     status="failed",
                                     last_error=error,
                                     increment_attempts=True,
+                                    record_observation=True,
                                     commit=False,
                                 )
                                 store.conn.commit()
@@ -393,18 +419,29 @@ class CrawlerService:
                             continue
                         stats["misses"] += 1
                         consecutive_misses += 1
-                        status = "failed"
                         if self.is_rate_limited(error):
                             stats["rate_limited"] = True
-                            status = "pending"
                         if not dry_run:
-                            store.mark_crawler_queue_item(
-                                post_id,
-                                status=status,
-                                last_error=error,
-                                increment_attempts=True,
-                                commit=False,
-                            )
+                            if stats["rate_limited"]:
+                                store.mark_crawler_queue_item(
+                                    post_id,
+                                    status="pending",
+                                    last_error=error,
+                                    increment_attempts=True,
+                                    commit=False,
+                                )
+                            else:
+                                status = store.defer_crawler_queue_failure(
+                                    post_id,
+                                    last_error=error,
+                                    retry_delay_seconds=transient_retry_delay,
+                                    max_same_observation_attempts=max_transient_attempts,
+                                    commit=False,
+                                )
+                                if status == "pending":
+                                    stats["transient_retries"] += 1
+                                else:
+                                    stats["terminal_failures"] += 1
                             store.conn.commit()
                         print(
                             f"[trickle-fill] miss #{post_id} err={error}",
@@ -434,13 +471,17 @@ class CrawlerService:
                         )
                     else:
                         store.upsert_post(post, comments, commit=False)
-                        store.mark_crawler_queue_item(
+                        queue_status = store.finish_crawler_queue_detail(
                             post_id,
-                            status="done",
-                            last_error="",
-                            increment_attempts=True,
+                            detail_comment_count=safe_int(post["comment_count"]),
+                            retry_delay_seconds=observation_retry_delay,
+                            max_same_observation_attempts=max_observation_attempts,
                             commit=False,
                         )
+                        if queue_status == "pending":
+                            stats["retry_scheduled"] += 1
+                        elif queue_status == "deferred":
+                            stats["deferred_observations"] += 1
                         store.conn.commit()
                         after_rows = safe_int(
                             store.conn.execute(
