@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -262,6 +263,43 @@ class CrawlerServiceTest(unittest.TestCase):
                 "select post_id from crawler_queue where post_id='104'"
             ).fetchone()
         self.assertIsNotNone(row)
+
+    def test_discover_records_durable_run_history(self):
+        article = {
+            "id": "105",
+            "detail": "history",
+            "create_time": "2026-06-25 00:05:00",
+            "update_time": "2026-06-25 00:05:00",
+            "count_comment": 1,
+        }
+        stats = self.service(FakeClient({1: [article], 2: []}, {})).discover_queue(
+            command="discover-latest",
+            endpoint="lists",
+            since="2026-06-25 00:00:00",
+            max_pages=2,
+            old_page_threshold=2,
+            min_pages=1,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        with SQLitePostStore(self.db) as store:
+            row = store.conn.execute(
+                """
+                select command,source_calls,seen,selected,queue_inserted,
+                       started_at,finished_at,stats_json
+                from crawler_run_history
+                """
+            ).fetchone()
+        self.assertEqual(row["command"], "discover-latest")
+        self.assertEqual(row["source_calls"], 0)
+        self.assertEqual(row["seen"], 1)
+        self.assertEqual(row["selected"], 1)
+        self.assertEqual(row["queue_inserted"], 1)
+        self.assertTrue(row["started_at"])
+        self.assertTrue(row["finished_at"])
+        self.assertEqual(json.loads(row["stats_json"]), stats)
 
     def test_discover_stops_cleanly_when_request_quota_closes(self):
         stats = self.service(QuotaStoppedClient({}, {})).discover_queue(

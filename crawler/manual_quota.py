@@ -36,6 +36,15 @@ def exclusive_control_lock(path: str | Path, timeout: float = 10.0):
             if time.time() >= deadline:
                 raise TimeoutError(f"crawler control lock timeout: {lock_path}")
             time.sleep(0.05)
+        except PermissionError:
+            if os.name != "nt":
+                raise
+            # Windows can report a sharing violation as PermissionError while
+            # another thread is closing or unlinking the O_EXCL marker. Treat
+            # that short interval as ordinary lock contention.
+            if time.time() >= deadline:
+                raise TimeoutError(f"crawler control lock timeout: {lock_path}")
+            time.sleep(0.05)
     try:
         yield
     finally:
