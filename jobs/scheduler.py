@@ -146,6 +146,28 @@ QUOTA_ADAPTIVE_SAFETY = min(
     max(0.1, env_float("CRAWLER_QUOTA_ADAPTIVE_SAFETY", 0.80)),
 )
 QUOTA_ADAPTIVE_LOOKBACK_DAYS = env_int("CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14)
+DETAIL_ADAPTIVE_ENABLED = (
+    os.environ.get("CRAWLER_DETAIL_ADAPTIVE_ENABLED", "1") == "1"
+)
+DETAIL_ADAPTIVE_MIN = min(
+    DAILY_DETAIL_BUDGET,
+    env_int("CRAWLER_DETAIL_ADAPTIVE_MIN", 450),
+)
+DETAIL_ADAPTIVE_START = min(
+    DAILY_DETAIL_BUDGET,
+    max(
+        DETAIL_ADAPTIVE_MIN,
+        env_int("CRAWLER_DETAIL_ADAPTIVE_START", 600),
+    ),
+)
+DETAIL_ADAPTIVE_STEP = env_int("CRAWLER_DETAIL_ADAPTIVE_STEP", 50)
+DETAIL_ADAPTIVE_UTILIZATION = min(
+    1.0,
+    max(
+        0.50,
+        env_float("CRAWLER_DETAIL_ADAPTIVE_UTILIZATION", 0.95),
+    ),
+)
 RESET_GRACE_MINUTES = env_int("CRAWLER_RESET_GRACE_MINUTES", 5)
 PAUSE_LOG_INTERVAL = env_int("CRAWLER_PAUSE_LOG_INTERVAL", 10 * 60)
 HEARTBEAT_INTERVAL = env_int("CRAWLER_SCHEDULER_HEARTBEAT_INTERVAL", 30)
@@ -412,6 +434,50 @@ def configured_admin_budget() -> int:
     return DAILY_ADMIN_PREVIEW_BUDGET + DAILY_ADMIN_DETAIL_BUDGET
 
 
+def clamp_detail_budget(value: int) -> int:
+    return min(
+        DAILY_DETAIL_BUDGET,
+        max(DETAIL_ADAPTIVE_MIN, int(value)),
+    )
+
+
+def detail_budget_target(quota: dict | None = None) -> int:
+    if not DETAIL_ADAPTIVE_ENABLED:
+        return DAILY_DETAIL_BUDGET
+    stored = (quota or {}).get("detail_budget_target")
+    if stored is None:
+        return DETAIL_ADAPTIVE_START
+    try:
+        return clamp_detail_budget(int(stored))
+    except (TypeError, ValueError):
+        return DETAIL_ADAPTIVE_START
+
+
+def next_detail_budget_target(previous: dict) -> tuple[int, str]:
+    """Use yesterday's actual utilization to choose a stable daily target."""
+    if not DETAIL_ADAPTIVE_ENABLED:
+        return DAILY_DETAIL_BUDGET, "fixed"
+    target = detail_budget_target(previous)
+    effective = max(
+        1,
+        int(previous.get("effective_detail_budget", target) or target),
+    )
+    used = max(0, int(previous.get("detail_calls", 0) or 0))
+    if int(previous.get("rate_limited", 0) or 0) > 0:
+        # The existing source-wide adaptive cap already applies the safety
+        # factor to every request lane. Keep the target stable here so the
+        # detail lane is not reduced twice.
+        return target, "rate_limited_global_backoff"
+    utilization = used / effective
+    if utilization >= DETAIL_ADAPTIVE_UTILIZATION:
+        increased = clamp_detail_budget(target + DETAIL_ADAPTIVE_STEP)
+        return (
+            increased,
+            "fully_used_increase" if increased > target else "at_ceiling",
+        )
+    return target, "underused_hold"
+
+
 def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
     if not quota or not quota.get("date"):
         return
@@ -428,10 +494,28 @@ def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
         "admin_preview_calls": int(quota.get("admin_preview_calls", 0) or 0),
         "admin_detail_calls": int(quota.get("admin_detail_calls", 0) or 0),
         "rate_limited": int(quota.get("rate_limited", 0) or 0),
-        "configured_source_budget": configured_source_budget(),
-        "configured_admin_budget": configured_admin_budget(),
-        "configured_total_budget": configured_source_budget() + configured_admin_budget(),
-        "release_fraction": quota_release_fraction(),
+        "detail_budget_target": detail_budget_target(quota),
+        "effective_detail_budget": int(
+            quota.get("effective_detail_budget", 0) or 0
+        ),
+        "detail_budget_decision": str(
+            quota.get("detail_budget_decision", "")
+        ),
+        "configured_source_budget": int(
+            quota.get("configured_source_budget", 0)
+            or configured_source_budget()
+        ),
+        "configured_admin_budget": int(
+            quota.get("configured_admin_budget", 0)
+            or configured_admin_budget()
+        ),
+        "configured_total_budget": int(
+            quota.get("configured_total_budget", 0)
+            or configured_source_budget() + configured_admin_budget()
+        ),
+        "release_fraction": float(
+            quota.get("release_fraction", quota_release_fraction()) or 0
+        ),
     }
     with QUOTA_HISTORY_PATH.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -479,11 +563,11 @@ def adaptive_scale() -> float:
     return max(0.05, min(1.0, adaptive_source_budget() / configured))
 
 
-def daily_budget(kind: str) -> int:
+def daily_budget(kind: str, quota: dict | None = None) -> int:
     base = {
         "new_list": DAILY_NEW_LIST_BUDGET,
         "active_list": DAILY_ACTIVE_LIST_BUDGET,
-        "detail": DAILY_DETAIL_BUDGET,
+        "detail": detail_budget_target(quota),
         "probe": DAILY_PROBE_BUDGET,
     }[kind]
     if base <= 0:
@@ -597,8 +681,15 @@ def load_quota() -> dict:
         print(f"[scheduler] ignore invalid quota file: {exc}", flush=True)
         quota = {}
     if quota.get("date") != today:
+        previous = quota
         if quota.get("date"):
             append_quota_history(quota, reason="day_rollover")
+            detail_target, detail_decision = next_detail_budget_target(
+                previous
+            )
+        else:
+            detail_target = DETAIL_ADAPTIVE_START
+            detail_decision = "initial"
         quota = {
             "date": today,
             "new_list_calls": 0,
@@ -608,6 +699,8 @@ def load_quota() -> dict:
             "rate_limited": 0,
             "admin_preview_calls": 0,
             "admin_detail_calls": 0,
+            "detail_budget_target": detail_target,
+            "detail_budget_decision": detail_decision,
             "updated_at": beijing_now().isoformat(),
         }
         save_quota(quota)
@@ -615,6 +708,12 @@ def load_quota() -> dict:
     quota.setdefault("active_list_calls", 0)
     quota.setdefault("admin_preview_calls", 0)
     quota.setdefault("admin_detail_calls", 0)
+    if "detail_budget_target" not in quota:
+        quota["detail_budget_target"] = DETAIL_ADAPTIVE_START
+        quota["detail_budget_decision"] = "initial"
+    else:
+        quota["detail_budget_target"] = detail_budget_target(quota)
+        quota.setdefault("detail_budget_decision", "carried")
     if "list_calls" in quota:
         # Older quota files only had a combined list counter. Keep the value
         # visible but do not split it retroactively; the new per-source counters
@@ -625,6 +724,7 @@ def load_quota() -> dict:
 
 
 def save_quota(quota: dict) -> None:
+    quota["detail_budget_target"] = detail_budget_target(quota)
     quota["updated_at"] = beijing_now().isoformat()
     quota["release_fraction"] = quota_release_fraction()
     quota["configured_source_budget"] = configured_source_budget()
@@ -632,6 +732,11 @@ def save_quota(quota: dict) -> None:
     quota["configured_total_budget"] = configured_source_budget() + configured_admin_budget()
     quota["adaptive_source_budget"] = adaptive_source_budget()
     quota["adaptive_scale"] = adaptive_scale()
+    quota["effective_detail_budget"] = daily_budget("detail", quota)
+    quota["effective_source_budget"] = sum(
+        daily_budget(kind, quota)
+        for kind in ("new_list", "active_list", "detail", "probe")
+    )
     quota["release_steps"] = [
         {
             "time": f"{minute // 60:02d}:{minute % 60:02d}",
@@ -670,7 +775,7 @@ def save_heartbeat(*, state: str, job: str = "", detail: str = "") -> None:
         print(f"[scheduler] heartbeat write failed: {exc}", flush=True)
 
 
-def refresh_runtime_state() -> None:
+def refresh_runtime_state() -> dict:
     """Refresh quota metadata and repair local queue invariants without source I/O."""
     quota_lock = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
     with exclusive_control_lock(quota_lock):
@@ -679,6 +784,7 @@ def refresh_runtime_state() -> None:
     with database_write_lock(DB_PATH):
         with SQLitePostStore(DB_PATH) as store:
             store.ensure_runtime_schema()
+    return quota
 
 
 @contextmanager
@@ -763,16 +869,16 @@ def remaining_budget(kind: str, quota: dict) -> int:
     if fraction <= 0:
         return 0
     if kind == "new_list":
-        allowed = int(daily_budget(kind) * fraction)
+        allowed = int(daily_budget(kind, quota) * fraction)
         return max(0, allowed - int(quota.get("new_list_calls", 0)))
     if kind == "active_list":
-        allowed = int(daily_budget(kind) * fraction)
+        allowed = int(daily_budget(kind, quota) * fraction)
         return max(0, allowed - int(quota.get("active_list_calls", 0)))
     if kind == "detail":
-        allowed = int(daily_budget(kind) * fraction)
+        allowed = int(daily_budget(kind, quota) * fraction)
         return max(0, allowed - int(quota.get("detail_calls", 0)))
     if kind == "probe":
-        allowed = int(daily_budget(kind) * fraction)
+        allowed = int(daily_budget(kind, quota) * fraction)
         return max(0, allowed - int(quota.get("probe_calls", 0)))
     return 10**9
 
@@ -1003,7 +1109,16 @@ def main() -> int:
         raise FileNotFoundError(CONFIG_PATH)
 
     try:
-        refresh_runtime_state()
+        startup_quota = refresh_runtime_state()
+        print(
+            "[scheduler] quota "
+            f"detail_target={startup_quota.get('detail_budget_target')} "
+            f"detail_effective={startup_quota.get('effective_detail_budget')} "
+            f"detail_decision={startup_quota.get('detail_budget_decision')} "
+            f"source_effective={startup_quota.get('effective_source_budget')} "
+            f"source_ceiling={startup_quota.get('configured_source_budget')}",
+            flush=True,
+        )
     except Exception as exc:
         print(
             f"[scheduler] runtime-state refresh failed: {exc}",

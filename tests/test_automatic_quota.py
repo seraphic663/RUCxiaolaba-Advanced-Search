@@ -230,5 +230,135 @@ class AutomaticQuotaTest(unittest.TestCase):
         )
 
 
+class AdaptiveDetailBudgetTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        root = Path(self.temp_dir.name)
+        self.quota_path = root / ".crawler_quota.json"
+        self.history_path = root / ".crawler_quota_history.jsonl"
+        self.now = datetime(
+            2026,
+            7,
+            12,
+            23,
+            59,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        self.patches = [
+            patch.object(scheduler, "QUOTA_PATH", self.quota_path),
+            patch.object(scheduler, "QUOTA_HISTORY_PATH", self.history_path),
+            patch.object(
+                scheduler,
+                "beijing_now",
+                side_effect=lambda: self.now,
+            ),
+            patch.object(scheduler, "DAILY_DETAIL_BUDGET", 700),
+            patch.object(scheduler, "DETAIL_ADAPTIVE_ENABLED", True),
+            patch.object(scheduler, "DETAIL_ADAPTIVE_MIN", 450),
+            patch.object(scheduler, "DETAIL_ADAPTIVE_START", 600),
+            patch.object(scheduler, "DETAIL_ADAPTIVE_STEP", 50),
+            patch.object(scheduler, "DETAIL_ADAPTIVE_UTILIZATION", 0.95),
+            patch.object(scheduler, "QUOTA_ADAPTIVE_SAFETY", 0.80),
+            patch.object(scheduler, "adaptive_scale", return_value=1.0),
+            patch.object(
+                scheduler,
+                "adaptive_source_budget",
+                return_value=940,
+            ),
+        ]
+        for item in self.patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def write_previous(self, **overrides):
+        quota = {
+            "date": "2026-07-11",
+            "new_list_calls": 80,
+            "active_list_calls": 160,
+            "detail_calls": 600,
+            "probe_calls": 0,
+            "rate_limited": 0,
+            "admin_preview_calls": 0,
+            "admin_detail_calls": 0,
+            "detail_budget_target": 600,
+            "effective_detail_budget": 600,
+            "detail_budget_decision": "initial",
+        }
+        quota.update(overrides)
+        self.quota_path.write_text(
+            json.dumps(quota),
+            encoding="utf-8",
+        )
+
+    def test_missing_current_target_starts_at_configured_start(self):
+        self.quota_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-07-12",
+                    "detail_calls": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        quota = scheduler.load_quota()
+        scheduler.save_quota(quota)
+        saved = json.loads(self.quota_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["detail_budget_target"], 600)
+        self.assertEqual(saved["effective_detail_budget"], 600)
+        self.assertEqual(saved["effective_source_budget"], 840)
+
+    def test_fully_used_safe_day_increases_next_target(self):
+        self.write_previous(detail_calls=570)
+        quota = scheduler.load_quota()
+        self.assertEqual(quota["detail_budget_target"], 650)
+        self.assertEqual(
+            quota["detail_budget_decision"],
+            "fully_used_increase",
+        )
+        self.assertEqual(quota["effective_detail_budget"], 650)
+        history = [
+            json.loads(line)
+            for line in self.history_path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        self.assertEqual(history[-1]["reason"], "day_rollover")
+        self.assertEqual(history[-1]["detail_budget_target"], 600)
+
+    def test_underused_day_holds_target(self):
+        self.write_previous(detail_calls=500)
+        quota = scheduler.load_quota()
+        self.assertEqual(quota["detail_budget_target"], 600)
+        self.assertEqual(
+            quota["detail_budget_decision"],
+            "underused_hold",
+        )
+
+    def test_rate_limited_day_uses_existing_global_backoff_once(self):
+        target, decision = scheduler.next_detail_budget_target(
+            {
+                "detail_budget_target": 600,
+                "effective_detail_budget": 600,
+                "detail_calls": 510,
+                "rate_limited": 1,
+            }
+        )
+        self.assertEqual(target, 600)
+        self.assertEqual(decision, "rate_limited_global_backoff")
+
+    def test_safe_days_stop_at_ceiling(self):
+        target, decision = scheduler.next_detail_budget_target(
+            {
+                "detail_budget_target": 700,
+                "effective_detail_budget": 700,
+                "detail_calls": 700,
+                "rate_limited": 0,
+            }
+        )
+        self.assertEqual(target, 700)
+        self.assertEqual(decision, "at_ceiling")
+
+
 if __name__ == "__main__":
     unittest.main()
