@@ -321,6 +321,7 @@ class SQLitePostStore:
         self.ensure_gap_tables(commit=False)
         observation_migration = self.migrate_crawler_queue_observations(commit=False)
         terminal_migration = self.migrate_crawler_queue_terminal_states(commit=False)
+        comment_gap_migration = self.migrate_crawler_comment_row_gaps(commit=False)
         self.conn.commit()
         if observation_migration:
             print(
@@ -330,6 +331,11 @@ class SQLitePostStore:
         if terminal_migration:
             print(
                 f"[queue] migrated terminal state {terminal_migration}",
+                flush=True,
+            )
+        if comment_gap_migration:
+            print(
+                f"[queue] migrated comment row gaps {comment_gap_migration}",
                 flush=True,
             )
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
@@ -530,6 +536,134 @@ class SQLitePostStore:
         result = {
             "normalized_skipped": max(0, int(normalized or 0)),
             "requeued_transient": max(0, int(requeued or 0)),
+        }
+        self.conn.execute(
+            "insert into crawl_state(key,value,updated_at) values (?,?,?)",
+            (migration_key, "1", now),
+        )
+        if commit:
+            self.conn.commit()
+        return result if any(result.values()) else {}
+
+    def migrate_crawler_comment_row_gaps(self, commit: bool = True) -> dict:
+        """Queue full posts whose declared comments exceed saved comment rows."""
+        if not all(
+            self._table_exists(name)
+            for name in ("posts", "comments", "crawler_queue")
+        ):
+            return {}
+        self.conn.execute(
+            """
+            create table if not exists crawl_state (
+                key text primary key,
+                value text not null,
+                updated_at text not null
+            )
+            """
+        )
+        migration_key = "crawler_comment_row_gap_v1"
+        if self.conn.execute(
+            "select 1 from crawl_state where key=?",
+            (migration_key,),
+        ).fetchone():
+            return {}
+        rows = self.conn.execute(
+            """
+            with saved as (
+                select post_id, count(*) as actual_count
+                from comments
+                group by post_id
+            )
+            select p.id, p.create_time, p.comment_count,
+                   p.list_update_time,
+                   coalesce(saved.actual_count, 0) as actual_count
+            from posts p
+            left join saved on saved.post_id=p.id
+            where coalesce(p.crawl_status, 'full')='full'
+              and coalesce(p.comment_count, 0)
+                  > coalesce(saved.actual_count, 0)
+            order by cast(p.id as integer)
+            """
+        ).fetchall()
+        now = now_text()
+        inserted = requeued = 0
+        for row in rows:
+            existing = self.conn.execute(
+                "select source,reason,status from crawler_queue where post_id=?",
+                (str(row["id"]),),
+            ).fetchone()
+            if existing is None:
+                self.conn.execute(
+                    """
+                    insert into crawler_queue(
+                        post_id, source, priority, list_create_time,
+                        list_update_time, list_comment_count, db_comment_count,
+                        status, reason, attempts, last_error,
+                        last_attempt_list_comment_count,
+                        last_attempt_list_update_time, last_detail_comment_count,
+                        same_observation_attempts, next_attempt_at,
+                        created_at, updated_at
+                    ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        str(row["id"]),
+                        "local_audit",
+                        5,
+                        str(row["create_time"] or ""),
+                        str(row["list_update_time"] or row["create_time"] or ""),
+                        safe_int(row["comment_count"]),
+                        safe_int(row["actual_count"]),
+                        "pending",
+                        "comment_rows_incomplete",
+                        0,
+                        "",
+                        None,
+                        "",
+                        safe_int(row["actual_count"]),
+                        0,
+                        "",
+                        now,
+                        now,
+                    ),
+                )
+                inserted += 1
+                continue
+            sources = set(filter(None, str(existing["source"] or "").split(",")))
+            sources.add("local_audit")
+            reasons = set(filter(None, str(existing["reason"] or "").split("|")))
+            reasons.add("comment_rows_incomplete")
+            if str(existing["status"] or "") != "pending":
+                requeued += 1
+            self.conn.execute(
+                """
+                update crawler_queue
+                set source=?, priority=min(priority, 5),
+                    list_create_time=?, list_update_time=?,
+                    list_comment_count=?, db_comment_count=?,
+                    status='pending', reason=?, last_error='',
+                    last_attempt_list_comment_count=null,
+                    last_attempt_list_update_time='',
+                    last_detail_comment_count=?,
+                    same_observation_attempts=0, next_attempt_at='',
+                    updated_at=?
+                where post_id=?
+                """,
+                (
+                    ",".join(sorted(sources)),
+                    str(row["create_time"] or ""),
+                    str(row["list_update_time"] or row["create_time"] or ""),
+                    safe_int(row["comment_count"]),
+                    safe_int(row["actual_count"]),
+                    "|".join(sorted(reasons)),
+                    safe_int(row["actual_count"]),
+                    now,
+                    str(row["id"]),
+                ),
+            )
+        result = {
+            "candidates": len(rows),
+            "inserted": inserted,
+            "requeued": requeued,
         }
         self.conn.execute(
             "insert into crawl_state(key,value,updated_at) values (?,?,?)",

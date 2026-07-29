@@ -6,6 +6,18 @@ from crawler.config import COMMUNITY_ID
 from storage.post_writer import safe_int
 
 
+def count_comment_nodes(comments: list[dict]) -> int:
+    total = 0
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        total += 1
+        replies = comment.get("reply_comment_list") or []
+        if isinstance(replies, list):
+            total += count_comment_nodes(replies)
+    return total
+
+
 def normalize_detail(
     post_id: str,
     data: dict,
@@ -37,6 +49,10 @@ def validate_normalized_detail(
     """Reject partial upstream payloads that would destroy good local data."""
     if not str(post.get("content") or "").strip():
         return "empty_content"
-    if safe_int(post.get("comment_count")) > 0 and not comments:
+    declared = safe_int(post.get("comment_count"))
+    returned = count_comment_nodes(comments)
+    if declared > 0 and returned == 0:
         return "empty_comments"
+    if declared > returned:
+        return f"incomplete_comments:declared={declared},returned={returned}"
     return None
