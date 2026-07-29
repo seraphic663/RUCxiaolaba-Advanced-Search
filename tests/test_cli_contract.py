@@ -1,6 +1,10 @@
+import json
+import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from crawler.cli import build_parser
 from jobs.scheduler import (
@@ -13,6 +17,8 @@ from jobs.scheduler import (
     planned_job_calls,
     quota_release_fraction,
     quota_source_calls,
+    record_failed_crawler_run,
+    run_job,
     remaining_budget,
     select_next_job,
 )
@@ -65,6 +71,57 @@ class CLIContractTest(unittest.TestCase):
             "cookie_expired",
         )
         self.assertEqual(classify_error("[crawler] error: not_found"), "")
+
+    def test_scheduler_records_failed_child_process(self):
+        child = Mock(returncode=1, stderr="[crawler] error: cookie_expired\n")
+        with (
+            patch(
+                "jobs.scheduler.prepare_job",
+                return_value=(["plan-gaps"], ""),
+            ),
+            patch("jobs.scheduler.subprocess.run", return_value=child),
+            patch("jobs.scheduler.record_failed_crawler_run") as record,
+        ):
+            result = run_job("plan_gaps")
+        self.assertFalse(result.succeeded)
+        self.assertEqual(result.error_kind, "cookie_expired")
+        self.assertEqual(result.returncode, 1)
+        record.assert_called_once()
+        call = record.call_args.kwargs
+        self.assertEqual(call["name"], "plan_gaps")
+        self.assertEqual(call["source_calls"], 0)
+        self.assertEqual(call["error_kind"], "cookie_expired")
+
+    def test_failed_child_history_is_durable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            db_path = Path(temporary) / "posts.db"
+            record_failed_crawler_run(
+                name="trickle_fill",
+                started_at="2026-07-29T23:00:00+08:00",
+                source_calls=3,
+                returncode=1,
+                error_kind="rate_limited",
+                stderr="rate_limited:test",
+                db_path=db_path,
+            )
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                row = conn.execute(
+                    """
+                    select command,source_calls,errors,rate_limited,stats_json
+                    from crawler_run_history
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+        self.assertEqual(row["command"], "trickle-fill")
+        self.assertEqual(row["source_calls"], 3)
+        self.assertEqual(row["errors"], 1)
+        self.assertEqual(row["rate_limited"], 1)
+        stats = json.loads(row["stats_json"])
+        self.assertTrue(stats["scheduler_failed"])
+        self.assertEqual(stats["error_kind"], "rate_limited")
 
     def test_scheduler_budgets_source_call_types(self):
         self.assertEqual(job_budget_kind("discover_new"), "new_list")

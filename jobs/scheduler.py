@@ -277,6 +277,7 @@ class JobResult:
     succeeded: bool
     error_kind: str = ""
     stderr: str = ""
+    returncode: int = 0
 
 
 OVERDUE_JOB_PRIORITY = {
@@ -785,6 +786,63 @@ def quota_key(kind: str) -> str:
     }[kind]
 
 
+def quota_counter_snapshot(kind: str) -> tuple[str, int]:
+    if not kind:
+        return "", 0
+    lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
+    with exclusive_control_lock(lock_path):
+        quota = load_quota()
+        return (
+            str(quota.get("date") or ""),
+            int(quota.get(quota_key(kind), 0) or 0),
+        )
+
+
+def record_failed_crawler_run(
+    *,
+    name: str,
+    started_at: str,
+    source_calls: int,
+    returncode: int,
+    error_kind: str,
+    stderr: str,
+    db_path: str | Path | None = None,
+) -> None:
+    command = {
+        "discover_new": "discover-latest",
+        "discover_active": "discover-active",
+        "trickle_fill": "trickle-fill",
+        "plan_gaps": "plan-gaps",
+        "probe_gaps": "probe-gaps",
+    }.get(name, name.replace("_", "-"))
+    stats = {
+        "source_calls": max(0, int(source_calls)),
+        "errors": 1,
+        "rate_limited": error_kind == "rate_limited",
+        "scheduler_failed": True,
+        "scheduler_job": name,
+        "returncode": int(returncode),
+        "error_kind": str(error_kind or "process_error"),
+        "stderr_tail": str(stderr or "")[-2000:],
+    }
+    target_db = str(db_path or DB_PATH)
+    try:
+        with database_write_lock(target_db, 30):
+            with SQLitePostStore(target_db) as store:
+                store.record_crawler_run(
+                    command=command,
+                    stats=stats,
+                    started_at=started_at,
+                    commit=True,
+                )
+    except Exception as exc:
+        print(
+            f"[scheduler] failed to record job history name={name}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def prepare_job(name: str) -> tuple[list[str] | None, str]:
     lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
     with exclusive_control_lock(lock_path):
@@ -875,24 +933,60 @@ def run_job(name: str) -> JobResult:
         child_env[AUTOMATIC_QUOTA_KIND_ENV] = kind
     else:
         child_env.pop(AUTOMATIC_QUOTA_KIND_ENV, None)
+    run_started_at = beijing_now().isoformat()
+    before_date, before_calls = quota_counter_snapshot(kind)
     print(f"[scheduler] start {name}", flush=True)
-    result = subprocess.run(
-        command,
-        cwd=ROOT,
-        env=child_env,
-        check=False,
-        text=True,
-        stderr=subprocess.PIPE,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=child_env,
+            check=False,
+            text=True,
+            stderr=subprocess.PIPE,
+        )
+    except Exception as exc:
+        after_date, after_calls = quota_counter_snapshot(kind)
+        source_calls = (
+            max(0, after_calls - before_calls)
+            if before_date == after_date
+            else max(0, after_calls)
+        )
+        record_failed_crawler_run(
+            name=name,
+            started_at=run_started_at,
+            source_calls=source_calls,
+            returncode=-1,
+            error_kind=type(exc).__name__,
+            stderr=str(exc),
+        )
+        raise
     stderr = result.stderr or ""
     if stderr:
         print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
     print(f"[scheduler] done {name} exit={result.returncode}", flush=True)
-    return JobResult(
+    job_result = JobResult(
         succeeded=result.returncode == 0,
         error_kind=classify_error(stderr),
         stderr=stderr,
+        returncode=result.returncode,
     )
+    if not job_result.succeeded:
+        after_date, after_calls = quota_counter_snapshot(kind)
+        source_calls = (
+            max(0, after_calls - before_calls)
+            if before_date == after_date
+            else max(0, after_calls)
+        )
+        record_failed_crawler_run(
+            name=name,
+            started_at=run_started_at,
+            source_calls=source_calls,
+            returncode=job_result.returncode,
+            error_kind=job_result.error_kind,
+            stderr=job_result.stderr,
+        )
+    return job_result
 
 
 def phase1_delay() -> float:
