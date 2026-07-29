@@ -7,7 +7,7 @@ import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from math import gcd
 from pathlib import Path
 
@@ -327,6 +327,7 @@ class CrawlerService:
         max_observation_attempts: int = 2,
         transient_retry_delay: int = 60 * 60,
         max_transient_attempts: int = 3,
+        fresh_coverage_hours: int = 72,
     ) -> dict:
         client = self.client()
         stats = {
@@ -341,6 +342,8 @@ class CrawlerService:
             "selected_urgent": 0,
             "selected_refresh": 0,
             "selected_coverage": 0,
+            "selected_fresh_coverage": 0,
+            "selected_backlog_coverage": 0,
             "retry_scheduled": 0,
             "deferred_observations": 0,
             "transient_retries": 0,
@@ -369,9 +372,14 @@ class CrawlerService:
                     )
                 )
                 stats["refresh_limit"] = effective_refresh_limit
+                fresh_coverage_after = (
+                    datetime.now()
+                    - timedelta(hours=max(1, int(fresh_coverage_hours)))
+                ).strftime("%Y-%m-%d %H:%M:%S")
                 items = store.next_crawler_queue_items(
                     limit,
                     refresh_limit=effective_refresh_limit,
+                    fresh_coverage_after=fresh_coverage_after,
                 )
                 stats["selected"] = len(items)
                 stats["selected_urgent"] = sum(
@@ -382,6 +390,16 @@ class CrawlerService:
                 )
                 stats["selected_coverage"] = sum(
                     1 for item in items if safe_int(item["priority"]) > 0
+                )
+                stats["selected_fresh_coverage"] = sum(
+                    1
+                    for item in items
+                    if 0 < safe_int(item["priority"]) < 40
+                    and str(item["list_create_time"] or "") >= fresh_coverage_after
+                )
+                stats["selected_backlog_coverage"] = (
+                    stats["selected_coverage"]
+                    - stats["selected_fresh_coverage"]
                 )
                 for item in items:
                     post_id = str(item["post_id"])

@@ -101,6 +101,10 @@ TRICKLE_MAX_TRANSIENT_ATTEMPTS = env_int(
     "CRAWLER_TRICKLE_MAX_TRANSIENT_ATTEMPTS",
     3,
 )
+TRICKLE_FRESH_COVERAGE_HOURS = env_int(
+    "CRAWLER_TRICKLE_FRESH_COVERAGE_HOURS",
+    72,
+)
 TRICKLE_MIN_DELAY = env_float("CRAWLER_TRICKLE_MIN_DELAY", 8.0)
 TRICKLE_MAX_DELAY = max(
     TRICKLE_MIN_DELAY,
@@ -232,6 +236,8 @@ TRICKLE_JOBS = {
         str(TRICKLE_TRANSIENT_RETRY_DELAY),
         "--max-transient-attempts",
         str(TRICKLE_MAX_TRANSIENT_ATTEMPTS),
+        "--fresh-coverage-hours",
+        str(TRICKLE_FRESH_COVERAGE_HOURS),
         "--min-delay",
         str(TRICKLE_MIN_DELAY),
         "--max-delay",
