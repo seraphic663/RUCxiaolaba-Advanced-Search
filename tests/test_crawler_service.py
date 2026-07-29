@@ -1303,6 +1303,55 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertEqual(queue["status"], "failed")
         self.assertIn("incomplete_comments", queue["last_error"])
 
+    def test_comment_row_repair_accepts_complete_lower_current_count(self):
+        with SQLitePostStore(self.db) as store:
+            store.upsert_post(
+                {
+                    "id": "412",
+                    "content": "historical",
+                    "create_time": "2024-01-01 00:00:00",
+                    "comment_count": 2,
+                },
+                [{"id": "c-412", "detail": "still present"}],
+            )
+            store.enqueue_crawler_candidate(
+                post_id="412",
+                source="local_audit",
+                priority=5,
+                list_create_time="2024-01-01 00:00:00",
+                list_update_time="2024-01-01 00:00:00",
+                list_comment_count=2,
+                db_comment_count=1,
+                reason="comment_rows_incomplete",
+            )
+        stats = self.service(
+            FakeClient({}, {"412": detail("412", 1)})
+        ).trickle_fill(
+            limit=1,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=1,
+        )
+        self.assertEqual(stats["written"], 1)
+        self.assertEqual(stats["retry_scheduled"], 0)
+        with SQLitePostStore(self.db) as store:
+            post = store.conn.execute(
+                "select comment_count from posts where id='412'"
+            ).fetchone()
+            queue = store.conn.execute(
+                """
+                select status,list_comment_count,db_comment_count
+                from crawler_queue where post_id='412'
+                """
+            ).fetchone()
+        self.assertEqual(post["comment_count"], 1)
+        self.assertEqual(dict(queue), {
+            "status": "done",
+            "list_comment_count": 1,
+            "db_comment_count": 1,
+        })
+
     def test_plan_gaps_records_sparse_ranges(self):
         with SQLitePostStore(self.db) as store:
             store.upsert_post(
