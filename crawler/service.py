@@ -570,6 +570,7 @@ class CrawlerService:
             "chunk_size": chunk_size,
             "planned": 0,
             "ignored": 0,
+            "superseded_ranges": 0,
         }
         with database_write_lock(self.db_path, self.lock_timeout):
             with SQLitePostStore(self.db_path) as store:
@@ -601,6 +602,15 @@ class CrawlerService:
                 stats["start_id"] = resolved_start
                 stats["end_id"] = resolved_end
                 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if not dry_run:
+                    store.conn.execute(
+                        """
+                        create temp table if not exists current_gap_plan (
+                            range_id text primary key
+                        )
+                        """
+                    )
+                    store.conn.execute("delete from current_gap_plan")
                 current = resolved_start
                 while current <= resolved_end:
                     chunk_end = min(resolved_end, current + chunk_size - 1)
@@ -619,6 +629,10 @@ class CrawlerService:
                         if not dry_run:
                             range_id = f"{current}-{chunk_end}"
                             store.conn.execute(
+                                "insert or ignore into current_gap_plan(range_id) values (?)",
+                                (range_id,),
+                            )
+                            store.conn.execute(
                                 """
                                 insert into crawler_gap_ranges(
                                     range_id, start_id, end_id, reason, status,
@@ -631,6 +645,8 @@ class CrawlerService:
                                     updated_at=excluded.updated_at,
                                     status=case
                                         when crawler_gap_ranges.status='complete'
+                                        then crawler_gap_ranges.status
+                                        when crawler_gap_ranges.status='sampled'
                                         then crawler_gap_ranges.status
                                         else excluded.status
                                     end
@@ -659,6 +675,22 @@ class CrawlerService:
                     )
                     current = chunk_end + 1
                 if not dry_run:
+                    superseded = store.conn.execute(
+                        """
+                        update crawler_gap_ranges
+                        set status='superseded', updated_at=?
+                        where status in ('pending','sampled')
+                          and start_id <= ?
+                          and end_id >= ?
+                          and not exists(
+                              select 1 from current_gap_plan current
+                              where current.range_id=crawler_gap_ranges.range_id
+                          )
+                        """,
+                        (now, resolved_end, resolved_start),
+                    ).rowcount
+                    stats["superseded_ranges"] = max(0, int(superseded or 0))
+                    store.conn.execute("drop table current_gap_plan")
                     store.set_state(
                         "crawler_plan_gaps",
                         json.dumps(stats, ensure_ascii=False),

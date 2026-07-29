@@ -1230,6 +1230,14 @@ class CrawlerServiceTest(unittest.TestCase):
                     },
                     [],
                 )
+            store.conn.execute(
+                """
+                insert into crawler_gap_ranges values
+                ('999-1001',999,1001,'old_plan','pending',0.0,
+                 0,0,0,0,'now','now')
+                """
+            )
+            store.conn.commit()
         stats = self.service(NoSourceListClient({}, {})).plan_gap_ranges(
             since="",
             start_id=1000,
@@ -1240,6 +1248,17 @@ class CrawlerServiceTest(unittest.TestCase):
         )
         self.assertEqual(stats["end_id"], 1005)
         self.assertEqual(stats["planned"], 2)
+        self.assertEqual(stats["superseded_ranges"], 1)
+        with SQLitePostStore(self.db) as store:
+            statuses = {
+                row["range_id"]: row["status"]
+                for row in store.conn.execute(
+                    "select range_id,status from crawler_gap_ranges"
+                )
+            }
+        self.assertEqual(statuses["999-1001"], "superseded")
+        self.assertEqual(statuses["1000-1002"], "pending")
+        self.assertEqual(statuses["1003-1005"], "pending")
 
     def test_probe_gaps_saves_found_detail_without_a_second_source_call(self):
         with SQLitePostStore(self.db) as store:
