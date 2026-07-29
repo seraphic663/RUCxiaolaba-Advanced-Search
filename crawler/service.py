@@ -18,6 +18,7 @@ from crawler.strategies.page_scan import PageScanProgress
 from storage.post_writer import SQLitePostStore, has_media_json, safe_int
 
 CHINA_TZ = timezone(timedelta(hours=8))
+OBSERVED_MISSING_PRIORITY = 60
 
 
 class CrawlerService:
@@ -149,6 +150,10 @@ class CrawlerService:
             "endpoint": endpoint,
             "pages": 0,
             "seen": 0,
+            "observed_ids": 0,
+            "missing_observed": 0,
+            "observed_missing_queued": 0,
+            "retained_ids": 0,
             "queued": 0,
             "queue_inserted": 0,
             "queue_reopened": 0,
@@ -163,6 +168,10 @@ class CrawlerService:
             "quota_stop": False,
             "source_calls": 0,
         }
+        observed_ids: set[str] = set()
+        missing_observed_ids: set[str] = set()
+        observed_missing_ids: set[str] = set()
+        retained_ids: set[str] = set()
         seen_signatures: dict[str, int] = {}
         old_pages = 0
         no_action_pages = 0
@@ -207,6 +216,8 @@ class CrawlerService:
                         post_id = str(article.get("id") or "")
                         if not post_id:
                             continue
+                        observed_ids.add(post_id)
+                        stats["observed_ids"] = len(observed_ids)
                         create_time = self.article_time(article, "create_time")
                         update_time = self.article_time(article, "update_time")
                         comment_count = safe_int(
@@ -219,6 +230,9 @@ class CrawlerService:
                         db_comment_count = None if snapshot is None else snapshot["comment_count"]
                         crawl_status = "missing" if snapshot is None else snapshot["crawl_status"]
                         missing = snapshot is None
+                        if missing:
+                            missing_observed_ids.add(post_id)
+                            stats["missing_observed"] = len(missing_observed_ids)
                         needs_detail = missing or crawl_status != "full"
                         create_after_since = create_time >= since
                         update_after_since = update_time >= since
@@ -239,6 +253,17 @@ class CrawlerService:
                             elif needs_detail and update_after_since:
                                 reason = "active_missing"
                                 priority = 20 if comment_count > 0 else 50
+                        # A list response is already authoritative evidence that
+                        # this ID exists. Keep every incomplete ID even when it
+                        # falls outside the configured freshness window, but put
+                        # it behind all time-sensitive coverage work.
+                        if not reason and needs_detail:
+                            reason = "observed_missing"
+                            priority = OBSERVED_MISSING_PRIORITY
+                            observed_missing_ids.add(post_id)
+                            stats["observed_missing_queued"] = len(
+                                observed_missing_ids
+                            )
                         if reason:
                             page_queued += 1
                             stats["queued"] += 1
@@ -268,6 +293,11 @@ class CrawlerService:
                         else:
                             stats["existing"] += 1
                             page_existing += 1
+                        if not dry_run:
+                            # Existing posts are already durable; incomplete
+                            # posts are now durable in posts and/or the queue.
+                            retained_ids.add(post_id)
+                            stats["retained_ids"] = len(retained_ids)
                     if not dry_run:
                         store.conn.commit()
                     if page_mutations == 0:

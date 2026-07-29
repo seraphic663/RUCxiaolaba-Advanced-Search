@@ -219,16 +219,26 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertTrue(stats["old_page_stop"])
         with SQLitePostStore(self.db) as store:
             rows = store.conn.execute(
-                "select post_id, source, priority, reason from crawler_queue"
+                """
+                select post_id, source, priority, reason from crawler_queue
+                order by priority, cast(post_id as integer)
+                """
             ).fetchall()
             post = store.conn.execute(
                 "select id, content, crawl_status from posts where id='103'"
             ).fetchone()
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["post_id"], "103")
         self.assertEqual(rows[0]["reason"], "new_post")
+        self.assertEqual(rows[1]["post_id"], "99")
+        self.assertEqual(rows[1]["priority"], 60)
+        self.assertEqual(rows[1]["reason"], "observed_missing")
         self.assertEqual(post["crawl_status"], "list_only")
         self.assertIn("103", post["content"])
+        self.assertEqual(stats["observed_ids"], 3)
+        self.assertEqual(stats["missing_observed"], 2)
+        self.assertEqual(stats["observed_missing_queued"], 1)
+        self.assertEqual(stats["retained_ids"], 3)
 
     def test_discover_accepts_iso_cutoff_from_railway_env(self):
         client = FakeClient(
@@ -264,6 +274,43 @@ class CrawlerServiceTest(unittest.TestCase):
                 "select post_id from crawler_queue where post_id='104'"
             ).fetchone()
         self.assertIsNotNone(row)
+
+    def test_discover_id_retention_metrics_are_unique_across_overlapping_pages(self):
+        def article(post_id):
+            return {
+                "id": str(post_id),
+                "detail": f"post {post_id}",
+                "create_time": "2026-06-25 00:05:00",
+                "update_time": "2026-06-25 00:05:00",
+                "count_comment": 0,
+            }
+
+        stats = self.service(
+            FakeClient(
+                {
+                    1: [article(110), article(111)],
+                    2: [article(111), article(112)],
+                    3: [],
+                },
+                {},
+            )
+        ).discover_queue(
+            command="discover-latest",
+            endpoint="lists",
+            since="2026-06-25 00:00:00",
+            max_pages=3,
+            old_page_threshold=2,
+            stop_on_repeat=True,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(stats["seen"], 4)
+        self.assertEqual(stats["observed_ids"], 3)
+        self.assertEqual(stats["missing_observed"], 3)
+        self.assertEqual(stats["retained_ids"], 3)
+        self.assertEqual(stats["queue_inserted"], 3)
 
     def test_discover_records_durable_run_history(self):
         article = {
@@ -693,6 +740,54 @@ class CrawlerServiceTest(unittest.TestCase):
             "status": "pending",
         })
         self.assertEqual(dict(post), {"id": "201", "crawl_status": "list_only"})
+
+    def test_discover_active_retains_missing_id_outside_freshness_window(self):
+        article = {
+            "id": "202",
+            "detail": "old observed post",
+            "create_time": "2025-10-01 10:00:00",
+            "update_time": "2025-10-02 10:00:00",
+            "count_comment": 3,
+        }
+        stats = self.service(FakeClient({1: [article], 2: []}, {})).discover_queue(
+            command="discover-active",
+            endpoint="lists2",
+            since="2026-06-25 00:00:00",
+            max_pages=2,
+            old_page_threshold=2,
+            min_pages=1,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertEqual(stats["observed_ids"], 1)
+        self.assertEqual(stats["missing_observed"], 1)
+        self.assertEqual(stats["observed_missing_queued"], 1)
+        self.assertEqual(stats["retained_ids"], 1)
+        with SQLitePostStore(self.db) as store:
+            queue = store.conn.execute(
+                "select priority,reason,status from crawler_queue where post_id='202'"
+            ).fetchone()
+            post = store.conn.execute(
+                "select id,crawl_status,list_source from posts where id='202'"
+            ).fetchone()
+        self.assertEqual(
+            dict(queue),
+            {
+                "priority": 60,
+                "reason": "observed_missing",
+                "status": "pending",
+            },
+        )
+        self.assertEqual(
+            dict(post),
+            {
+                "id": "202",
+                "crawl_status": "list_only",
+                "list_source": "lists2",
+            },
+        )
 
     def test_comment_growth_reopens_done_queue_item_and_refreshes_detail(self):
         with SQLitePostStore(self.db) as store:
