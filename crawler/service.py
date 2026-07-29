@@ -110,6 +110,22 @@ class CrawlerService:
     def is_source_quota_stop(error: str | None) -> bool:
         return bool(error and error.startswith("source_quota_"))
 
+    @staticmethod
+    def add_queue_snapshot(
+        stats: dict,
+        *,
+        before: dict[str, int],
+        after: dict[str, int] | None = None,
+    ) -> None:
+        for key, value in before.items():
+            stats[f"queue_before_{key}"] = safe_int(value)
+        if after is None:
+            return
+        for key, value in after.items():
+            current = safe_int(value)
+            stats[f"queue_after_{key}"] = current
+            stats[f"queue_delta_{key}"] = current - safe_int(before.get(key))
+
     def fetch_detail_with_error(
         self,
         client: MiniProgramClient,
@@ -181,6 +197,8 @@ class CrawlerService:
                     store.init_schema()
                 else:
                     store.ensure_runtime_schema()
+                queue_before = store.crawler_queue_pending_snapshot()
+                self.add_queue_snapshot(stats, before=queue_before)
                 for page in range(1, max_pages + 1):
                     time.sleep(random.uniform(min_delay, max_delay))
                     data, error = self._list_page(client, endpoint, page)
@@ -334,6 +352,12 @@ class CrawlerService:
                             flush=True,
                         )
                         break
+                queue_after = store.crawler_queue_pending_snapshot()
+                self.add_queue_snapshot(
+                    stats,
+                    before=queue_before,
+                    after=queue_after,
+                )
                 if not dry_run:
                     stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
                     store.set_state(
@@ -426,6 +450,8 @@ class CrawlerService:
                     store.init_schema()
                 else:
                     store.ensure_runtime_schema()
+                queue_before = store.crawler_queue_pending_snapshot()
+                self.add_queue_snapshot(stats, before=queue_before)
                 effective_refresh_limit = (
                     None
                     if refresh_limit is None
@@ -678,6 +704,12 @@ class CrawlerService:
                         f"written={stats['written']}/{stats['selected']}",
                         flush=True,
                     )
+                queue_after = store.crawler_queue_pending_snapshot()
+                self.add_queue_snapshot(
+                    stats,
+                    before=queue_before,
+                    after=queue_after,
+                )
                 if not dry_run:
                     stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
                     store.set_state(

@@ -1852,6 +1852,62 @@ class SQLitePostStore:
         append_lane("priority = 0", limit)
         return selected
 
+    def crawler_queue_pending_snapshot(self) -> dict[str, int]:
+        """Return mutually useful pending-lane counts for run-level deltas."""
+        self.ensure_crawler_queue(commit=False)
+        now = now_text()
+        if self._table_exists("posts"):
+            row = self.conn.execute(
+                """
+                select count(*) total,
+                       sum(q.next_attempt_at='' or q.next_attempt_at <= ?) due,
+                       sum(q.priority < 0) urgent,
+                       sum(q.priority = 0) refresh,
+                       sum(q.priority > 0 and q.priority < 40)
+                           commented_coverage,
+                       sum(q.priority >= 40) quiet_coverage,
+                       sum(p.id is null) missing_post,
+                       sum(coalesce(p.crawl_status,'')='list_only') list_only,
+                       sum(coalesce(p.crawl_status,'')='full') full_post
+                from crawler_queue q
+                left join posts p on p.id=q.post_id
+                where q.status='pending'
+                """,
+                (now,),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                """
+                select count(*) total,
+                       sum(next_attempt_at='' or next_attempt_at <= ?) due,
+                       sum(priority < 0) urgent,
+                       sum(priority = 0) refresh,
+                       sum(priority > 0 and priority < 40)
+                           commented_coverage,
+                       sum(priority >= 40) quiet_coverage,
+                       count(*) missing_post,
+                       0 list_only,
+                       0 full_post
+                from crawler_queue
+                where status='pending'
+                """,
+                (now,),
+            ).fetchone()
+        return {
+            key: safe_int(row[key])
+            for key in (
+                "total",
+                "due",
+                "urgent",
+                "refresh",
+                "commented_coverage",
+                "quiet_coverage",
+                "missing_post",
+                "list_only",
+                "full_post",
+            )
+        }
+
     def mark_crawler_queue_item(
         self,
         post_id: str,
