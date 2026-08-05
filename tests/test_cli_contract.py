@@ -138,7 +138,7 @@ class CLIContractTest(unittest.TestCase):
         self.assertLessEqual(int(trickle_args[trickle_args.index("--limit") + 1]), 12)
         self.assertLessEqual(
             int(trickle_args[trickle_args.index("--refresh-limit") + 1]),
-            4,
+            5,
         )
 
     def test_scheduler_parses_quota_release_steps(self):

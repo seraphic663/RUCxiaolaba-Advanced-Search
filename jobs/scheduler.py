@@ -82,7 +82,7 @@ TRICKLE_INTERVAL = env_int("CRAWLER_TRICKLE_INTERVAL", 10 * 60)
 TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 12)
 TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 12), TRICKLE_LIMIT_CAP)
 TRICKLE_REFRESH_LIMIT = min(
-    env_nonnegative_int("CRAWLER_TRICKLE_REFRESH_LIMIT", 4),
+    env_nonnegative_int("CRAWLER_TRICKLE_REFRESH_LIMIT", 5),
     TRICKLE_LIMIT,
 )
 TRICKLE_OBSERVATION_RETRY_DELAY = env_int(
@@ -140,6 +140,10 @@ QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
     "CRAWLER_QUOTA_RELEASE_STEPS",
     "11=0.20,14=0.35,17=0.50,20=0.70,21=0.85,22=1.00",
 )
+DETAIL_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
+    "CRAWLER_DETAIL_QUOTA_RELEASE_STEPS",
+    "11=0.20,14=0.40,17=0.65,20=0.80,21=0.90,22=1.00",
+)
 QUOTA_ADAPTIVE_ENABLED = os.environ.get("CRAWLER_QUOTA_ADAPTIVE_ENABLED", "1") == "1"
 QUOTA_ADAPTIVE_SAFETY = min(
     1.0,
@@ -166,6 +170,13 @@ DETAIL_ADAPTIVE_UTILIZATION = min(
     max(
         0.50,
         env_float("CRAWLER_DETAIL_ADAPTIVE_UTILIZATION", 0.95),
+    ),
+)
+DETAIL_ADAPTIVE_SCHEDULE_UTILIZATION = min(
+    1.0,
+    max(
+        0.50,
+        env_float("CRAWLER_DETAIL_ADAPTIVE_SCHEDULE_UTILIZATION", 0.98),
     ),
 )
 RESET_GRACE_MINUTES = env_int("CRAWLER_RESET_GRACE_MINUTES", 5)
@@ -374,6 +385,11 @@ def quota_release_steps() -> list[tuple[int, float]]:
     return [(first_hour * 60, 0.5), (second_hour * 60, 1.0)]
 
 
+def detail_quota_release_steps() -> list[tuple[int, float]]:
+    steps = parse_release_steps(DETAIL_QUOTA_RELEASE_STEPS_TEXT)
+    return steps or quota_release_steps()
+
+
 def quota_release_fraction(at: datetime | None = None) -> float:
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
     current_minute = at.hour * 60 + at.minute
@@ -384,6 +400,55 @@ def quota_release_fraction(at: datetime | None = None) -> float:
         else:
             break
     return released
+
+
+def release_fraction_for_steps(
+    steps: list[tuple[int, float]],
+    at: datetime | None = None,
+) -> float:
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    current_minute = at.hour * 60 + at.minute
+    released = 0.0
+    for minute, fraction in steps:
+        if current_minute >= minute:
+            released = fraction
+        else:
+            break
+    return released
+
+
+def detail_quota_release_fraction(at: datetime | None = None) -> float:
+    return release_fraction_for_steps(detail_quota_release_steps(), at)
+
+
+def quota_record_release_steps(quota: dict) -> list[tuple[int, float]]:
+    records = quota.get("detail_release_steps") or quota.get("release_steps")
+    if not isinstance(records, list):
+        return []
+    text = ",".join(
+        f"{item.get('time')}={item.get('fraction')}"
+        for item in records
+        if isinstance(item, dict)
+    )
+    return parse_release_steps(text)
+
+
+def estimated_released_capacity(
+    budget: int,
+    steps: list[tuple[int, float]],
+) -> int:
+    """Upper bound for one detail worker under a stepped release profile."""
+    if budget <= 0 or not steps:
+        return 0
+    used = 0
+    interval_minutes = max(1, int(TRICKLE_INTERVAL) // 60)
+    per_run = max(1, int(TRICKLE_LIMIT))
+    for index, (minute, fraction) in enumerate(steps):
+        next_minute = steps[index + 1][0] if index + 1 < len(steps) else 24 * 60
+        runs = max(0, (next_minute - minute) // interval_minutes)
+        allowed = min(int(budget), int(int(budget) * float(fraction)))
+        used = min(allowed, used + runs * per_run)
+    return min(int(budget), used)
 
 
 def next_quota_release(at: datetime | None = None) -> datetime:
@@ -475,6 +540,17 @@ def next_detail_budget_target(previous: dict) -> tuple[int, str]:
             increased,
             "fully_used_increase" if increased > target else "at_ceiling",
         )
+    previous_steps = quota_record_release_steps(previous)
+    reachable = estimated_released_capacity(effective, previous_steps)
+    if (
+        0 < reachable < effective
+        and used / reachable >= DETAIL_ADAPTIVE_SCHEDULE_UTILIZATION
+    ):
+        increased = clamp_detail_budget(target + DETAIL_ADAPTIVE_STEP)
+        return (
+            increased,
+            "schedule_limited_increase" if increased > target else "at_ceiling",
+        )
     return target, "underused_hold"
 
 
@@ -515,6 +591,13 @@ def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
         ),
         "release_fraction": float(
             quota.get("release_fraction", quota_release_fraction()) or 0
+        ),
+        "detail_release_fraction": float(
+            quota.get(
+                "detail_release_fraction",
+                detail_quota_release_fraction(),
+            )
+            or 0
         ),
     }
     with QUOTA_HISTORY_PATH.open("a", encoding="utf-8") as fh:
@@ -724,9 +807,13 @@ def load_quota() -> dict:
 
 
 def save_quota(quota: dict) -> None:
+    recorded_detail_steps = quota.get("detail_release_steps")
+    if not recorded_detail_steps and int(quota.get("detail_calls", 0) or 0) > 0:
+        recorded_detail_steps = quota.get("release_steps")
     quota["detail_budget_target"] = detail_budget_target(quota)
     quota["updated_at"] = beijing_now().isoformat()
     quota["release_fraction"] = quota_release_fraction()
+    quota["detail_release_fraction"] = detail_quota_release_fraction()
     quota["configured_source_budget"] = configured_source_budget()
     quota["configured_admin_budget"] = configured_admin_budget()
     quota["configured_total_budget"] = configured_source_budget() + configured_admin_budget()
@@ -743,6 +830,13 @@ def save_quota(quota: dict) -> None:
             "fraction": fraction,
         }
         for minute, fraction in quota_release_steps()
+    ]
+    quota["detail_release_steps"] = recorded_detail_steps or [
+        {
+            "time": f"{minute // 60:02d}:{minute % 60:02d}",
+            "fraction": fraction,
+        }
+        for minute, fraction in detail_quota_release_steps()
     ]
     QUOTA_PATH.parent.mkdir(parents=True, exist_ok=True)
     temporary = QUOTA_PATH.with_name(f"{QUOTA_PATH.name}.{os.getpid()}.tmp")
@@ -865,7 +959,11 @@ def planned_job_calls(name: str, args: list[str]) -> int:
 
 
 def remaining_budget(kind: str, quota: dict) -> int:
-    fraction = quota_release_fraction()
+    fraction = (
+        detail_quota_release_fraction()
+        if kind == "detail"
+        else quota_release_fraction()
+    )
     if fraction <= 0:
         return 0
     if kind == "new_list":
