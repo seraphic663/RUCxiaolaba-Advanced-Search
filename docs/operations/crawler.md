@@ -123,17 +123,27 @@ CRAWLER_DAILY_PROBE_BUDGET=0
 CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET=20
 CRAWLER_DAILY_ADMIN_DETAIL_BUDGET=10
 CRAWLER_TRICKLE_LIMIT_CAP=12
+CRAWLER_TRICKLE_REFRESH_LIMIT=5
 CRAWLER_TRICKLE_MIN_DELAY=8
 CRAWLER_TRICKLE_MAX_DELAY=14
 CRAWLER_QUOTA_RELEASE_STEPS=11=0.20,14=0.35,17=0.50,20=0.70,21=0.85,22=1.00
+CRAWLER_DETAIL_QUOTA_RELEASE_STEPS=11=0.20,14=0.40,17=0.65,20=0.80,21=0.90,22=1.00
 CRAWLER_QUOTA_ADAPTIVE_ENABLED=1
 CRAWLER_QUOTA_ADAPTIVE_SAFETY=0.80
 CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS=14
+CRAWLER_DETAIL_ADAPTIVE_ENABLED=1
+CRAWLER_DETAIL_ADAPTIVE_MIN=450
+CRAWLER_DETAIL_ADAPTIVE_START=600
+CRAWLER_DETAIL_ADAPTIVE_STEP=50
+CRAWLER_DETAIL_ADAPTIVE_UTILIZATION=0.95
+CRAWLER_DETAIL_ADAPTIVE_SCHEDULE_UTILIZATION=0.98
 ```
 
-自动调度主额度上限为每天 690 次源请求：80 次新帖列表、160 次活跃列表、450 次详情、0 次缺口探测。阶梯累计上限在未触发自适应缩放时约为 11:00 的 138 次、14:00 的 241 次、17:00 的 345 次、20:00 的 483 次、21:00 的 586 次、22:00 的 690 次。最后 30% 分两小时释放，是为了让串行详情任务在午夜前实际使用额度，同时仍把早间额度留给用户本人。
+代码保守默认详情上限仍为 450；当前推荐线上配置把 `CRAWLER_DAILY_DETAIL_BUDGET` 设为 700，详情目标从 600 起步，按北京时间昨日结果每次增 50，最高 700。新帖列表 80、活跃列表 160、缺口探测 0，因此线上源请求配置上限为 940。详情使用独立的提前释放曲线：11:00 前仍不请求，17:00 前释放 65%，20:00 前释放 80%，保证 10 分钟一轮、每轮最多 12 次的串行任务可以在午夜前实际消费 700 次详情额度；列表仍使用较保守的公共释放曲线。
 
-Admin 使用独立额外额度：每天 20 次候选预览和 10 次人工详情，不扣减 new-list、active-list 或 detail 主计数，也不受主额度阶梯释放约束；因此配置请求上界是 690 次自动主额度加 30 次人工额度，共 720 次。人工调用仍读取同一个全局 pause，发生 `rate_limited` 时会和 scheduler 一起暂停；人工计数也会进入 quota history 的真实 `source_calls`，不能在限流分析中漏算。一次预览最多 3 页，一次任务最多 10 个帖子；详情任务第一个帖子立即请求，后续帖子继续使用 8–14 秒串行间隔。
+日切升级既看详情总目标利用率，也看旧释放曲线下的理论可达容量：如果昨日没有限流，虽然未达到目标的 95%，但已经使用了当日时间窗理论容量的 98%，视为 `schedule_limited_increase`，而不是错误判为需求不足。发生 `rate_limited` 时仍由全局 80% 安全回退统一缩减，详情控制器不重复降额。每轮 12 个详情默认最多 5 个 priority 0 新回复任务，剩余至少 7 个位置继续补新帖和历史覆盖。
+
+Admin 使用独立额外额度：每天 20 次候选预览和 10 次人工详情，不扣减 new-list、active-list 或 detail 主计数，也不受主额度阶梯释放约束；按当前线上配置，请求上界是 940 次自动源额度加 30 次人工额度，共 970 次。人工调用仍读取同一个全局 pause，发生 `rate_limited` 时会和 scheduler 一起暂停；人工计数也会进入 quota history 的真实 `source_calls`，不能在限流分析中漏算。一次预览最多 3 页，一次任务最多 10 个帖子；详情任务第一个帖子立即请求，后续帖子继续使用 8–14 秒串行间隔。
 
 后台方案语义：
 

@@ -457,7 +457,7 @@ class CrawlerService:
                     if refresh_limit is None
                     else min(
                         max(0, int(refresh_limit)),
-                        max(1, max(1, int(limit)) // 3),
+                        max(1, max(1, int(limit)) // 2),
                     )
                 )
                 stats["refresh_limit"] = effective_refresh_limit

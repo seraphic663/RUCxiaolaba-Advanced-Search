@@ -335,6 +335,59 @@ class AdaptiveDetailBudgetTest(unittest.TestCase):
             "underused_hold",
         )
 
+    def test_schedule_limited_day_increases_next_target(self):
+        self.write_previous(
+            detail_budget_target=650,
+            effective_detail_budget=650,
+            detail_calls=601,
+            release_steps=[
+                {"time": "11:00", "fraction": 0.20},
+                {"time": "14:00", "fraction": 0.35},
+                {"time": "17:00", "fraction": 0.50},
+                {"time": "20:00", "fraction": 0.70},
+                {"time": "21:00", "fraction": 0.85},
+                {"time": "22:00", "fraction": 1.00},
+            ],
+        )
+        quota = scheduler.load_quota()
+        self.assertEqual(quota["detail_budget_target"], 700)
+        self.assertEqual(
+            quota["detail_budget_decision"],
+            "schedule_limited_increase",
+        )
+
+    def test_detail_release_profile_can_finish_ceiling_before_midnight(self):
+        steps = scheduler.detail_quota_release_steps()
+        self.assertEqual(scheduler.estimated_released_capacity(700, steps), 700)
+        at_20 = datetime(
+            2026,
+            7,
+            12,
+            20,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        self.assertEqual(scheduler.detail_quota_release_fraction(at_20), 0.80)
+
+    def test_deployment_preserves_release_profile_already_used_today(self):
+        old_steps = [
+            {"time": "11:00", "fraction": 0.20},
+            {"time": "14:00", "fraction": 0.35},
+            {"time": "17:00", "fraction": 0.50},
+            {"time": "20:00", "fraction": 0.70},
+            {"time": "21:00", "fraction": 0.85},
+            {"time": "22:00", "fraction": 1.00},
+        ]
+        quota = {
+            "date": "2026-07-12",
+            "detail_calls": 601,
+            "detail_budget_target": 650,
+            "release_steps": old_steps,
+        }
+        scheduler.save_quota(quota)
+        saved = json.loads(self.quota_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["detail_release_steps"], old_steps)
+
     def test_rate_limited_day_uses_existing_global_backoff_once(self):
         target, decision = scheduler.next_detail_budget_target(
             {
