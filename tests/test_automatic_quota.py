@@ -413,5 +413,54 @@ class AdaptiveDetailBudgetTest(unittest.TestCase):
         self.assertEqual(decision, "at_ceiling")
 
 
+class RateLimitAttributionTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        root = Path(self.temp_dir.name)
+        self.history_path = root / ".crawler_quota_history.jsonl"
+        self.now = datetime(
+            2026,
+            8,
+            8,
+            0,
+            20,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        self.history_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-08-06",
+                    "reason": "rate_limited",
+                    "recorded_at": "2026-08-06T19:20:25+08:00",
+                    "source_calls": 775,
+                    "rate_limited": 1,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def test_human_attributed_date_preserves_audit_but_does_not_reduce_budget(self):
+        with (
+            patch.object(scheduler, "QUOTA_HISTORY_PATH", self.history_path),
+            patch.object(scheduler, "beijing_now", return_value=self.now),
+            patch.object(scheduler, "QUOTA_ADAPTIVE_ENABLED", True),
+            patch.object(scheduler, "QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14),
+            patch.object(scheduler, "QUOTA_ADAPTIVE_SAFETY", 0.80),
+            patch.object(scheduler, "configured_source_budget", return_value=1240),
+            patch.object(
+                scheduler,
+                "QUOTA_RATE_LIMIT_EXCLUDED_DATES",
+                frozenset({"2026-08-06"}),
+            ),
+        ):
+            self.assertEqual(scheduler.adaptive_source_budget(), 1240)
+
+        audit = self.history_path.read_text(encoding="utf-8")
+        self.assertIn('"reason": "rate_limited"', audit)
+        self.assertIn('"source_calls": 775', audit)
+
+
 if __name__ == "__main__":
     unittest.main()
