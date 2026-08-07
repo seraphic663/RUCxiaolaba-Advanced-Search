@@ -131,6 +131,7 @@ CRAWLER_DETAIL_QUOTA_RELEASE_STEPS=10=0.20,12=0.40,15=0.65,18=0.82,20=0.93,21=1.
 CRAWLER_QUOTA_ADAPTIVE_ENABLED=1
 CRAWLER_QUOTA_ADAPTIVE_SAFETY=0.80
 CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS=14
+CRAWLER_QUOTA_RATE_LIMIT_EXCLUDED_DATES=2026-08-06
 CRAWLER_DETAIL_ADAPTIVE_ENABLED=1
 CRAWLER_DETAIL_ADAPTIVE_MIN=900
 CRAWLER_DETAIL_ADAPTIVE_START=900
@@ -180,6 +181,7 @@ CRAWLER_GAP_PROBE_INTERVAL=7200
 - 暂停结束不代表立即放量，主动请求仍受当天 release step 约束。
 - `cookie_expired` 默认暂停 6 小时，但恢复通常依赖人工更新 `/app/data/config.txt`。
 - 最近 14 天发生过 `rate_limited` 时，有效总预算按最近触顶时已预留源请求数的 80% 缩小。
+- 只有经人工确认由共享 session 的用户高强度浏览导致时，才可把对应北京时间日期加入 `CRAWLER_QUOTA_RATE_LIMIT_EXCLUDED_DATES`。原始 quota history 不删除、不改写；排除项只阻止该日期参与后续自动降额，其他日期的真实 crawler 限流仍正常暂停和回退。
 
 运行文件位于主库旁：
 

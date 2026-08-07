@@ -69,6 +69,22 @@ def env_float(name: str, default: float) -> float:
         return default
 
 
+def env_iso_dates(name: str) -> frozenset[str]:
+    dates: set[str] = set()
+    for raw_value in os.environ.get(name, "").split(","):
+        value = raw_value.strip()
+        if not value:
+            continue
+        try:
+            dates.add(datetime.strptime(value, "%Y-%m-%d").date().isoformat())
+        except ValueError:
+            print(
+                f"[scheduler] ignore invalid {name} date={value!r}",
+                flush=True,
+            )
+    return frozenset(dates)
+
+
 NEW_INTERVAL = env_int("CRAWLER_NEW_INTERVAL", 8 * 60 * 60)
 REFRESH_INTERVAL = env_int("CRAWLER_REFRESH_INTERVAL", 8 * 60 * 60)
 BACKFILL_INTERVAL = env_int("CRAWLER_BACKFILL_INTERVAL", 24 * 60 * 60)
@@ -150,6 +166,9 @@ QUOTA_ADAPTIVE_SAFETY = min(
     max(0.1, env_float("CRAWLER_QUOTA_ADAPTIVE_SAFETY", 0.80)),
 )
 QUOTA_ADAPTIVE_LOOKBACK_DAYS = env_int("CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14)
+QUOTA_RATE_LIMIT_EXCLUDED_DATES = env_iso_dates(
+    "CRAWLER_QUOTA_RATE_LIMIT_EXCLUDED_DATES"
+)
 DETAIL_ADAPTIVE_ENABLED = (
     os.environ.get("CRAWLER_DETAIL_ADAPTIVE_ENABLED", "1") == "1"
 )
@@ -570,6 +589,7 @@ def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
         "admin_preview_calls": int(quota.get("admin_preview_calls", 0) or 0),
         "admin_detail_calls": int(quota.get("admin_detail_calls", 0) or 0),
         "rate_limited": int(quota.get("rate_limited", 0) or 0),
+        "rate_limit_excluded_dates": sorted(QUOTA_RATE_LIMIT_EXCLUDED_DATES),
         "detail_budget_target": detail_budget_target(quota),
         "effective_detail_budget": int(
             quota.get("effective_detail_budget", 0) or 0
@@ -622,6 +642,8 @@ def recent_rate_limit_caps() -> list[int]:
             if record.get("reason") != "rate_limited":
                 continue
             date_text = str(record.get("date", ""))
+            if date_text in QUOTA_RATE_LIMIT_EXCLUDED_DATES:
+                continue
             if date_text and datetime.fromisoformat(date_text).date() < cutoff:
                 continue
             source_calls = int(record.get("source_calls", 0) or 0)
@@ -819,6 +841,9 @@ def save_quota(quota: dict) -> None:
     quota["configured_total_budget"] = configured_source_budget() + configured_admin_budget()
     quota["adaptive_source_budget"] = adaptive_source_budget()
     quota["adaptive_scale"] = adaptive_scale()
+    quota["rate_limit_excluded_dates"] = sorted(
+        QUOTA_RATE_LIMIT_EXCLUDED_DATES
+    )
     quota["effective_detail_budget"] = daily_budget("detail", quota)
     quota["effective_source_budget"] = sum(
         daily_budget(kind, quota)
@@ -1214,7 +1239,9 @@ def main() -> int:
             f"detail_effective={startup_quota.get('effective_detail_budget')} "
             f"detail_decision={startup_quota.get('detail_budget_decision')} "
             f"source_effective={startup_quota.get('effective_source_budget')} "
-            f"source_ceiling={startup_quota.get('configured_source_budget')}",
+            f"source_ceiling={startup_quota.get('configured_source_budget')} "
+            f"rate_limit_excluded_dates="
+            f"{startup_quota.get('rate_limit_excluded_dates')}",
             flush=True,
         )
     except Exception as exc:

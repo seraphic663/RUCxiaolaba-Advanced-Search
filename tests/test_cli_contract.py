@@ -205,6 +205,10 @@ class CLIContractTest(unittest.TestCase):
     def test_scheduler_main_detail_budget_is_independent_from_admin(self):
         with (
             patch("jobs.scheduler.quota_release_fraction", return_value=1.0),
+            patch(
+                "jobs.scheduler.detail_quota_release_fraction",
+                return_value=1.0,
+            ),
             patch("jobs.scheduler.daily_budget", return_value=450),
             patch("jobs.scheduler.DAILY_ADMIN_DETAIL_BUDGET", 10),
         ):
