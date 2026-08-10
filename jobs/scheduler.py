@@ -154,11 +154,11 @@ QUOTA_FIRST_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_FIRST_RELEASE_HOUR
 QUOTA_SECOND_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_SECOND_RELEASE_HOUR", 22)
 QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
     "CRAWLER_QUOTA_RELEASE_STEPS",
-    "11=0.20,14=0.35,17=0.50,20=0.70,21=0.85,22=1.00",
+    "11=0.20,14=0.35,17=0.50,20=0.65,21=0.75,22=0.88,23=0.97,23:30=1.00",
 )
 DETAIL_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
     "CRAWLER_DETAIL_QUOTA_RELEASE_STEPS",
-    "10=0.20,12=0.40,15=0.65,18=0.82,20=0.93,21=1.00",
+    "0=0.05,6=0.10,10=0.20,12=0.38,15=0.58,18=0.74,20=0.84,21=0.91,22=0.97,23=0.99,23:30=1.00",
 )
 QUOTA_ADAPTIVE_ENABLED = os.environ.get("CRAWLER_QUOTA_ADAPTIVE_ENABLED", "1") == "1"
 QUOTA_ADAPTIVE_SAFETY = min(
@@ -199,6 +199,14 @@ DETAIL_ADAPTIVE_SCHEDULE_UTILIZATION = min(
     ),
 )
 RESET_GRACE_MINUTES = env_int("CRAWLER_RESET_GRACE_MINUTES", 5)
+RATE_LIMIT_RETRY_COOLDOWN = env_int(
+    "CRAWLER_RATE_LIMIT_RETRY_COOLDOWN",
+    60 * 60,
+)
+RATE_LIMIT_HARD_THRESHOLD = max(
+    2,
+    env_int("CRAWLER_RATE_LIMIT_HARD_THRESHOLD", 2),
+)
 PAUSE_LOG_INTERVAL = env_int("CRAWLER_PAUSE_LOG_INTERVAL", 10 * 60)
 HEARTBEAT_INTERVAL = env_int("CRAWLER_SCHEDULER_HEARTBEAT_INTERVAL", 30)
 
@@ -776,6 +784,42 @@ def active_pause() -> dict:
     return {}
 
 
+def handle_rate_limit(*, job: str, detail: str) -> dict:
+    """Record a bounded soft-limit recovery before declaring a daily hard wall."""
+    lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
+    with exclusive_control_lock(lock_path):
+        quota = load_quota()
+        count = int(quota.get("rate_limited", 0) or 0) + 1
+        quota["rate_limited"] = count
+        quota["last_rate_limited_at"] = beijing_now().isoformat()
+        quota["last_rate_limited_job"] = job
+        quota["last_rate_limited_source_calls"] = quota_source_calls(quota)
+        hard = count >= RATE_LIMIT_HARD_THRESHOLD
+        quota["rate_limit_state"] = "hard" if hard else "cooldown"
+        save_quota(quota)
+        append_quota_history(
+            quota,
+            reason="rate_limited" if hard else "rate_limited_soft",
+            job=job,
+        )
+
+    if hard:
+        return save_pause_until(
+            reason="rate_limited",
+            job=job,
+            until_dt=next_beijing_reset(),
+            detail=detail,
+        )
+
+    cooldown_until = beijing_now() + timedelta(seconds=RATE_LIMIT_RETRY_COOLDOWN)
+    return save_pause_until(
+        reason="rate_limited_cooldown",
+        job=job,
+        until_dt=min(cooldown_until, next_beijing_reset()),
+        detail=detail,
+    )
+
+
 def load_quota() -> dict:
     today = quota_date()
     try:
@@ -1349,21 +1393,7 @@ def main() -> int:
             with running_heartbeat(due):
                 result = run_job(due)
             if result.error_kind == "rate_limited":
-                lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
-                with exclusive_control_lock(lock_path):
-                    quota = load_quota()
-                    quota["rate_limited"] = int(quota.get("rate_limited", 0)) + 1
-                    quota["last_rate_limited_at"] = beijing_now().isoformat()
-                    quota["last_rate_limited_job"] = due
-                    quota["last_rate_limited_source_calls"] = quota_source_calls(quota)
-                    save_quota(quota)
-                    append_quota_history(quota, reason="rate_limited", job=due)
-                save_pause_until(
-                    reason="rate_limited",
-                    job=due,
-                    until_dt=next_beijing_reset(),
-                    detail=result.stderr,
-                )
+                handle_rate_limit(job=due, detail=result.stderr)
             elif result.error_kind == "cookie_expired":
                 save_pause(
                     reason="cookie_expired",
