@@ -226,7 +226,7 @@ class AutomaticQuotaTest(unittest.TestCase):
         self.assertEqual(row["status"], "pending")
         self.assertEqual(
             [step["time"] for step in self._quota()["release_steps"][-2:]],
-            ["21:00", "22:00"],
+            ["23:00", "23:30"],
         )
 
 
@@ -359,6 +359,14 @@ class AdaptiveDetailBudgetTest(unittest.TestCase):
     def test_detail_release_profile_can_finish_ceiling_before_midnight(self):
         steps = scheduler.detail_quota_release_steps()
         self.assertEqual(scheduler.estimated_released_capacity(1000, steps), 1000)
+        at_midnight = datetime(
+            2026,
+            7,
+            12,
+            0,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
         at_10 = datetime(
             2026,
             7,
@@ -367,7 +375,17 @@ class AdaptiveDetailBudgetTest(unittest.TestCase):
             0,
             tzinfo=timezone(timedelta(hours=8)),
         )
+        at_2330 = datetime(
+            2026,
+            7,
+            12,
+            23,
+            30,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        self.assertEqual(scheduler.detail_quota_release_fraction(at_midnight), 0.05)
         self.assertEqual(scheduler.detail_quota_release_fraction(at_10), 0.20)
+        self.assertEqual(scheduler.detail_quota_release_fraction(at_2330), 1.00)
 
     def test_deployment_preserves_release_profile_already_used_today(self):
         old_steps = [
@@ -460,6 +478,87 @@ class RateLimitAttributionTest(unittest.TestCase):
         audit = self.history_path.read_text(encoding="utf-8")
         self.assertIn('"reason": "rate_limited"', audit)
         self.assertIn('"source_calls": 775', audit)
+
+
+class RateLimitRecoveryTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        root = Path(self.temp_dir.name)
+        self.quota_path = root / ".crawler_quota.json"
+        self.history_path = root / ".crawler_quota_history.jsonl"
+        self.pause_path = root / ".crawler_pause.json"
+        self.now = datetime(
+            2026,
+            8,
+            11,
+            20,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        self.quota_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-08-11",
+                    "new_list_calls": 40,
+                    "active_list_calls": 80,
+                    "detail_calls": 600,
+                    "probe_calls": 0,
+                    "rate_limited": 0,
+                    "detail_budget_target": 1000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.patches = [
+            patch.object(scheduler, "QUOTA_PATH", self.quota_path),
+            patch.object(scheduler, "QUOTA_HISTORY_PATH", self.history_path),
+            patch.object(scheduler, "PAUSE_PATH", self.pause_path),
+            patch.object(scheduler, "beijing_now", side_effect=lambda: self.now),
+            patch.object(scheduler, "configured_source_budget", return_value=1240),
+            patch.object(scheduler, "configured_admin_budget", return_value=30),
+            patch.object(scheduler, "adaptive_source_budget", return_value=1240),
+            patch.object(scheduler, "adaptive_scale", return_value=1.0),
+            patch.object(scheduler, "RATE_LIMIT_RETRY_COOLDOWN", 60 * 60),
+            patch.object(scheduler, "RATE_LIMIT_HARD_THRESHOLD", 2),
+        ]
+        for item in self.patches:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_first_limit_cools_down_and_second_confirms_daily_wall(self):
+        first = scheduler.handle_rate_limit(
+            job="trickle_fill",
+            detail="rate_limited:first",
+        )
+        self.assertEqual(first["reason"], "rate_limited_cooldown")
+        self.assertEqual(first["until_text"], "2026-08-11T21:00:00+08:00")
+        quota = json.loads(self.quota_path.read_text(encoding="utf-8"))
+        self.assertEqual(quota["rate_limited"], 1)
+        self.assertEqual(quota["rate_limit_state"], "cooldown")
+        history = [
+            json.loads(line)
+            for line in self.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual([row["reason"] for row in history], ["rate_limited_soft"])
+
+        second = scheduler.handle_rate_limit(
+            job="trickle_fill",
+            detail="rate_limited:second",
+        )
+        self.assertEqual(second["reason"], "rate_limited")
+        self.assertEqual(second["until_text"], "2026-08-12T00:05:00+08:00")
+        quota = json.loads(self.quota_path.read_text(encoding="utf-8"))
+        self.assertEqual(quota["rate_limited"], 2)
+        self.assertEqual(quota["rate_limit_state"], "hard")
+        history = [
+            json.loads(line)
+            for line in self.history_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(
+            [row["reason"] for row in history],
+            ["rate_limited_soft", "rate_limited"],
+        )
 
 
 if __name__ == "__main__":

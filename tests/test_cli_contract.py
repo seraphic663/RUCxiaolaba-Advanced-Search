@@ -163,14 +163,18 @@ class CLIContractTest(unittest.TestCase):
         )
         self.assertEqual(
             quota_release_fraction(datetime(2026, 7, 10, 20, 0, tzinfo=china)),
-            0.7,
+            0.65,
         )
         self.assertEqual(
             quota_release_fraction(datetime(2026, 7, 10, 21, 0, tzinfo=china)),
-            0.85,
+            0.75,
         )
         self.assertEqual(
             quota_release_fraction(datetime(2026, 7, 10, 22, 0, tzinfo=china)),
+            0.88,
+        )
+        self.assertEqual(
+            quota_release_fraction(datetime(2026, 7, 10, 23, 30, tzinfo=china)),
             1.0,
         )
         self.assertEqual(
