@@ -406,7 +406,7 @@ class AdaptiveDetailBudgetTest(unittest.TestCase):
         saved = json.loads(self.quota_path.read_text(encoding="utf-8"))
         self.assertEqual(saved["detail_release_steps"], old_steps)
 
-    def test_rate_limited_day_uses_existing_global_backoff_once(self):
+    def test_rate_limited_day_holds_target_for_pacing(self):
         target, decision = scheduler.next_detail_budget_target(
             {
                 "detail_budget_target": 600,
@@ -416,7 +416,7 @@ class AdaptiveDetailBudgetTest(unittest.TestCase):
             }
         )
         self.assertEqual(target, 900)
-        self.assertEqual(decision, "rate_limited_global_backoff")
+        self.assertEqual(decision, "rate_limited_pacing_hold")
 
     def test_safe_days_stop_at_ceiling(self):
         target, decision = scheduler.next_detail_budget_target(
@@ -478,6 +478,63 @@ class RateLimitAttributionTest(unittest.TestCase):
         audit = self.history_path.read_text(encoding="utf-8")
         self.assertIn('"reason": "rate_limited"', audit)
         self.assertIn('"source_calls": 775', audit)
+
+    def test_confirmed_limit_is_pacing_anchor_not_budget_cap(self):
+        with (
+            patch.object(scheduler, "QUOTA_HISTORY_PATH", self.history_path),
+            patch.object(scheduler, "beijing_now", return_value=self.now),
+            patch.object(scheduler, "QUOTA_ADAPTIVE_ENABLED", True),
+            patch.object(scheduler, "QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14),
+            patch.object(scheduler, "configured_source_budget", return_value=1240),
+            patch.object(
+                scheduler,
+                "QUOTA_RATE_LIMIT_EXCLUDED_DATES",
+                frozenset(),
+            ),
+        ):
+            self.assertEqual(scheduler.rate_limit_pacing_anchor(), 775)
+            self.assertEqual(scheduler.adaptive_source_budget(), 1240)
+            self.assertEqual(scheduler.adaptive_scale(), 1.0)
+
+    def test_anchor_paces_combined_requests_until_final_release(self):
+        quota = {
+            "new_list_calls": 40,
+            "active_list_calls": 80,
+            "detail_calls": 620,
+            "probe_calls": 0,
+            "detail_budget_target": 1000,
+        }
+        with (
+            patch.object(scheduler, "DAILY_NEW_LIST_BUDGET", 80),
+            patch.object(scheduler, "DAILY_ACTIVE_LIST_BUDGET", 160),
+            patch.object(scheduler, "DAILY_DETAIL_BUDGET", 1200),
+            patch.object(scheduler, "DAILY_PROBE_BUDGET", 0),
+            patch.object(scheduler, "adaptive_scale", return_value=1.0),
+            patch.object(scheduler, "rate_limit_pacing_anchor", return_value=775),
+            patch.object(
+                scheduler,
+                "detail_quota_release_fraction",
+                return_value=0.97,
+            ),
+        ):
+            self.assertEqual(scheduler.source_pacing_allowance(quota), 751)
+            self.assertEqual(scheduler.remaining_budget("detail", quota), 11)
+
+        with (
+            patch.object(scheduler, "DAILY_NEW_LIST_BUDGET", 80),
+            patch.object(scheduler, "DAILY_ACTIVE_LIST_BUDGET", 160),
+            patch.object(scheduler, "DAILY_DETAIL_BUDGET", 1200),
+            patch.object(scheduler, "DAILY_PROBE_BUDGET", 0),
+            patch.object(scheduler, "adaptive_scale", return_value=1.0),
+            patch.object(scheduler, "rate_limit_pacing_anchor", return_value=775),
+            patch.object(
+                scheduler,
+                "detail_quota_release_fraction",
+                return_value=1.0,
+            ),
+        ):
+            self.assertEqual(scheduler.source_pacing_allowance(quota), 1240)
+            self.assertEqual(scheduler.remaining_budget("detail", quota), 380)
 
 
 class RateLimitRecoveryTest(unittest.TestCase):
@@ -551,6 +608,7 @@ class RateLimitRecoveryTest(unittest.TestCase):
         quota = json.loads(self.quota_path.read_text(encoding="utf-8"))
         self.assertEqual(quota["rate_limited"], 2)
         self.assertEqual(quota["rate_limit_state"], "hard")
+        self.assertEqual(quota["rate_limit_pacing_anchor"], 720)
         history = [
             json.loads(line)
             for line in self.history_path.read_text(encoding="utf-8").splitlines()
