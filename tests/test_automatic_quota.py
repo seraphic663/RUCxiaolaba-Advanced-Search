@@ -259,7 +259,6 @@ class AdaptiveDetailBudgetTest(unittest.TestCase):
             patch.object(scheduler, "DETAIL_ADAPTIVE_START", 900),
             patch.object(scheduler, "DETAIL_ADAPTIVE_STEP", 100),
             patch.object(scheduler, "DETAIL_ADAPTIVE_UTILIZATION", 0.95),
-            patch.object(scheduler, "QUOTA_ADAPTIVE_SAFETY", 0.80),
             patch.object(scheduler, "adaptive_scale", return_value=1.0),
             patch.object(
                 scheduler,
@@ -465,7 +464,6 @@ class RateLimitAttributionTest(unittest.TestCase):
             patch.object(scheduler, "beijing_now", return_value=self.now),
             patch.object(scheduler, "QUOTA_ADAPTIVE_ENABLED", True),
             patch.object(scheduler, "QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14),
-            patch.object(scheduler, "QUOTA_ADAPTIVE_SAFETY", 0.80),
             patch.object(scheduler, "configured_source_budget", return_value=1240),
             patch.object(
                 scheduler,
