@@ -591,6 +591,7 @@ class RateLimitRecoveryTest(unittest.TestCase):
         quota = json.loads(self.quota_path.read_text(encoding="utf-8"))
         self.assertEqual(quota["rate_limited"], 1)
         self.assertEqual(quota["rate_limit_state"], "cooldown")
+        self.assertEqual(quota["rate_limit_pacing_anchor"], 720)
         history = [
             json.loads(line)
             for line in self.history_path.read_text(encoding="utf-8").splitlines()

@@ -633,9 +633,9 @@ def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
 def rate_limit_pacing_anchor() -> int:
     """Return the latest observed shared wall, advanced only by safe usage.
 
-    A confirmed wall is an observation of that day's crawler plus user usage,
-    not a permanent source capacity. Safe day rollovers may raise the anchor,
-    but only another confirmed wall may lower it.
+    A wall observation is that day's crawler plus user usage, not a permanent
+    source capacity. Safe day rollovers may raise the anchor, but only another
+    rate-limit observation may lower it.
     """
     if not QUOTA_ADAPTIVE_ENABLED:
         return 0
@@ -648,7 +648,7 @@ def rate_limit_pacing_anchor() -> int:
         return 0
     cutoff = beijing_now().date() - timedelta(days=QUOTA_ADAPTIVE_LOOKBACK_DAYS)
     anchor = 0
-    confirmed = False
+    observed = False
     for line in lines[-200:]:
         try:
             record = json.loads(line)
@@ -660,16 +660,16 @@ def rate_limit_pacing_anchor() -> int:
             continue
         if source_calls <= 0:
             continue
-        if record.get("reason") == "rate_limited":
+        if record.get("reason") in {"rate_limited_soft", "rate_limited"}:
             anchor = source_calls
-            confirmed = True
+            observed = True
         elif (
-            confirmed
+            observed
             and record.get("reason") == "day_rollover"
             and int(record.get("rate_limited", 0) or 0) == 0
         ):
             anchor = max(anchor, source_calls)
-    return anchor if confirmed else 0
+    return anchor if observed else 0
 
 
 def adaptive_source_budget() -> int:
@@ -823,8 +823,7 @@ def handle_rate_limit(*, job: str, detail: str) -> dict:
         quota["last_rate_limited_source_calls"] = quota_source_calls(quota)
         hard = count >= RATE_LIMIT_HARD_THRESHOLD
         quota["rate_limit_state"] = "hard" if hard else "cooldown"
-        if hard:
-            quota["rate_limit_pacing_anchor"] = quota_source_calls(quota)
+        quota["rate_limit_pacing_anchor"] = quota_source_calls(quota)
         save_quota(quota)
         append_quota_history(
             quota,
