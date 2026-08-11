@@ -1,6 +1,7 @@
 # Local notes and agent state
 CLAUDE.md
 .claude/
+/local-only/fwb-topic/
 
 # Local secrets and config
 .env
