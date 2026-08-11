@@ -556,10 +556,9 @@ def next_detail_budget_target(previous: dict) -> tuple[int, str]:
     )
     used = max(0, int(previous.get("detail_calls", 0) or 0))
     if int(previous.get("rate_limited", 0) or 0) > 0:
-        # The existing source-wide adaptive cap already applies the safety
-        # factor to every request lane. Keep the target stable here so the
-        # detail lane is not reduced twice.
-        return target, "rate_limited_global_backoff"
+        # A shared-session wall varies with the user's own browsing. Keep the
+        # target stable; the observation is used only to pace the next day.
+        return target, "rate_limited_pacing_hold"
     utilization = used / effective
     if utilization >= DETAIL_ADAPTIVE_UTILIZATION:
         increased = clamp_detail_budget(target + DETAIL_ADAPTIVE_STEP)
@@ -598,6 +597,9 @@ def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
         "admin_detail_calls": int(quota.get("admin_detail_calls", 0) or 0),
         "rate_limited": int(quota.get("rate_limited", 0) or 0),
         "rate_limit_excluded_dates": sorted(QUOTA_RATE_LIMIT_EXCLUDED_DATES),
+        "rate_limit_pacing_anchor": int(
+            quota.get("rate_limit_pacing_anchor", 0) or 0
+        ),
         "detail_budget_target": detail_budget_target(quota),
         "effective_detail_budget": int(
             quota.get("effective_detail_budget", 0) or 0
@@ -632,48 +634,55 @@ def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def recent_rate_limit_caps() -> list[int]:
+def rate_limit_pacing_anchor() -> int:
+    """Return the latest observed shared wall, advanced only by safe usage.
+
+    A confirmed wall is an observation of that day's crawler plus user usage,
+    not a permanent source capacity. Safe day rollovers may raise the anchor,
+    but only another confirmed wall may lower it.
+    """
     if not QUOTA_ADAPTIVE_ENABLED:
-        return []
+        return 0
     try:
         lines = QUOTA_HISTORY_PATH.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
-        return []
+        return 0
     except Exception as exc:
         print(f"[scheduler] ignore invalid quota history: {exc}", flush=True)
-        return []
+        return 0
     cutoff = beijing_now().date() - timedelta(days=QUOTA_ADAPTIVE_LOOKBACK_DAYS)
-    caps: list[int] = []
+    anchor = 0
+    confirmed = False
     for line in lines[-200:]:
         try:
             record = json.loads(line)
-            if record.get("reason") != "rate_limited":
-                continue
             date_text = str(record.get("date", ""))
-            if date_text in QUOTA_RATE_LIMIT_EXCLUDED_DATES:
-                continue
             if date_text and datetime.fromisoformat(date_text).date() < cutoff:
                 continue
             source_calls = int(record.get("source_calls", 0) or 0)
         except Exception:
             continue
-        if source_calls > 0:
-            caps.append(max(1, int(source_calls * QUOTA_ADAPTIVE_SAFETY)))
-    return caps
+        if source_calls <= 0:
+            continue
+        if record.get("reason") == "rate_limited":
+            anchor = source_calls
+            confirmed = True
+        elif (
+            confirmed
+            and record.get("reason") == "day_rollover"
+            and int(record.get("rate_limited", 0) or 0) == 0
+        ):
+            anchor = max(anchor, source_calls)
+    return anchor if confirmed else 0
 
 
 def adaptive_source_budget() -> int:
-    caps = recent_rate_limit_caps()
-    if not caps:
-        return configured_source_budget()
-    return min(configured_source_budget(), min(caps))
+    """Keep the configured ceiling; shared-session walls affect pacing only."""
+    return configured_source_budget()
 
 
 def adaptive_scale() -> float:
-    configured = configured_source_budget()
-    if configured <= 0:
-        return 1.0
-    return max(0.05, min(1.0, adaptive_source_budget() / configured))
+    return 1.0
 
 
 def daily_budget(kind: str, quota: dict | None = None) -> int:
@@ -686,6 +695,28 @@ def daily_budget(kind: str, quota: dict | None = None) -> int:
     if base <= 0:
         return 0
     return max(1, int(base * adaptive_scale()))
+
+
+def current_source_budget(quota: dict | None = None) -> int:
+    return sum(
+        daily_budget(kind, quota)
+        for kind in ("new_list", "active_list", "detail", "probe")
+    )
+
+
+def source_pacing_allowance(quota: dict | None = None) -> int:
+    """Pace near the observed wall, then restore the full ceiling at 23:30."""
+    quota = quota or {}
+    total_budget = current_source_budget(quota)
+    anchor = int(
+        quota.get("rate_limit_pacing_anchor", 0)
+        or rate_limit_pacing_anchor()
+        or 0
+    )
+    fraction = detail_quota_release_fraction()
+    if anchor <= 0 or fraction >= 1.0:
+        return total_budget
+    return min(total_budget, max(1, int(anchor * fraction)))
 
 
 def classify_error(stderr: str) -> str:
@@ -796,6 +827,8 @@ def handle_rate_limit(*, job: str, detail: str) -> dict:
         quota["last_rate_limited_source_calls"] = quota_source_calls(quota)
         hard = count >= RATE_LIMIT_HARD_THRESHOLD
         quota["rate_limit_state"] = "hard" if hard else "cooldown"
+        if hard:
+            quota["rate_limit_pacing_anchor"] = quota_source_calls(quota)
         save_quota(quota)
         append_quota_history(
             quota,
@@ -893,6 +926,8 @@ def save_quota(quota: dict) -> None:
         daily_budget(kind, quota)
         for kind in ("new_list", "active_list", "detail", "probe")
     )
+    quota.setdefault("rate_limit_pacing_anchor", rate_limit_pacing_anchor())
+    quota["source_pacing_allowance"] = source_pacing_allowance(quota)
     quota["release_steps"] = [
         {
             "time": f"{minute // 60:02d}:{minute % 60:02d}",
@@ -1035,19 +1070,24 @@ def remaining_budget(kind: str, quota: dict) -> int:
     )
     if fraction <= 0:
         return 0
+    lane_remaining = 10**9
     if kind == "new_list":
         allowed = int(daily_budget(kind, quota) * fraction)
-        return max(0, allowed - int(quota.get("new_list_calls", 0)))
-    if kind == "active_list":
+        lane_remaining = max(0, allowed - int(quota.get("new_list_calls", 0)))
+    elif kind == "active_list":
         allowed = int(daily_budget(kind, quota) * fraction)
-        return max(0, allowed - int(quota.get("active_list_calls", 0)))
-    if kind == "detail":
+        lane_remaining = max(0, allowed - int(quota.get("active_list_calls", 0)))
+    elif kind == "detail":
         allowed = int(daily_budget(kind, quota) * fraction)
-        return max(0, allowed - int(quota.get("detail_calls", 0)))
-    if kind == "probe":
+        lane_remaining = max(0, allowed - int(quota.get("detail_calls", 0)))
+    elif kind == "probe":
         allowed = int(daily_budget(kind, quota) * fraction)
-        return max(0, allowed - int(quota.get("probe_calls", 0)))
-    return 10**9
+        lane_remaining = max(0, allowed - int(quota.get("probe_calls", 0)))
+    pacing_remaining = max(
+        0,
+        source_pacing_allowance(quota) - quota_source_calls(quota),
+    )
+    return min(lane_remaining, pacing_remaining)
 
 
 def quota_key(kind: str) -> str:
@@ -1284,6 +1324,8 @@ def main() -> int:
             f"detail_decision={startup_quota.get('detail_budget_decision')} "
             f"source_effective={startup_quota.get('effective_source_budget')} "
             f"source_ceiling={startup_quota.get('configured_source_budget')} "
+            f"pacing_anchor={startup_quota.get('rate_limit_pacing_anchor')} "
+            f"source_released={startup_quota.get('source_pacing_allowance')} "
             f"rate_limit_excluded_dates="
             f"{startup_quota.get('rate_limit_excluded_dates')}",
             flush=True,
