@@ -6,7 +6,7 @@
 
 ## 1. 一句话方案
 
-初始阶段先固定扫描 `lists` 20 页，只把 ID、首次来源、首次发现时间和列表元数据写入台账，并把唯一 ID 按发现顺序放入详情队列；详情再由单 lane 低速补全。20 页扫描使用持久化的 `lists_bootstrap_next_page` 游标，每成功提交一页就前移，遇到额度停止或进程重启时从下一页续扫，不重复消耗已经完成的页。基线完成后，`lists` 负责发现新帖子，`lists2` 负责观察台账 ID 是否出现新回复或其他源端更新，只有满足刷新条件的 ID 才进入详情队列；详情接口一次返回正文、评论和回复结构，队列按 `post_id` 去重，避免两个 cookie 对同一帖子重复抓取。
+初始阶段先固定扫描 `lists` 20 页，只把 ID、首次来源、首次发现时间和列表元数据写入台账，并把唯一 ID 按发现顺序放入详情队列；详情再由单 lane 低速补全。20 页扫描使用持久化的 `lists_bootstrap_next_page` 游标，每成功提交一页就前移，遇到额度停止或进程重启时从下一页续扫，不重复消耗已经完成的页。基线完成后，先在队列中记录一次 monitor cutover：切换时刻以前的普通 coverage 详情任务暂停，priority 0 的新回刷新和切换后新增 ID 仍可领取；随后先补一次 `lists`，再启动 `lists`/`lists2` 低强度监视。详情接口一次返回正文、评论和回复结构，队列按 `post_id` 去重，避免两个 cookie 对同一帖子重复抓取。
 
 这里的“旧 cookie”和“新 cookie”是两个已获授权会话的调度 lane，而不是伪造身份或绕过上游限制的机制。每个 lane 都必须独立记录请求量、错误和限流状态；某个 lane 被限流时应暂停该 lane，不能自动把它伪装成另一个身份继续冲额度。
 
@@ -142,7 +142,7 @@
 
 | 任务 | 经济模式 | 轻量监视模式 | 说明 |
 |---|---|---|---|
-| 初始 `lists` 建表 | 一次 20 页，只写 ID 台账和详情队列 | 一次 20 页，只写 ID 台账和详情队列 | 详情按发现顺序慢慢补；初始详情未完成前不启动正式监测 |
+| 初始 `lists` 建表 | 一次 20 页，只写 ID 台账和详情队列 | 一次 20 页，只写 ID 台账和详情队列 | 详情按发现顺序慢慢补；切换时暂停旧 coverage，先补一次 list1 再启动监视 |
 | 增量 `lists` | 每小时至少 1 页，按需扩到最多 5 页 | 同左 | 完整处理一页；整页已知且无新事件后停止 |
 | `lists2` 监视 | 每 30 分钟，至少 2 页、最多 5 页 | 同左 | 用事件日志和连续稳定页停止，不依据第一条详情结果停止 |
 | 详情 `info` | 持续、单队列、低并发 | 持续、单队列、低并发 | 只消费去重后的新 ID 或新列表事件 |
@@ -185,7 +185,7 @@
 
 详情请求仍由 `trickle-fill` 的独立预算和单线程间隔控制；列表请求上限只是最坏情况，不代表每天一定会用满。实际请求量要从 quota history 的 `new_list_calls`、`active_list_calls`、`detail_calls` 和 ledger 每轮收益统计中核算，不能把页数直接当成详情数。
 
-初始建表当天固定约需 20 次列表请求；随后最多约 400 个唯一 ID 各需一次详情请求，但这些请求不与建表请求绑定，可按每日详情预算和 8–14 秒间隔慢慢完成。详情未全部成功或明确标记为不可用前，正式 list1/list2 监测保持停止状态，不会用不完整的内容基线判断 `lists2` 是否有更新。
+初始建表当天固定约需 20 次列表请求；随后最多约 400 个唯一 ID 各需一次详情请求，但这些请求不与建表请求绑定，可按每日详情预算和 8–14 秒间隔慢慢完成。旧 coverage 详情未全部成功时，仍可启动 list1/list2 监测，但旧任务不会抢占详情队列；新回 priority 0 刷新和切换后新 ID 仍按原有额度与去重规则运行。
 
 旧 cookie 和新 cookie 的请求必须分别记录；上述数字是单个生产 lane 的估算，不把旧 cookie 的实验请求算进生产覆盖量。列表和详情在上游仍可能共享同一 session 额度，内部把它们分成不同预算不代表真实上游额度彼此独立。
 
@@ -198,7 +198,7 @@
 1. `storage/post_writer.py` 在 runtime schema 阶段创建/迁移 `post_id_ledger`、`list2_observation_log` 和 `ledger_state`。
 2. `crawler/service.py` 在每次 list page 后记录首次来源、页码、rank、发现顺序、源端时间和事件键；bootstrap list1 只建立台账和详情队列，list2 首次扫描建立基线，后续新事件才进入同一个 `crawler_queue`。
 3. `trickle-fill` 在详情开始、成功、部分响应、not_found、失败或 quota 阻断时回写详情时间线；队列的 `post_id` 主键继续保证两个 lane 不会同时领取同一帖子。
-4. `jobs/scheduler.py` 首次只运行一次 20 页 list1 bootstrap；初始详情队列完成后才开启 list1=3600 秒、list2=1800 秒的监测，每轮默认最少两页、最多五页，并继续使用逐请求 quota、随机低速间隔和 rate-limit 次日暂停。
+4. `jobs/scheduler.py` 首次只运行一次 20 页 list1 bootstrap；bootstrap 完成后持久化 queue-order cutover，暂停切换前的普通 coverage 任务，先安排一次 list1，再开启 list1=3600 秒、list2=1800 秒的监测。每轮默认最少两页、最多五页，并继续使用逐请求 quota、随机低速间隔和 rate-limit 次日暂停。
 5. `crawler_queue.queue_order` 保证初始和后续 coverage 任务按首次发现顺序追加；list2 更新任务进入 priority 0 车道并受 refresh limit 约束。
 6. `tests/test_id_ledger.py` 和 `tests/test_bootstrap_queue.py` 覆盖首次来源/发现顺序、稳定重放、20 页 bootstrap、list2 基线和新事件；既有 crawler、scheduler、quota 回归测试继续运行。
 
