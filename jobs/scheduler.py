@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from crawler.automatic_quota import AUTOMATIC_QUOTA_KIND_ENV
+from crawler.cookie_pool import COOKIE_KINDS, CookieLaneSpec, load_cookie_pool_specs
 from crawler.lock import database_write_lock
 from crawler.manual_quota import exclusive_control_lock
 from storage.post_writer import SQLitePostStore
@@ -22,6 +23,7 @@ from storage.post_writer import SQLitePostStore
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = os.environ.get("SQLITE_DB", "/app/data/posts.db")
 CONFIG_PATH = os.environ.get("CRAWLER_CONFIG", "/app/data/config.txt")
+COOKIE_POOL_PATH = os.environ.get("CRAWLER_COOKIE_POOL", "")
 PAUSE_PATH = Path(
     os.environ.get(
         "CRAWLER_PAUSE_FILE",
@@ -94,6 +96,23 @@ CHINA_TZ = timezone(timedelta(hours=8))
 TRICKLE_ENABLED = os.environ.get("CRAWLER_TRICKLE_ENABLED", "0") == "1"
 TRICKLE_SINCE = os.environ.get("CRAWLER_TRICKLE_SINCE", "2026-06-25 00:00:00")
 DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 30 * 60)
+NEW_DISCOVER_INTERVAL = env_int(
+    "CRAWLER_NEW_DISCOVER_INTERVAL",
+    60 * 60,
+)
+ACTIVE_DISCOVER_INTERVAL = env_int(
+    "CRAWLER_ACTIVE_DISCOVER_INTERVAL",
+    DISCOVER_INTERVAL,
+)
+BOOTSTRAP_PAGES = env_int("CRAWLER_BOOTSTRAP_PAGES", 20)
+BOOTSTRAP_SINCE = os.environ.get(
+    "CRAWLER_BOOTSTRAP_SINCE",
+    "1970-01-01 00:00:00",
+)
+BOOTSTRAP_RETRY_INTERVAL = env_int(
+    "CRAWLER_BOOTSTRAP_RETRY_INTERVAL",
+    60 * 60,
+)
 TRICKLE_INTERVAL = env_int("CRAWLER_TRICKLE_INTERVAL", 10 * 60)
 TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 12)
 TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 12), TRICKLE_LIMIT_CAP)
@@ -126,8 +145,8 @@ TRICKLE_MAX_DELAY = max(
     TRICKLE_MIN_DELAY,
     env_float("CRAWLER_TRICKLE_MAX_DELAY", 14.0),
 )
-DISCOVER_LATEST_PAGES = env_int("CRAWLER_DISCOVER_LATEST_PAGES", 60)
-DISCOVER_ACTIVE_PAGES = env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", 80)
+DISCOVER_LATEST_PAGES = env_int("CRAWLER_DISCOVER_LATEST_PAGES", 5)
+DISCOVER_ACTIVE_PAGES = env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", 5)
 GAP_ENABLED = os.environ.get("CRAWLER_GAP_ENABLED", "1" if TRICKLE_ENABLED else "0") == "1"
 GAP_SINCE = os.environ.get("CRAWLER_GAP_SINCE", TRICKLE_SINCE)
 GAP_PLAN_INTERVAL = env_int("CRAWLER_GAP_PLAN_INTERVAL", 6 * 60 * 60)
@@ -207,6 +226,42 @@ PAUSE_LOG_INTERVAL = env_int("CRAWLER_PAUSE_LOG_INTERVAL", 10 * 60)
 HEARTBEAT_INTERVAL = env_int("CRAWLER_SCHEDULER_HEARTBEAT_INTERVAL", 30)
 
 
+def cookie_pool_specs() -> tuple[CookieLaneSpec, ...]:
+    """Return lane metadata; values never contain the cookie itself."""
+    if not str(COOKIE_POOL_PATH or "").strip():
+        return ()
+    return load_cookie_pool_specs(COOKIE_POOL_PATH)
+
+
+def cookie_pool_budget(kind: str, lane_id: str = "") -> int | None:
+    specs = cookie_pool_specs()
+    if not specs:
+        return None
+    if lane_id:
+        for spec in specs:
+            if spec.lane_id == lane_id:
+                return spec.budget(kind)
+        return 0
+    return sum(spec.budget(kind) for spec in specs)
+
+
+def ensure_cookie_lane_quota(quota: dict, lane_id: str) -> dict:
+    """Create only numeric per-lane counters in the shared quota ledger."""
+    lanes = quota.setdefault("cookie_lanes", {})
+    lane = lanes.setdefault(
+        str(lane_id),
+        {f"{kind}_calls": 0 for kind in COOKIE_KINDS},
+    )
+    for kind in COOKIE_KINDS:
+        lane.setdefault(f"{kind}_calls", 0)
+    return lane
+
+
+def sync_cookie_lane_quotas(quota: dict) -> None:
+    for spec in cookie_pool_specs():
+        ensure_cookie_lane_quota(quota, spec.lane_id)
+
+
 JOBS = {
     "new": [
         "sync-latest",
@@ -248,6 +303,23 @@ JOBS = {
 }
 
 TRICKLE_JOBS = {
+    "bootstrap_new": [
+        "discover-latest",
+        "--bootstrap",
+        "--since",
+        BOOTSTRAP_SINCE,
+        "--max-pages",
+        str(BOOTSTRAP_PAGES),
+        "--min-pages",
+        str(BOOTSTRAP_PAGES),
+        "--no-action-page-threshold",
+        "0",
+        "--no-write-stubs",
+        "--min-delay",
+        "0.1",
+        "--max-delay",
+        "0.3",
+    ],
     "discover_new": [
         "discover-latest",
         "--since",
@@ -255,9 +327,9 @@ TRICKLE_JOBS = {
         "--max-pages",
         str(DISCOVER_LATEST_PAGES),
         "--min-pages",
-        "5",
+        "2",
         "--no-action-page-threshold",
-        "5",
+        "2",
         "--min-delay",
         "0.1",
         "--max-delay",
@@ -270,9 +342,9 @@ TRICKLE_JOBS = {
         "--max-pages",
         str(DISCOVER_ACTIVE_PAGES),
         "--min-pages",
-        "5",
+        "2",
         "--no-action-page-threshold",
-        "3",
+        "2",
         "--min-delay",
         "0.1",
         "--max-delay",
@@ -337,6 +409,7 @@ class JobResult:
 
 
 OVERDUE_JOB_PRIORITY = {
+    "bootstrap_new": 0,
     "trickle_fill": 0,
     "discover_active": 1,
     "discover_new": 2,
@@ -513,6 +586,15 @@ def quota_source_calls(quota: dict) -> int:
 
 
 def configured_source_budget() -> int:
+    pool_total = sum(
+        value or 0
+        for value in (
+            cookie_pool_budget(kind)
+            for kind in COOKIE_KINDS
+        )
+    )
+    if cookie_pool_specs():
+        return pool_total
     return (
         DAILY_NEW_LIST_BUDGET + DAILY_ACTIVE_LIST_BUDGET + DAILY_DETAIL_BUDGET + DAILY_PROBE_BUDGET
     )
@@ -625,6 +707,16 @@ def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
             )
             or 0
         ),
+        "cookie_lanes": {
+            str(lane_id): {
+                f"{kind}_calls": int(
+                    lane.get(f"{kind}_calls", 0) or 0
+                )
+                for kind in COOKIE_KINDS
+            }
+            for lane_id, lane in (quota.get("cookie_lanes") or {}).items()
+            if isinstance(lane, dict)
+        },
     }
     with QUOTA_HISTORY_PATH.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -681,13 +773,24 @@ def adaptive_scale() -> float:
     return 1.0
 
 
-def daily_budget(kind: str, quota: dict | None = None) -> int:
-    base = {
-        "new_list": DAILY_NEW_LIST_BUDGET,
-        "active_list": DAILY_ACTIVE_LIST_BUDGET,
-        "detail": detail_budget_target(quota),
-        "probe": DAILY_PROBE_BUDGET,
-    }[kind]
+def daily_budget(
+    kind: str,
+    quota: dict | None = None,
+    *,
+    lane_id: str = "",
+) -> int:
+    pool_budget = cookie_pool_budget(kind, lane_id=lane_id)
+    if pool_budget is not None:
+        # Pool budgets are explicit per-session ceilings.  Do not apply the
+        # single-session adaptive detail target to them a second time.
+        base = pool_budget
+    else:
+        base = {
+            "new_list": DAILY_NEW_LIST_BUDGET,
+            "active_list": DAILY_ACTIVE_LIST_BUDGET,
+            "detail": detail_budget_target(quota),
+            "probe": DAILY_PROBE_BUDGET,
+        }[kind]
     if base <= 0:
         return 0
     return max(1, int(base * adaptive_scale()))
@@ -876,6 +979,7 @@ def load_quota() -> dict:
             "rate_limited": 0,
             "admin_preview_calls": 0,
             "admin_detail_calls": 0,
+            "cookie_lanes": {},
             "detail_budget_target": detail_target,
             "detail_budget_decision": detail_decision,
             "updated_at": beijing_now().isoformat(),
@@ -891,6 +995,10 @@ def load_quota() -> dict:
     else:
         quota["detail_budget_target"] = detail_budget_target(quota)
         quota.setdefault("detail_budget_decision", "carried")
+    before_lanes = json.dumps(quota.get("cookie_lanes", {}), sort_keys=True)
+    sync_cookie_lane_quotas(quota)
+    if json.dumps(quota.get("cookie_lanes", {}), sort_keys=True) != before_lanes:
+        save_quota(quota)
     if "list_calls" in quota:
         # Older quota files only had a combined list counter. Keep the value
         # visible but do not split it retroactively; the new per-source counters
@@ -980,6 +1088,115 @@ def refresh_runtime_state() -> dict:
     return quota
 
 
+def bootstrap_is_complete() -> bool:
+    """Check the durable 20-page list1 baseline without source I/O."""
+    try:
+        with database_write_lock(DB_PATH):
+            with SQLitePostStore(DB_PATH) as store:
+                store.ensure_runtime_schema()
+                row = store.conn.execute(
+                    "select value from ledger_state where key=?",
+                    ("lists_bootstrap_complete",),
+                ).fetchone()
+                return bool(
+                    row
+                    and str(row[0] or "")
+                    in {"1", "true", '"1"', '"true"'}
+                )
+    except Exception as exc:
+        print(
+            f"[scheduler] bootstrap state check failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+
+
+def bootstrap_details_are_complete() -> bool:
+    """Return whether every ID from the bootstrap queue reached a terminal state."""
+    try:
+        with database_write_lock(DB_PATH):
+            with SQLitePostStore(DB_PATH) as store:
+                store.ensure_runtime_schema()
+                total = int(
+                    store.conn.execute(
+                        """
+                        select count(*) from post_id_ledger
+                        where bootstrap_run_id!=''
+                        """
+                    ).fetchone()[0]
+                    or 0
+                )
+                if total <= 0:
+                    return False
+                incomplete = int(
+                    store.conn.execute(
+                        """
+                        select count(*)
+                        from post_id_ledger l
+                        left join crawler_queue q on q.post_id=l.post_id
+                        where l.bootstrap_run_id!=''
+                          and not (
+                              (
+                                  l.detail_status='succeeded'
+                                  and coalesce(q.status,'') in ('done','deferred')
+                              )
+                              or (
+                                  l.detail_status='not_found'
+                                  and coalesce(q.status,'')='skipped'
+                              )
+                              or coalesce(q.status,'') in
+                                  ('failed','skipped','deferred')
+                          )
+                        """
+                    ).fetchone()[0]
+                    or 0
+                )
+                return incomplete == 0
+    except Exception as exc:
+        print(
+            f"[scheduler] bootstrap detail state check failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+
+
+def enable_monitor_jobs(
+    next_run: dict[str, float],
+    intervals: dict[str, float],
+    now: float,
+) -> None:
+    """Add regular list monitoring exactly once after the bootstrap detail pass."""
+    if "discover_new" in next_run:
+        return
+    next_run.update(
+        {
+            "discover_new": now + 3 * 60,
+            "discover_active": now + 8 * 60,
+        }
+    )
+    intervals.update(
+        {
+            "discover_new": NEW_DISCOVER_INTERVAL,
+            "discover_active": ACTIVE_DISCOVER_INTERVAL,
+        }
+    )
+    if GAP_ENABLED:
+        next_run.update(
+            {
+                "plan_gaps": now + 10 * 60,
+                "probe_gaps": now + 20 * 60,
+            }
+        )
+        intervals.update(
+            {
+                "plan_gaps": GAP_PLAN_INTERVAL,
+                "probe_gaps": GAP_PROBE_INTERVAL,
+            }
+        )
+
+
 @contextmanager
 def running_heartbeat(job: str):
     """Keep liveness fresh while a long crawler subprocess is running."""
@@ -1034,7 +1251,7 @@ def replace_arg(args: list[str], flag: str, value: int) -> list[str]:
 
 
 def job_budget_kind(name: str) -> str:
-    if name == "discover_new":
+    if name in {"bootstrap_new", "discover_new"}:
         return "new_list"
     if name == "discover_active":
         return "active_list"
@@ -1046,7 +1263,7 @@ def job_budget_kind(name: str) -> str:
 
 
 def planned_job_calls(name: str, args: list[str]) -> int:
-    if name in {"discover_new", "discover_active"}:
+    if name in {"bootstrap_new", "discover_new", "discover_active"}:
         return int(args[args.index("--max-pages") + 1])
     if name == "trickle_fill":
         return int(args[args.index("--limit") + 1])
@@ -1057,7 +1274,12 @@ def planned_job_calls(name: str, args: list[str]) -> int:
     return 0
 
 
-def remaining_budget(kind: str, quota: dict) -> int:
+def remaining_budget(
+    kind: str,
+    quota: dict,
+    *,
+    lane_id: str = "",
+) -> int:
     fraction = (
         detail_quota_release_fraction()
         if kind == "detail"
@@ -1065,19 +1287,14 @@ def remaining_budget(kind: str, quota: dict) -> int:
     )
     if fraction <= 0:
         return 0
-    lane_remaining = 10**9
-    if kind == "new_list":
-        allowed = int(daily_budget(kind, quota) * fraction)
-        lane_remaining = max(0, allowed - int(quota.get("new_list_calls", 0)))
-    elif kind == "active_list":
-        allowed = int(daily_budget(kind, quota) * fraction)
-        lane_remaining = max(0, allowed - int(quota.get("active_list_calls", 0)))
-    elif kind == "detail":
-        allowed = int(daily_budget(kind, quota) * fraction)
-        lane_remaining = max(0, allowed - int(quota.get("detail_calls", 0)))
-    elif kind == "probe":
-        allowed = int(daily_budget(kind, quota) * fraction)
-        lane_remaining = max(0, allowed - int(quota.get("probe_calls", 0)))
+    key = quota_key(kind)
+    if lane_id:
+        lane = ensure_cookie_lane_quota(quota, lane_id)
+        used = int(lane.get(key, 0) or 0)
+    else:
+        used = int(quota.get(key, 0) or 0)
+    allowed = int(daily_budget(kind, quota, lane_id=lane_id) * fraction)
+    lane_remaining = max(0, allowed - used)
     pacing_remaining = max(
         0,
         source_pacing_allowance(quota) - quota_source_calls(quota),
@@ -1117,6 +1334,7 @@ def record_failed_crawler_run(
     db_path: str | Path | None = None,
 ) -> None:
     command = {
+        "bootstrap_new": "discover-latest",
         "discover_new": "discover-latest",
         "discover_active": "discover-active",
         "trickle_fill": "trickle-fill",
@@ -1177,7 +1395,7 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
                 max(1, min(int(args[args.index("--limit") + 1]), remaining)),
             )
         elif name == "probe_gaps":
-            if DAILY_PROBE_BUDGET <= 0:
+            if daily_budget("probe", quota) <= 0:
                 return None, "probe_budget_disabled"
             range_limit = max(
                 1,
@@ -1231,11 +1449,15 @@ def run_job(name: str) -> JobResult:
         "--config",
         CONFIG_PATH,
     ]
+    if str(COOKIE_POOL_PATH or "").strip():
+        command.extend(["--cookie-pool", COOKIE_POOL_PATH])
     child_env = os.environ.copy()
     child_env["SQLITE_DB"] = DB_PATH
     child_env["CRAWLER_QUOTA_FILE"] = str(QUOTA_PATH)
     child_env["CRAWLER_QUOTA_HISTORY_FILE"] = str(QUOTA_HISTORY_PATH)
     child_env["CRAWLER_PAUSE_FILE"] = str(PAUSE_PATH)
+    if str(COOKIE_POOL_PATH or "").strip():
+        child_env["CRAWLER_COOKIE_POOL"] = COOKIE_POOL_PATH
     kind = job_budget_kind(name)
     if kind:
         child_env[AUTOMATIC_QUOTA_KIND_ENV] = kind
@@ -1309,6 +1531,10 @@ def main() -> int:
         raise FileNotFoundError(DB_PATH)
     if not Path(CONFIG_PATH).exists():
         raise FileNotFoundError(CONFIG_PATH)
+    if str(COOKIE_POOL_PATH or "").strip():
+        for spec in cookie_pool_specs():
+            if not spec.config_path.exists():
+                raise FileNotFoundError(spec.config_path)
 
     try:
         startup_quota = refresh_runtime_state()
@@ -1334,32 +1560,28 @@ def main() -> int:
 
     now = time.monotonic()
     if TRICKLE_ENABLED:
+        bootstrap_pending = not bootstrap_is_complete()
+        bootstrap_detail_ready = (
+            not bootstrap_pending and bootstrap_details_are_complete()
+        )
         next_run = {
-            "trickle_fill": now + 60,
-            "discover_active": now + 3 * 60,
-            "discover_new": now + 5 * 60,
+            "trickle_fill": now + 90,
         }
         intervals = {
-            "discover_new": DISCOVER_INTERVAL,
-            "discover_active": DISCOVER_INTERVAL,
             "trickle_fill": TRICKLE_INTERVAL,
         }
-        if GAP_ENABLED:
-            next_run.update(
-                {
-                    "plan_gaps": now + 10 * 60,
-                    "probe_gaps": now + 20 * 60,
-                }
-            )
-            intervals.update(
-                {
-                    "plan_gaps": GAP_PLAN_INTERVAL,
-                    "probe_gaps": GAP_PROBE_INTERVAL,
-                }
-            )
+        if bootstrap_pending:
+            next_run["bootstrap_new"] = now + 60
+            intervals["bootstrap_new"] = BOOTSTRAP_RETRY_INTERVAL
+        elif bootstrap_detail_ready:
+            enable_monitor_jobs(next_run, intervals, now)
         print(
             "[scheduler] trickle enabled "
-            f"since={TRICKLE_SINCE!r} discover={DISCOVER_INTERVAL}s "
+            f"bootstrap={'pending' if bootstrap_pending else 'complete'} "
+            f"bootstrap_details={'ready' if bootstrap_detail_ready else 'pending'} "
+            f"bootstrap_pages={BOOTSTRAP_PAGES} "
+            f"since={TRICKLE_SINCE!r} list1={NEW_DISCOVER_INTERVAL}s "
+            f"list2={ACTIVE_DISCOVER_INTERVAL}s "
             f"trickle={TRICKLE_INTERVAL}s limit={TRICKLE_LIMIT} "
             f"refresh_limit={TRICKLE_REFRESH_LIMIT} "
             f"fresh_hours={TRICKLE_FRESH_COVERAGE_HOURS} "
@@ -1393,6 +1615,13 @@ def main() -> int:
     save_heartbeat(state="started")
     while True:
         now = time.monotonic()
+        if (
+            TRICKLE_ENABLED
+            and "discover_new" not in next_run
+            and bootstrap_is_complete()
+            and bootstrap_details_are_complete()
+        ):
+            enable_monitor_jobs(next_run, intervals, now)
         due = select_next_job(next_run, now)
         pause = active_pause()
         if pause:
@@ -1440,6 +1669,20 @@ def main() -> int:
                 )
             if due == "phase1" and result.succeeded:
                 PHASE1_MARKER.touch()
+            if (
+                due == "bootstrap_new"
+                and result.succeeded
+                and bootstrap_is_complete()
+            ):
+                next_run.pop(due, None)
+                intervals.pop(due, None)
+                save_heartbeat(
+                    state="idle",
+                    job=due,
+                    detail="bootstrap_complete",
+                )
+                last_heartbeat = time.monotonic()
+                continue
         except Exception as exc:
             print(
                 f"[scheduler] job error name={due} type={type(exc).__name__} detail={exc}",

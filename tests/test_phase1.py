@@ -160,7 +160,7 @@ class Phase1Test(unittest.TestCase):
         self.assertEqual(state["filtered"], 1)
         self.assertEqual(state["saved_filtered"], 1)
 
-    def test_suspicious_range_payload_keeps_id_without_overwriting_post(self) -> None:
+    def test_suspicious_range_payload_saves_partial_post_and_keeps_id_pending(self) -> None:
         def fake_api_get(_session, _path, params=None):
             return {
                 "community_id": "4",
@@ -185,7 +185,7 @@ class Phase1Test(unittest.TestCase):
 
         with SQLitePostStore(self.db_path) as store:
             post = store.conn.execute(
-                "select 1 from posts where id='900'"
+                "select content,crawl_status from posts where id='900'"
             ).fetchone()
             queue = store.conn.execute(
                 """
@@ -198,7 +198,13 @@ class Phase1Test(unittest.TestCase):
                     "select value from crawl_state where key='crawler_db_phase1_900_900'"
                 ).fetchone()[0]
             )
-        self.assertIsNone(post)
+        self.assertEqual(
+            dict(post),
+            {
+                "content": "partial body",
+                "crawl_status": "partial",
+            },
+        )
         self.assertEqual(
             dict(queue),
             {
@@ -208,6 +214,7 @@ class Phase1Test(unittest.TestCase):
             },
         )
         self.assertEqual(state["suspicious"], 1)
+        self.assertEqual(state["partial_saved"], 1)
 
 
 if __name__ == "__main__":

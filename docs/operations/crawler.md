@@ -10,15 +10,18 @@
 
 ```text
 lists / lists2
-  -> discover-latest / discover-active
-  -> posts(list_only) + crawler_queue
+  -> bootstrap 20 pages / discover-latest / discover-active
+  -> post_id_ledger + crawler_queue
+  -> posts(list_only) (only when normal discovery is configured to write stubs)
   -> trickle-fill
   -> posts(full) + comments + search indexes
 ```
 
 - `discover-latest` 扫新帖流，只发现候选，不在列表循环中拉详情。
 - `discover-active` 扫活跃/新回复流，只在本地缺详情或列表评论数大于数据库评论数时入队。
+- 首次线上启动先运行 `bootstrap_new`：固定扫 `lists` 20 页，只写 `post_id_ledger` 和去重详情队列，不写正文 stub；初始详情队列完成或明确不可用后才开启两个增量监视任务。
 - `trickle-fill` 按优先级小批量补详情，一次详情请求返回正文和完整评论/回复结构。
+- 每次 list page 还会写入 `post_id_ledger`；`lists2` 的事件键写入 `list2_observation_log`，首次基线不批量触发详情，后续新事件才进入同一个 `crawler_queue`。
 - `plan-gaps` 只规划低密度 ID 区间；未指定结束 ID 时会用一次 `lists?page=1` 探测最新 ID。
 - `probe-gaps` 用详情接口低频抽样缺口，命中真实帖子后只记录并入队；默认每日预算为 0。
 
@@ -32,7 +35,20 @@ Cookie 存放在 `data/config.txt`，爬虫只读取 `ys7_ysxy_session`：
 ys7_ysxy_session=你的cookie
 ```
 
-抓包只能用于取得本人当前登录会话中的 cookie，不得截获他人流量、收集他人 cookie 或把 cookie 提交到仓库。认证失败、限流或平台要求停止时必须停止任务，不得通过更换账号、代理或提高并发规避限制。
+抓包只能用于取得本人当前登录会话中的 cookie，不得截获他人流量、收集他人 cookie 或把 cookie 提交到仓库。认证失败、限流或平台要求停止时必须停止任务，不得为了规避限制临时更换账号、使用代理或提高并发。
+
+如果确实有多个固定、本人有权使用的会话，可以使用 cookie 池；池文件只保存“配置文件路径”和每个 lane 的每日硬上限，不保存 cookie 值。示例见 `data/cookie_pool.example.json`：
+
+```powershell
+Copy-Item data\cookie_pool.example.json data\cookie_pool.json
+python crawler_db.py trickle-fill --cookie-pool data\cookie_pool.json --limit 5 --min-delay 8 --max-delay 14
+```
+
+`daily_budgets` 的键是 `new_list`、`active_list`、`detail`、`probe`。当前示例把新 cookie lane 配置为 `detail: 500`、旧 cookie lane 配置为 `detail: 500`，详情任务会在一个共享队列中按剩余 lane 配额路由；不是启动两个 crawler，也不是并发请求。池模式下这些 lane 的显式上限优先于单 cookie 的全局默认值，quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。`source_quota_*` 只表示该 lane 的本地配额或释放窗口已到上限，路由器可以选择另一个仍有预算的 lane；真实 `rate_limited:*` 或 `cookie_expired` 仍会触发现有停止/暂停语义，不用切换身份掩盖上游限制。
+
+池模式也会把兼容的 `scan-id-range` 强制为单 worker；如果需要日常自动调度，应使用上面的 `trickle` 主线，避免旧的并发扫描路径绕开这套逐请求配额。
+
+生产环境将池文件和各个 `config*.txt` 放在 Railway Volume 的 `/app/data/` 下，再设置 `CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json`。池文件、cookie 配置和 quota 文件都不能提交 Git、写入日志或上传到公共服务。
 
 ## 源 API 与请求成本
 
@@ -67,7 +83,7 @@ python crawler_db.py trickle-fill --db-path data\posts.db --limit 5 --min-delay 
 
 - 新发现帖子先以 `posts.crawl_status='list_only'` 写入，正文来自列表快照，评论尚未补全。
 - 详情成功后帖子更新为 `crawl_status='full'`，同时刷新 `comments`、SQLite FTS 和旁路索引。
-- `crawler_queue` 保存详情候选、优先级、原因、状态、尝试次数和最后错误。
+- `crawler_queue` 保存详情候选、优先级、原因、状态、尝试次数、最后错误以及 `in_progress` 认领的 owner/lane/租约；租约过期会在下一轮恢复为 pending。
 - `crawler_gap_ranges` 保存低密度 ID 区间。
 - `crawler_id_probe` 保存缺口抽样结果，避免重复探测相同 ID。
 - `crawl_state` 保存各命令最近一次统计。
@@ -85,12 +101,13 @@ python crawler_db.py trickle-fill --db-path data\posts.db --limit 5 --min-delay 
 | 40 | `lists` 中缺失但零评论的新帖 | 只有正文收益 |
 | 50 | `lists2` 中缺失但零评论的活跃帖 | 最低常规优先级 |
 
-同一优先级内再按评论增量、列表更新时间、评论数和入队时间排序。`lists2` 更新时间变化但评论数没有增加时不进入详情队列。
+priority 大于 0 的 coverage 任务还按 `crawler_queue.queue_order` 升序处理；初始 20 页按 list1 返回顺序进入队列，后续 list1/list2 新 ID 追加到队尾。`lists2` 已知 ID 的新事件进入 priority 0 刷新车道，并受 `CRAWLER_TRICKLE_REFRESH_LIMIT` 限制，所以不会长期饿死初始 coverage 队列。仅更新时间变化且事件键已消费、评论数没有增加时不重复进入详情队列。
 
 ## 列表停止条件
 
 `discover-latest`：
 
+- bootstrap 模式固定完成 `--min-pages=--max-pages=20`；不使用连续无收益页提前停止，也不写 list stub。
 - 至少扫描 `--min-pages` 后，连续 `--no-action-page-threshold` 页没有可入队候选即可停止。
 - 连续多页都早于 `--since` 时停止。
 - 页面 ID 签名重复时停止。
@@ -138,7 +155,13 @@ CRAWLER_DETAIL_ADAPTIVE_START=900
 CRAWLER_DETAIL_ADAPTIVE_STEP=100
 CRAWLER_DETAIL_ADAPTIVE_UTILIZATION=0.95
 CRAWLER_DETAIL_ADAPTIVE_SCHEDULE_UTILIZATION=0.98
+# 可选：固定 cookie 池；不设置时继续使用单一 CRAWLER_CONFIG/config.txt
+CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json
+CRAWLER_BOOTSTRAP_PAGES=20
+CRAWLER_BOOTSTRAP_SINCE=1970-01-01 00:00:00
 ```
+
+设置 `CRAWLER_COOKIE_POOL` 后，`CRAWLER_DAILY_*` 的单会话默认预算不再替代池文件中的 lane 预算；scheduler 会按所有 lane 预算的合计裁剪本轮 `limit/max-pages`，子进程再在每一次真实请求前原子扣减对应 lane。详情仍保持单请求、串行和 8–14 秒间隔，队列不会因为增加 lane 而复制同一帖子。
 
 当前积压加速配置把详情目标范围设为 900–1000，从 900 起步；旧目标低于 900 时会立即抬到 900，在安全满载或时间窗满载且无限流时，次日再增加 100 到 1000。新帖列表 80、活跃列表 160、缺口探测 0，因此自动源请求配置上限为 1240。详情使用独立的提前释放曲线：10:00 释放 20%、12:00 释放 40%、15:00 释放 65%、18:00 释放 82%、20:00 释放 93%、21:00 全量释放；按 10 分钟一轮、每轮最多 12 次计算，1000 次详情在午夜前可达。列表仍使用 11:00 才开始的保守公共释放曲线。
 
@@ -165,11 +188,16 @@ scheduler 只用剩余额度裁剪子任务的 `max-pages` 或 `limit`，不再�
 默认调度间隔：
 
 ```text
-CRAWLER_DISCOVER_INTERVAL=1800
+CRAWLER_NEW_DISCOVER_INTERVAL=3600
+CRAWLER_ACTIVE_DISCOVER_INTERVAL=1800
+CRAWLER_DISCOVER_LATEST_PAGES=5
+CRAWLER_DISCOVER_ACTIVE_PAGES=5
 CRAWLER_TRICKLE_INTERVAL=600
 CRAWLER_GAP_PLAN_INTERVAL=21600
 CRAWLER_GAP_PROBE_INTERVAL=7200
 ```
+
+首次启动先固定扫 20 页 list1，随后 `trickle-fill` 按 `queue_order` 串行补详情；初始行全部完成或明确不可用后，才开启正式监视。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每半小时一次；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，新的两个变量优先级更高。
 
 `probe-gaps` 即使被调度，也会在每日 probe budget 为 0 时跳过。不要通过手动 SSH 大跑绕过这一保护。
 
@@ -192,6 +220,8 @@ CRAWLER_GAP_PROBE_INTERVAL=7200
 /app/data/.admin_crawl.db
 /app/data/.crawler_scheduler_heartbeat.json
 ```
+
+启用 cookie 池时，`.crawler_quota.json` 还会有 `cookie_lanes` 数字计数，例如每个 lane 的 `detail_calls`；不会写入 cookie 内容。
 
 数据库写锁使用带 token、容器主机名和心跳的 90 秒租约；新旧 Railway 容器重叠时，新容器不会仅因为看不到旧容器 PID 就删除活锁。scheduler 还由 `start.sh` 监督，意外退出后 30 秒重启；管理员状态接口会返回 scheduler heartbeat 和终态队列中仍未补的评论差值。
 

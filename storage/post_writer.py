@@ -10,11 +10,13 @@ import json
 import os
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
 from app.domain.search import bigram_tokens, symbol_tokens
+from crawler.id_ledger import ensure_ledger_schema
 
 
 def safe_int(value, default=0) -> int:
@@ -84,6 +86,7 @@ def comment_row(
     updated_at: str,
     row_key: str,
 ) -> dict:
+    replies = item.get("reply_comment_list") or []
     return {
         "row_key": row_key,
         "comment_id": comment_id,
@@ -98,6 +101,20 @@ def comment_row(
         "reply_show_user_id": str(item.get("reply_show_user_id") or ""),
         "is_publisher": safe_int(item.get("is_publisher")),
         "create_time": comment_time(item),
+        # Older production-shaped databases still require this legacy JSON
+        # column.  The slim schema simply ignores it because it is not in
+        # ``_comment_columns``; keeping the value here makes both schemas
+        # writable without changing the normalized parent/child rows.
+        "reply_comment_list": (
+            json.dumps(
+                {"reply_comment_list": replies},
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+            if replies
+            else "{}"
+        ),
         "updated_at": updated_at,
     }
 
@@ -229,6 +246,10 @@ class SQLitePostStore:
                 crawl_status text not null default 'full',
                 list_update_time text not null default '',
                 list_source text not null default '',
+                source_state text not null default 'available',
+                source_state_changed_at text not null default '',
+                source_state_reason text not null default '',
+                source_observed_at text not null default '',
                 updated_at text not null
             );
 
@@ -257,6 +278,7 @@ class SQLitePostStore:
 
             create table if not exists crawler_queue (
                 post_id text primary key,
+                queue_order integer not null default 0,
                 source text not null,
                 priority integer not null,
                 list_create_time text not null,
@@ -272,6 +294,12 @@ class SQLitePostStore:
                 last_detail_comment_count integer,
                 same_observation_attempts integer not null default 0,
                 next_attempt_at text not null default '',
+                claim_owner text not null default '',
+                claim_lane_id text not null default '',
+                claim_token text not null default '',
+                claim_started_at text not null default '',
+                claim_until text not null default '',
+                last_lane_id text not null default '',
                 created_at text not null,
                 updated_at text not null
             );
@@ -382,6 +410,20 @@ class SQLitePostStore:
                 "list_update_time": "alter table posts add column list_update_time text not null default ''",
                 "list_source": "alter table posts add column list_source text not null default ''",
                 "media_json": "alter table posts add column media_json text not null default '{}'",
+                "source_state": (
+                    "alter table posts add column source_state text not null "
+                    "default 'available'"
+                ),
+                "source_state_changed_at": (
+                    "alter table posts add column source_state_changed_at text not null "
+                    "default ''"
+                ),
+                "source_state_reason": (
+                    "alter table posts add column source_state_reason text not null default ''"
+                ),
+                "source_observed_at": (
+                    "alter table posts add column source_observed_at text not null default ''"
+                ),
             }.items():
                 if name not in columns:
                     self.conn.execute(ddl)
@@ -395,11 +437,16 @@ class SQLitePostStore:
                     "alter table comments add column media_json text not null default '{}'"
                 )
         self.ensure_crawler_queue(commit=False)
+        ensure_ledger_schema(self.conn)
         self.ensure_gap_tables(commit=False)
         self.ensure_crawler_run_history(commit=False)
         self.ensure_crawler_quarantine(commit=False)
+        deleted_post_migration = self.migrate_crawler_not_found_posts(commit=False)
         observation_migration = self.migrate_crawler_queue_observations(commit=False)
         terminal_migration = self.migrate_crawler_queue_terminal_states(commit=False)
+        partial_payload_migration = (
+            self.migrate_crawler_partial_payload_retries(commit=False)
+        )
         comment_gap_migration = self.migrate_crawler_comment_row_gaps(commit=False)
         comment_gap_priority_migration = (
             self.migrate_crawler_comment_row_gap_priorities(commit=False)
@@ -407,6 +454,11 @@ class SQLitePostStore:
         invalid_zero_post_migration = self.migrate_invalid_zero_post(commit=False)
         empty_content_migration = self.migrate_empty_content_audit(commit=False)
         self.conn.commit()
+        if deleted_post_migration:
+            print(
+                f"[posts] migrated unavailable posts {deleted_post_migration}",
+                flush=True,
+            )
         if observation_migration:
             print(
                 f"[queue] migrated observation state {observation_migration}",
@@ -415,6 +467,12 @@ class SQLitePostStore:
         if terminal_migration:
             print(
                 f"[queue] migrated terminal state {terminal_migration}",
+                flush=True,
+            )
+        if partial_payload_migration:
+            print(
+                "[queue] requeued partial payloads "
+                f"{partial_payload_migration}",
                 flush=True,
             )
         if comment_gap_migration:
@@ -465,6 +523,12 @@ class SQLitePostStore:
                 last_detail_comment_count integer,
                 same_observation_attempts integer not null default 0,
                 next_attempt_at text not null default '',
+                claim_owner text not null default '',
+                claim_lane_id text not null default '',
+                claim_token text not null default '',
+                claim_started_at text not null default '',
+                claim_until text not null default '',
+                last_lane_id text not null default '',
                 created_at text not null,
                 updated_at text not null
             )
@@ -472,6 +536,10 @@ class SQLitePostStore:
         )
         columns = self._columns("crawler_queue")
         for name, ddl in {
+            "queue_order": (
+                "alter table crawler_queue "
+                "add column queue_order integer not null default 0"
+            ),
             "last_attempt_list_comment_count": (
                 "alter table crawler_queue "
                 "add column last_attempt_list_comment_count integer"
@@ -491,9 +559,49 @@ class SQLitePostStore:
                 "alter table crawler_queue "
                 "add column next_attempt_at text not null default ''"
             ),
+            "claim_owner": (
+                "alter table crawler_queue "
+                "add column claim_owner text not null default ''"
+            ),
+            "claim_lane_id": (
+                "alter table crawler_queue "
+                "add column claim_lane_id text not null default ''"
+            ),
+            "claim_token": (
+                "alter table crawler_queue "
+                "add column claim_token text not null default ''"
+            ),
+            "claim_started_at": (
+                "alter table crawler_queue "
+                "add column claim_started_at text not null default ''"
+            ),
+            "claim_until": (
+                "alter table crawler_queue "
+                "add column claim_until text not null default ''"
+            ),
+            "last_lane_id": (
+                "alter table crawler_queue "
+                "add column last_lane_id text not null default ''"
+            ),
         }.items():
             if name not in columns:
                 self.conn.execute(ddl)
+        missing_order = self.conn.execute(
+            "select post_id from crawler_queue where queue_order<=0 "
+            "order by created_at asc, rowid asc"
+        ).fetchall()
+        if missing_order:
+            next_order = safe_int(
+                self.conn.execute(
+                    "select coalesce(max(queue_order), 0) from crawler_queue"
+                ).fetchone()[0]
+            )
+            for row in missing_order:
+                next_order += 1
+                self.conn.execute(
+                    "update crawler_queue set queue_order=? where post_id=?",
+                    (next_order, str(row[0])),
+                )
         self.conn.execute(
             "create index if not exists idx_crawler_queue_status_priority "
             "on crawler_queue(status, priority, updated_at)"
@@ -502,8 +610,181 @@ class SQLitePostStore:
             "create index if not exists idx_crawler_queue_due "
             "on crawler_queue(status, next_attempt_at, priority)"
         )
+        self.conn.execute(
+            "create index if not exists idx_crawler_queue_order "
+            "on crawler_queue(status, priority, queue_order)"
+        )
+        self.conn.execute(
+            "create index if not exists idx_crawler_queue_claim_until "
+            "on crawler_queue(status, claim_until)"
+        )
         if commit:
             self.conn.commit()
+
+    def migrate_crawler_not_found_posts(self, commit: bool = True) -> dict:
+        """Materialize previously observed missing posts and hide them publicly."""
+        if not self._table_exists("posts") or not self._table_exists("crawler_queue"):
+            return {}
+        post_columns = self._columns("posts")
+        if "source_state" not in post_columns:
+            return {}
+        self.conn.execute(
+            """
+            create table if not exists crawl_state (
+                key text primary key,
+                value text not null,
+                updated_at text not null
+            )
+            """
+        )
+        migration_key = "crawler_not_found_posts_v1"
+        if self.conn.execute(
+            "select 1 from crawl_state where key=?",
+            (migration_key,),
+        ).fetchone():
+            return {}
+
+        inserted = self.conn.execute(
+            """
+            insert into posts(
+                id,content,media_json,category_name,user_name,
+                show_user_id,real_user_id,create_time,
+                comment_count,star_count,trace_count,crawl_status,
+                list_update_time,list_source,source_state,
+                source_state_changed_at,source_state_reason,
+                source_observed_at,updated_at
+            )
+            select q.post_id,'','{}','','','','0',q.list_create_time,
+                   q.list_comment_count,0,0,'list_only',
+                   q.list_update_time,q.source,'deleted_or_unavailable',
+                   q.updated_at,'not_found',q.updated_at,q.updated_at
+            from crawler_queue q
+            left join posts p on p.id=q.post_id
+            where p.id is null
+              and q.status='skipped'
+              and q.last_error='not_found'
+              and (q.source like '%lists%' or q.source like '%lists2%')
+            """
+        ).rowcount
+        updated = self.conn.execute(
+            """
+            update posts
+            set source_state='deleted_or_unavailable',
+                source_state_changed_at=case
+                    when source_state='deleted_or_unavailable'
+                    then source_state_changed_at
+                    else coalesce((
+                        select q.updated_at from crawler_queue q
+                        where q.post_id=posts.id
+                    ), updated_at)
+                end,
+                source_state_reason='not_found',
+                source_observed_at=coalesce((
+                    select q.updated_at from crawler_queue q
+                    where q.post_id=posts.id
+                ), source_observed_at),
+                comment_count=case
+                    when exists(
+                        select 1 from crawler_queue q
+                        where q.post_id=posts.id
+                          and (q.source like '%lists%' or q.source like '%lists2%')
+                    ) then (
+                        select q.list_comment_count from crawler_queue q
+                        where q.post_id=posts.id
+                    )
+                    else comment_count
+                end
+            where exists(
+                select 1 from crawler_queue q
+                where q.post_id=posts.id
+                  and q.status='skipped'
+                  and q.last_error='not_found'
+            )
+            """
+        ).rowcount
+        now = now_text()
+        self.conn.execute(
+            "insert into crawl_state(key,value,updated_at) values (?,?,?)",
+            (migration_key, "1", now),
+        )
+        if commit:
+            self.conn.commit()
+        result = {
+            "inserted_tombstones": max(0, int(inserted or 0)),
+            "marked_unavailable": max(0, int(updated or 0)),
+        }
+        return result if any(result.values()) else {}
+
+    def mark_post_source_unavailable(
+        self,
+        post_id: str,
+        reason: str = "not_found",
+        *,
+        commit: bool = True,
+    ) -> bool:
+        """Mark a known or list-observed post unavailable without deleting its archive."""
+        post_id = str(post_id or "")
+        if not post_id:
+            return False
+        if "source_state" not in self._post_columns:
+            self.ensure_runtime_schema()
+        queue = self.conn.execute(
+            """
+            select source,list_create_time,list_update_time,list_comment_count
+            from crawler_queue where post_id=?
+            """,
+            (post_id,),
+        ).fetchone()
+        existing = self.conn.execute(
+            "select 1 from posts where id=?",
+            (post_id,),
+        ).fetchone()
+        observed_in_list = bool(
+            queue
+            and (
+                "lists" in str(queue["source"] or "").split(",")
+                or "lists2" in str(queue["source"] or "").split(",")
+            )
+        )
+        if existing is None and not observed_in_list:
+            return False
+        if existing is None:
+            self.upsert_list_stub(
+                {
+                    "id": post_id,
+                    "create_time": str(queue["list_create_time"] or ""),
+                    "update_time": str(queue["list_update_time"] or ""),
+                    "count_comment": safe_int(queue["list_comment_count"]),
+                },
+                source=str(queue["source"] or "lists"),
+                commit=False,
+            )
+        now = now_text()
+        list_count = (
+            safe_int(queue["list_comment_count"])
+            if observed_in_list
+            else None
+        )
+        self.conn.execute(
+            """
+            update posts
+            set source_state='deleted_or_unavailable',
+                source_state_changed_at=case
+                    when source_state='deleted_or_unavailable'
+                    then source_state_changed_at
+                    else ?
+                end,
+                source_state_reason=?,
+                source_observed_at=?,
+                comment_count=case when ? is null then comment_count else ? end,
+                updated_at=?
+            where id=?
+            """,
+            (now, str(reason or "not_found"), now, list_count, list_count, now, post_id),
+        )
+        if commit:
+            self.conn.commit()
+        return True
 
     def migrate_crawler_queue_observations(self, commit: bool = True) -> dict:
         """One-time repair for queue rows created before observation tracking."""
@@ -642,6 +923,56 @@ class SQLitePostStore:
         self.conn.execute(
             "insert into crawl_state(key,value,updated_at) values (?,?,?)",
             (migration_key, "1", now),
+        )
+        if commit:
+            self.conn.commit()
+        return result if any(result.values()) else {}
+
+    def migrate_crawler_partial_payload_retries(
+        self,
+        commit: bool = True,
+    ) -> dict:
+        """Give rows rejected by the destructive old policy one merge attempt."""
+        if not self._table_exists("crawler_queue"):
+            return {}
+        migration_key = "crawler_partial_payload_retry_v1"
+        if self.conn.execute(
+            "select 1 from crawl_state where key=?",
+            (migration_key,),
+        ).fetchone():
+            return {}
+        now = now_text()
+        suspicious = self.conn.execute(
+            """
+            update crawler_queue
+            set status='pending', next_attempt_at='',
+                same_observation_attempts=0, updated_at=?
+            where status='failed'
+              and last_error like 'suspicious_payload:%'
+            """,
+            (now,),
+        ).rowcount
+        legacy_gaps = self.conn.execute(
+            """
+            update crawler_queue
+            set status='pending', next_attempt_at='',
+                same_observation_attempts=0, updated_at=?
+            where status='deferred'
+              and last_error='legacy_list_detail_gap'
+            """,
+            (now,),
+        ).rowcount
+        result = {
+            "suspicious": max(0, int(suspicious or 0)),
+            "legacy_gaps": max(0, int(legacy_gaps or 0)),
+        }
+        self.conn.execute(
+            "insert into crawl_state(key,value,updated_at) values (?,?,?)",
+            (
+                migration_key,
+                json.dumps(result, ensure_ascii=False, sort_keys=True),
+                now,
+            ),
         )
         if commit:
             self.conn.commit()
@@ -1117,6 +1448,8 @@ class SQLitePostStore:
             selected_meta = ["list_update_time", "list_source"]
             if "media_json" in self._post_columns:
                 selected_meta.append("media_json")
+            if "source_state" in self._post_columns:
+                selected_meta.extend(["source_state", "source_state_changed_at"])
             row = self.conn.execute(
                 f"select {','.join(selected_meta)} from posts where id=?",
                 (post_id,),
@@ -1128,6 +1461,13 @@ class SQLitePostStore:
                 }
                 if "media_json" in row.keys():
                     existing_meta["media_json"] = str(row["media_json"] or "{}")
+                if "source_state" in row.keys():
+                    existing_meta["source_state"] = str(
+                        row["source_state"] or "available"
+                    )
+                    existing_meta["source_state_changed_at"] = str(
+                        row["source_state_changed_at"] or ""
+                    )
 
         values = {
             "id": post_id,
@@ -1164,6 +1504,15 @@ class SQLitePostStore:
                     "list_source": str(
                         post.get("list_source") or existing_meta.get("list_source") or ""
                     ),
+                    "source_state": "available",
+                    "source_state_changed_at": (
+                        updated_at
+                        if existing_meta.get("source_state", "available")
+                        != "available"
+                        else existing_meta.get("source_state_changed_at", "")
+                    ),
+                    "source_state_reason": "",
+                    "source_observed_at": updated_at,
                 }.items()
                 if key in self._post_columns
             }
@@ -1191,6 +1540,112 @@ class SQLitePostStore:
         if commit:
             self.conn.commit()
 
+    def merge_partial_post(
+        self,
+        post: dict,
+        comments: list[dict],
+        *,
+        preserve_existing_content: bool = False,
+        commit: bool = True,
+    ) -> dict[str, int]:
+        """Merge useful data from an incomplete detail without deleting rows."""
+        post_id = str(post.get("id") or "")
+        if not post_id:
+            raise ValueError("partial post is missing id")
+        existing = self.conn.execute(
+            """
+            select content,media_json,comment_count,crawl_status
+            from posts where id=?
+            """,
+            (post_id,),
+        ).fetchone()
+        before_rows = safe_int(
+            self.conn.execute(
+                "select count(*) from comments where post_id=?",
+                (post_id,),
+            ).fetchone()[0]
+        )
+        merged_post = dict(post)
+        if existing is not None and preserve_existing_content:
+            merged_post["content"] = str(existing["content"] or "")
+            merged_post["media_json"] = str(existing["media_json"] or "{}")
+        merged_post["crawl_status"] = (
+            "full"
+            if existing is not None
+            and str(existing["crawl_status"] or "full") == "full"
+            else "partial"
+        )
+        merged_post["comment_count"] = max(
+            safe_int(post.get("comment_count")),
+            safe_int(existing["comment_count"]) if existing is not None else 0,
+            before_rows,
+        )
+        self.upsert_post(merged_post, comments=None, commit=False)
+
+        rows = flatten_comments(post_id, comments, now_text())
+        if rows:
+            columns = [
+                col
+                for col in [
+                    "row_key",
+                    "comment_id",
+                    "post_id",
+                    "parent_comment_id",
+                    "detail",
+                    "media_json",
+                    "show_user_name",
+                    "show_user_id",
+                    "real_user_id",
+                    "reply_show_user_name",
+                    "reply_show_user_id",
+                    "is_publisher",
+                    "create_time",
+                    "reply_comment_list",
+                    "updated_at",
+                ]
+                if col in self._comment_columns
+            ]
+            placeholders = ",".join("?" for _ in columns)
+            updates = ",".join(
+                f"{column}=excluded.{column}"
+                for column in columns
+                if column != "row_key"
+            )
+            self.conn.executemany(
+                f"""
+                insert into comments({','.join(columns)})
+                values ({placeholders})
+                on conflict(row_key) do update set {updates}
+                """,
+                ([row[column] for column in columns] for row in rows),
+            )
+
+        after_rows = safe_int(
+            self.conn.execute(
+                "select count(*) from comments where post_id=?",
+                (post_id,),
+            ).fetchone()[0]
+        )
+        self.conn.execute(
+            """
+            update posts
+            set comment_count=max(comment_count, ?), updated_at=?
+            where id=?
+            """,
+            (after_rows, now_text(), post_id),
+        )
+        self.refresh_search_index(post_id, commit=False)
+        self.refresh_bigram_index(post_id, commit=False)
+        self.refresh_symbol_index(post_id, commit=False)
+        if commit:
+            self.conn.commit()
+        return {
+            "before_comment_rows": before_rows,
+            "after_comment_rows": after_rows,
+            "added_comment_rows": max(0, after_rows - before_rows),
+            "returned_comment_rows": len(rows),
+        }
+
     def upsert_list_stub(
         self,
         article: dict,
@@ -1198,7 +1653,7 @@ class SQLitePostStore:
         source: str,
         commit: bool = True,
     ) -> bool:
-        if "crawl_status" not in self._post_columns:
+        if not {"crawl_status", "source_state"}.issubset(self._post_columns):
             self.ensure_runtime_schema()
         post_id = str(article.get("id") or "")
         if not post_id:
@@ -1214,6 +1669,9 @@ class SQLitePostStore:
             "category_name": str(article.get("category_name") or ""),
             "user_name": str(article.get("show_user_name") or article.get("user_name") or ""),
             "show_user_id": str(article.get("show_user_id") or ""),
+            "show_user_head": str(
+                article.get("show_user_head") or article.get("user_head") or ""
+            ),
             "real_user_id": str(article.get("real_user_id") or "0"),
             "create_time": create_time,
             "comment_count": safe_int(
@@ -1221,9 +1679,15 @@ class SQLitePostStore:
             ),
             "star_count": safe_int(article.get("count_star", article.get("star_count", 0))),
             "trace_count": safe_int(article.get("count_trace", article.get("trace_count", 0))),
+            "views": safe_int(article.get("views")),
+            "hot": safe_int(article.get("hot")),
             "crawl_status": "list_only",
             "list_update_time": list_update_time,
             "list_source": source,
+            "source_state": "available",
+            "source_state_changed_at": "",
+            "source_state_reason": "",
+            "source_observed_at": now,
             "updated_at": now,
         }
         columns = [col for col in values if col in self._post_columns]
@@ -1232,7 +1696,9 @@ class SQLitePostStore:
             select crawl_status, content, category_name, user_name,
                    show_user_id, real_user_id, create_time,
                    comment_count, star_count, trace_count,
-                   list_update_time, list_source, media_json
+                   list_update_time, list_source, media_json,
+                   source_state, source_state_changed_at,
+                   source_state_reason, source_observed_at
             from posts where id=?
             """,
             (post_id,),
@@ -1263,27 +1729,35 @@ class SQLitePostStore:
                         safe_int(existing["trace_count"]) != values["trace_count"],
                         str(existing["list_update_time"] or "") != list_update_time,
                         str(existing["list_source"] or "") != source,
+                        str(existing["source_state"] or "available") != "available",
                     )
                 )
-                if metadata_changed:
-                    self.conn.execute(
-                        """
-                        update posts
-                        set media_json=?, comment_count=?, star_count=?, trace_count=?,
-                            list_update_time=?, list_source=?, updated_at=?
-                        where id=?
-                        """,
-                        (
-                            promoted_media,
-                            values["comment_count"],
-                            values["star_count"],
-                            values["trace_count"],
-                            list_update_time,
-                            source,
-                            now,
-                            post_id,
-                        ),
-                    )
+                self.conn.execute(
+                    """
+                    update posts
+                    set media_json=?, comment_count=?, star_count=?, trace_count=?,
+                        list_update_time=?, list_source=?, source_state='available',
+                        source_state_changed_at=case
+                            when source_state='available'
+                            then source_state_changed_at else ? end,
+                        source_state_reason='', source_observed_at=?,
+                        updated_at=case when ? then ? else updated_at end
+                    where id=?
+                    """,
+                    (
+                        promoted_media,
+                        values["comment_count"],
+                        values["star_count"],
+                        values["trace_count"],
+                        list_update_time,
+                        source,
+                        now,
+                        now,
+                        metadata_changed,
+                        now,
+                        post_id,
+                    ),
+                )
                 changed = False
             else:
                 content_changed = str(existing["content"] or "") != content
@@ -1301,39 +1775,47 @@ class SQLitePostStore:
                         safe_int(existing["trace_count"]) != values["trace_count"],
                         str(existing["list_update_time"] or "") != list_update_time,
                         str(existing["list_source"] or "") != source,
+                        str(existing["source_state"] or "available") != "available",
                     )
                 )
-                if metadata_changed:
-                    self.conn.execute(
-                        """
-                        update posts
-                        set content=?, media_json=?, category_name=?, user_name=?,
-                            show_user_id=?, real_user_id=?, create_time=?,
-                            comment_count=?, star_count=?, trace_count=?,
-                            crawl_status='list_only', list_update_time=?,
-                            list_source=?, updated_at=?
-                        where id=?
-                        """,
-                        (
-                            content,
-                            values["media_json"],
-                            values["category_name"],
-                            values["user_name"],
-                            values["show_user_id"],
-                            values["real_user_id"],
-                            create_time,
-                            values["comment_count"],
-                            values["star_count"],
-                            values["trace_count"],
-                            list_update_time,
-                            source,
-                            now,
-                            post_id,
-                        ),
-                    )
-                    if content_changed:
-                        self.refresh_search_index(post_id, content, [], commit=False)
-                        self.refresh_bigram_index(post_id, content, [], commit=False)
+                self.conn.execute(
+                    """
+                    update posts
+                    set content=?, media_json=?, category_name=?, user_name=?,
+                        show_user_id=?, real_user_id=?, create_time=?,
+                        comment_count=?, star_count=?, trace_count=?,
+                        crawl_status='list_only', list_update_time=?, list_source=?,
+                        source_state='available',
+                        source_state_changed_at=case
+                            when source_state='available'
+                            then source_state_changed_at else ? end,
+                        source_state_reason='', source_observed_at=?,
+                        updated_at=case when ? then ? else updated_at end
+                    where id=?
+                    """,
+                    (
+                        content,
+                        values["media_json"],
+                        values["category_name"],
+                        values["user_name"],
+                        values["show_user_id"],
+                        values["real_user_id"],
+                        create_time,
+                        values["comment_count"],
+                        values["star_count"],
+                        values["trace_count"],
+                        list_update_time,
+                        source,
+                        now,
+                        now,
+                        metadata_changed,
+                        now,
+                        post_id,
+                    ),
+                )
+                if content_changed:
+                    self.refresh_search_index(post_id, content, [], commit=False)
+                    self.refresh_bigram_index(post_id, content, [], commit=False)
                 changed = metadata_changed
         if commit:
             self.conn.commit()
@@ -1367,6 +1849,7 @@ class SQLitePostStore:
                     "reply_show_user_id",
                     "is_publisher",
                     "create_time",
+                    "reply_comment_list",
                     "updated_at",
                 ]
                 if col in self._comment_columns
@@ -1580,20 +2063,26 @@ class SQLitePostStore:
             (str(post_id),),
         ).fetchone()
         if existing is None:
+            queue_order = safe_int(
+                self.conn.execute(
+                    "select coalesce(max(queue_order), 0) + 1 from crawler_queue"
+                ).fetchone()[0]
+            )
             self.conn.execute(
                 """
                 insert into crawler_queue(
-                    post_id, source, priority, list_create_time,
+                    post_id, queue_order, source, priority, list_create_time,
                     list_update_time, list_comment_count, db_comment_count,
                     status, reason, attempts, last_error,
                     last_attempt_list_comment_count,
                     last_attempt_list_update_time, last_detail_comment_count,
                     same_observation_attempts, next_attempt_at,
                     created_at, updated_at
-                ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     str(post_id),
+                    queue_order,
                     source,
                     priority,
                     list_create_time,
@@ -1750,6 +2239,8 @@ class SQLitePostStore:
               and (next_attempt_at='' or next_attempt_at <= ?)
             order by
                 priority asc,
+                case when priority > 0 then coalesce(queue_order, 2147483647)
+                     else 0 end asc,
                 max(
                     0,
                     coalesce(list_comment_count, 0)
@@ -1791,6 +2282,8 @@ class SQLitePostStore:
                   {exclude}
                 order by
                     priority asc,
+                    case when priority > 0 then coalesce(queue_order, 2147483647)
+                         else 0 end asc,
                     max(
                         0,
                         coalesce(list_comment_count, 0)
@@ -1851,6 +2344,105 @@ class SQLitePostStore:
         append_lane("priority > 0", limit)
         append_lane("priority = 0", limit)
         return selected
+
+    def recover_expired_crawler_queue_claims(
+        self,
+        *,
+        now: str | None = None,
+        commit: bool = True,
+    ) -> int:
+        """Return abandoned in-progress rows to the shared pending queue."""
+        self.ensure_crawler_queue(commit=False)
+        current = now or now_text()
+        cursor = self.conn.execute(
+            """
+            update crawler_queue
+            set status='pending',
+                claim_owner='', claim_lane_id='', claim_token='',
+                claim_started_at='', claim_until='',
+                last_error=case
+                    when last_error='' then 'claim_expired'
+                    else last_error
+                end,
+                updated_at=?
+            where status='in_progress'
+              and (claim_until='' or claim_until <= ?)
+            """,
+            (current, current),
+        )
+        if commit:
+            self.conn.commit()
+        return int(cursor.rowcount or 0)
+
+    def claim_crawler_queue_item(
+        self,
+        post_id: str,
+        *,
+        owner: str,
+        lane_id: str = "",
+        claim_ttl_seconds: int = 30 * 60,
+        token: str = "",
+        commit: bool = True,
+    ) -> bool:
+        """Atomically move one due pending row to ``in_progress``.
+
+        The conditional status predicate is the duplicate-work guard.  A
+        second process may have selected the same row, but only one can change
+        it from pending to in-progress and receive ``True``.
+        """
+        self.ensure_crawler_queue(commit=False)
+        now = now_text()
+        claim_token = str(token or uuid.uuid4().hex)
+        cursor = self.conn.execute(
+            """
+            update crawler_queue
+            set status='in_progress',
+                claim_owner=?, claim_lane_id=?, claim_token=?,
+                claim_started_at=?, claim_until=?,
+                last_lane_id=case when ?='' then last_lane_id else ? end,
+                updated_at=?
+            where post_id=?
+              and status='pending'
+              and (next_attempt_at='' or next_attempt_at <= ?)
+            """,
+            (
+                str(owner),
+                str(lane_id or ""),
+                claim_token,
+                now,
+                later_text(claim_ttl_seconds),
+                str(lane_id or ""),
+                str(lane_id or ""),
+                now,
+                str(post_id),
+                now,
+            ),
+        )
+        if commit:
+            self.conn.commit()
+        return bool(cursor.rowcount)
+
+    def set_crawler_queue_claim_lane(
+        self,
+        post_id: str,
+        *,
+        owner: str,
+        lane_id: str,
+        commit: bool = True,
+    ) -> bool:
+        """Persist the actual routed lane while a claim is active."""
+        self.ensure_crawler_queue(commit=False)
+        cursor = self.conn.execute(
+            """
+            update crawler_queue
+            set claim_lane_id=?, last_lane_id=?, updated_at=?
+            where post_id=? and status='in_progress' and claim_owner=?
+            """,
+            (str(lane_id or ""), str(lane_id or ""), now_text(), str(post_id), str(owner)),
+        )
+        if commit:
+            self.conn.commit()
+        return bool(cursor.rowcount)
 
     def crawler_queue_pending_snapshot(self) -> dict[str, int]:
         """Return mutually useful pending-lane counts for run-level deltas."""
@@ -1932,7 +2524,10 @@ class SQLitePostStore:
             f"""
             update crawler_queue
             set status=?, last_error=?, attempts={attempts_sql},
-                next_attempt_at=?, updated_at=?
+                next_attempt_at=?,
+                claim_owner='', claim_lane_id='', claim_token='',
+                claim_started_at='', claim_until='',
+                updated_at=?
                 {observation_sql}
             where post_id=?
             """,
@@ -1990,7 +2585,10 @@ class SQLitePostStore:
                 last_attempt_list_update_time=list_update_time,
                 last_detail_comment_count=?,
                 same_observation_attempts=?,
-                next_attempt_at=?, updated_at=?
+                next_attempt_at=?,
+                claim_owner='', claim_lane_id='', claim_token='',
+                claim_started_at='', claim_until='',
+                updated_at=?
             where post_id=?
             """,
             (
@@ -2032,7 +2630,10 @@ class SQLitePostStore:
             set status=?, last_error=?, attempts=attempts + 1,
                 last_attempt_list_comment_count=list_comment_count,
                 last_attempt_list_update_time=list_update_time,
-                same_observation_attempts=?, next_attempt_at=?, updated_at=?
+                same_observation_attempts=?, next_attempt_at=?,
+                claim_owner='', claim_lane_id='', claim_token='',
+                claim_started_at='', claim_until='',
+                updated_at=?
             where post_id=?
             """,
             (
