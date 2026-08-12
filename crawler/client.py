@@ -41,13 +41,16 @@ def load_cookie(config_path: str | Path) -> str:
 
 
 class MiniProgramClient:
-    def __init__(self, cookie: str):
+    def __init__(self, cookie: str, *, lane_id: str = ""):
         self.cookie = cookie
+        self.lane_id = str(lane_id or "")
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
         self.session.cookies.set("ys7_ysxy_session", cookie)
         self.session.verify = False
-        self.automatic_quota = AutomaticQuota.from_environment()
+        self.automatic_quota = AutomaticQuota.from_environment(
+            lane_id=self.lane_id
+        )
         self.request_count = 0
 
     def get(
