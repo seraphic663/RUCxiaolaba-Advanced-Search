@@ -16,6 +16,7 @@ from pathlib import Path
 
 from crawler.automatic_quota import AUTOMATIC_QUOTA_KIND_ENV
 from crawler.cookie_pool import COOKIE_KINDS, CookieLaneSpec, load_cookie_pool_specs
+from crawler.id_ledger import ledger_state, set_ledger_state
 from crawler.lock import database_write_lock
 from crawler.manual_quota import exclusive_control_lock
 from storage.post_writer import SQLitePostStore
@@ -406,6 +407,7 @@ class JobResult:
     error_kind: str = ""
     stderr: str = ""
     returncode: int = 0
+    deferred_until: float = 0.0
 
 
 OVERDUE_JOB_PRIORITY = {
@@ -1135,6 +1137,7 @@ def bootstrap_details_are_complete() -> bool:
                         select count(*)
                         from post_id_ledger l
                         left join crawler_queue q on q.post_id=l.post_id
+                        left join posts p on p.id=l.post_id
                         where l.bootstrap_run_id!=''
                           and not (
                               (
@@ -1144,6 +1147,10 @@ def bootstrap_details_are_complete() -> bool:
                               or (
                                   l.detail_status='not_found'
                                   and coalesce(q.status,'')='skipped'
+                              )
+                              or (
+                                  coalesce(q.status,'')='done'
+                                  and coalesce(p.crawl_status,'')='full'
                               )
                               or coalesce(q.status,'') in
                                   ('failed','skipped','deferred')
@@ -1160,6 +1167,50 @@ def bootstrap_details_are_complete() -> bool:
             flush=True,
         )
         return False
+
+
+def prepare_monitor_cutover() -> dict[str, object]:
+    """Pause historical coverage rows at one durable queue boundary.
+
+    The monitor still uses the one shared queue.  Only positive-priority rows
+    that existed at this boundary are held; priority 0 refreshes and rows
+    appended by later list scans remain eligible.  The boundary is written
+    once so a restart cannot gradually move the definition of "old" work.
+    """
+
+    with database_write_lock(DB_PATH):
+        with SQLitePostStore(DB_PATH) as store:
+            store.ensure_runtime_schema()
+            existing = ledger_state(store.conn, "monitor_queue_order_cutoff", "")
+            if existing:
+                try:
+                    cutoff = int(existing)
+                except (TypeError, ValueError):
+                    cutoff = 0
+                if ledger_state(store.conn, "monitor_old_coverage_paused", "") not in {
+                    "1",
+                    "true",
+                    "True",
+                }:
+                    set_ledger_state(store.conn, "monitor_old_coverage_paused", "1")
+                    store.conn.commit()
+                return {"queue_order_cutoff": cutoff, "created": False}
+
+            cutoff = int(
+                store.conn.execute(
+                    "select coalesce(max(queue_order), 0) from crawler_queue"
+                ).fetchone()[0]
+                or 0
+            )
+            set_ledger_state(store.conn, "monitor_queue_order_cutoff", str(cutoff))
+            set_ledger_state(store.conn, "monitor_old_coverage_paused", "1")
+            set_ledger_state(
+                store.conn,
+                "monitor_cutover_at",
+                beijing_now().isoformat(),
+            )
+            store.conn.commit()
+            return {"queue_order_cutoff": cutoff, "created": True}
 
 
 def enable_monitor_jobs(
@@ -1437,7 +1488,21 @@ def run_job(name: str) -> JobResult:
     args, quota_note = prepare_job(name)
     if args is None:
         print(f"[scheduler] skip {name} reason={quota_note}", flush=True)
-        return JobResult(succeeded=True)
+        deferred_until = 0.0
+        if quota_note.startswith("quota_window_locked_until="):
+            try:
+                release_at = datetime.fromisoformat(
+                    quota_note.split("=", 1)[1]
+                )
+                deferred_until = release_at.timestamp()
+            except (TypeError, ValueError):
+                deferred_until = 0.0
+        return JobResult(
+            succeeded=True,
+            error_kind="quota_window_locked" if deferred_until else "",
+            stderr=quota_note,
+            deferred_until=deferred_until,
+        )
     if quota_note:
         print(f"[scheduler] quota {name} {quota_note}", flush=True)
     command = [
@@ -1564,6 +1629,7 @@ def main() -> int:
         bootstrap_detail_ready = (
             not bootstrap_pending and bootstrap_details_are_complete()
         )
+        monitor_cutover = None
         next_run = {
             "trickle_fill": now + 90,
         }
@@ -1573,12 +1639,15 @@ def main() -> int:
         if bootstrap_pending:
             next_run["bootstrap_new"] = now + 60
             intervals["bootstrap_new"] = BOOTSTRAP_RETRY_INTERVAL
-        elif bootstrap_detail_ready:
+        else:
+            monitor_cutover = prepare_monitor_cutover()
             enable_monitor_jobs(next_run, intervals, now)
         print(
             "[scheduler] trickle enabled "
             f"bootstrap={'pending' if bootstrap_pending else 'complete'} "
-            f"bootstrap_details={'ready' if bootstrap_detail_ready else 'pending'} "
+            f"bootstrap_details={'ready' if bootstrap_detail_ready else 'paused_for_monitor'} "
+            f"old_coverage={'paused' if monitor_cutover else 'pending'} "
+            f"queue_cutoff={monitor_cutover.get('queue_order_cutoff') if monitor_cutover else '-'} "
             f"bootstrap_pages={BOOTSTRAP_PAGES} "
             f"since={TRICKLE_SINCE!r} list1={NEW_DISCOVER_INTERVAL}s "
             f"list2={ACTIVE_DISCOVER_INTERVAL}s "
@@ -1619,8 +1688,8 @@ def main() -> int:
             TRICKLE_ENABLED
             and "discover_new" not in next_run
             and bootstrap_is_complete()
-            and bootstrap_details_are_complete()
         ):
+            monitor_cutover = prepare_monitor_cutover()
             enable_monitor_jobs(next_run, intervals, now)
         due = select_next_job(next_run, now)
         pause = active_pause()
@@ -1680,6 +1749,18 @@ def main() -> int:
                     state="idle",
                     job=due,
                     detail="bootstrap_complete",
+                )
+                last_heartbeat = time.monotonic()
+                continue
+            if result.deferred_until:
+                next_run[due] = max(
+                    time.monotonic() + 1.0,
+                    time.monotonic() + max(0.0, result.deferred_until - now_wall()),
+                )
+                save_heartbeat(
+                    state="idle",
+                    job=due,
+                    detail=result.stderr,
                 )
                 last_heartbeat = time.monotonic()
                 continue
