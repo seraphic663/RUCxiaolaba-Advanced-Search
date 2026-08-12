@@ -408,6 +408,7 @@ class JobResult:
     stderr: str = ""
     returncode: int = 0
     deferred_until: float = 0.0
+    source_calls: int = 0
 
 
 OVERDUE_JOB_PRIORITY = {
@@ -1218,21 +1219,29 @@ def enable_monitor_jobs(
     intervals: dict[str, float],
     now: float,
 ) -> None:
-    """Add regular list monitoring exactly once after the bootstrap detail pass."""
+    """Schedule the first list1 monitor pass after bootstrap cutover.
+
+    list2 is deliberately added only after this first list1 job has made at
+    least one source request; otherwise a quota-window deferral could make
+    both jobs due together and select list2 first.
+    """
     if "discover_new" in next_run:
         return
-    next_run.update(
-        {
-            "discover_new": now + 3 * 60,
-            "discover_active": now + 8 * 60,
-        }
-    )
-    intervals.update(
-        {
-            "discover_new": NEW_DISCOVER_INTERVAL,
-            "discover_active": ACTIVE_DISCOVER_INTERVAL,
-        }
-    )
+
+    next_run["discover_new"] = now + 3 * 60
+    intervals["discover_new"] = NEW_DISCOVER_INTERVAL
+
+
+def enable_remaining_monitor_jobs(
+    next_run: dict[str, float],
+    intervals: dict[str, float],
+    now: float,
+) -> None:
+    """Add list2 and optional gap monitors after the first list1 request."""
+    if "discover_active" in next_run:
+        return
+    next_run["discover_active"] = now + 8 * 60
+    intervals["discover_active"] = ACTIVE_DISCOVER_INTERVAL
     if GAP_ENABLED:
         next_run.update(
             {
@@ -1560,19 +1569,20 @@ def run_job(name: str) -> JobResult:
     if stderr:
         print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
     print(f"[scheduler] done {name} exit={result.returncode}", flush=True)
+    after_date, after_calls = quota_counter_snapshot(kind)
+    source_calls = (
+        max(0, after_calls - before_calls)
+        if before_date == after_date
+        else max(0, after_calls)
+    )
     job_result = JobResult(
         succeeded=result.returncode == 0,
         error_kind=classify_error(stderr),
         stderr=stderr,
         returncode=result.returncode,
+        source_calls=source_calls,
     )
     if not job_result.succeeded:
-        after_date, after_calls = quota_counter_snapshot(kind)
-        source_calls = (
-            max(0, after_calls - before_calls)
-            if before_date == after_date
-            else max(0, after_calls)
-        )
         record_failed_crawler_run(
             name=name,
             started_at=run_started_at,
@@ -1738,6 +1748,20 @@ def main() -> int:
                 )
             if due == "phase1" and result.succeeded:
                 PHASE1_MARKER.touch()
+            if (
+                due == "discover_new"
+                and result.succeeded
+                and result.source_calls > 0
+            ):
+                enable_remaining_monitor_jobs(
+                    next_run,
+                    intervals,
+                    time.monotonic(),
+                )
+                print(
+                    "[scheduler] list1 seed completed; list2 monitor scheduled",
+                    flush=True,
+                )
             if (
                 due == "bootstrap_new"
                 and result.succeeded
