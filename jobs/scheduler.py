@@ -420,6 +420,8 @@ OVERDUE_JOB_PRIORITY = {
     "probe_gaps": 4,
 }
 
+MONITOR_LIST1_SEED_KEY = "monitor_list1_seed_complete"
+
 
 def now_wall() -> float:
     return time.time()
@@ -1214,6 +1216,35 @@ def prepare_monitor_cutover() -> dict[str, object]:
             return {"queue_order_cutoff": cutoff, "created": True}
 
 
+def monitor_list1_seed_is_complete() -> bool:
+    """Return whether the post-cutover list1 seed made a real source call."""
+    try:
+        with database_write_lock(DB_PATH):
+            with SQLitePostStore(DB_PATH) as store:
+                store.ensure_runtime_schema()
+                return ledger_state(store.conn, MONITOR_LIST1_SEED_KEY, "") in {
+                    "1",
+                    "true",
+                    "True",
+                }
+    except Exception as exc:
+        print(
+            f"[scheduler] list1 seed state check failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return False
+
+
+def mark_monitor_list1_seed_complete() -> None:
+    """Persist the one-time list1 seed completion across restarts."""
+    with database_write_lock(DB_PATH):
+        with SQLitePostStore(DB_PATH) as store:
+            store.ensure_runtime_schema()
+            set_ledger_state(store.conn, MONITOR_LIST1_SEED_KEY, "1")
+            store.conn.commit()
+
+
 def enable_monitor_jobs(
     next_run: dict[str, float],
     intervals: dict[str, float],
@@ -1237,11 +1268,16 @@ def enable_remaining_monitor_jobs(
     intervals: dict[str, float],
     now: float,
 ) -> None:
-    """Add list2 and optional gap monitors after the first list1 request."""
-    if "discover_active" in next_run:
-        return
-    next_run["discover_active"] = now + 8 * 60
-    intervals["discover_active"] = ACTIVE_DISCOVER_INTERVAL
+    """Add detail/list2 jobs after the first list1 request."""
+    if "discover_new" not in next_run:
+        next_run["discover_new"] = now + 3 * 60
+        intervals["discover_new"] = NEW_DISCOVER_INTERVAL
+    if "trickle_fill" not in next_run:
+        next_run["trickle_fill"] = now + 90
+        intervals["trickle_fill"] = TRICKLE_INTERVAL
+    if "discover_active" not in next_run:
+        next_run["discover_active"] = now + 8 * 60
+        intervals["discover_active"] = ACTIVE_DISCOVER_INTERVAL
     if GAP_ENABLED:
         next_run.update(
             {
@@ -1640,24 +1676,28 @@ def main() -> int:
             not bootstrap_pending and bootstrap_details_are_complete()
         )
         monitor_cutover = None
-        next_run = {
-            "trickle_fill": now + 90,
-        }
-        intervals = {
-            "trickle_fill": TRICKLE_INTERVAL,
-        }
+        list1_seed_complete = False
+        next_run: dict[str, float] = {}
+        intervals: dict[str, float] = {}
         if bootstrap_pending:
+            next_run["trickle_fill"] = now + 90
+            intervals["trickle_fill"] = TRICKLE_INTERVAL
             next_run["bootstrap_new"] = now + 60
             intervals["bootstrap_new"] = BOOTSTRAP_RETRY_INTERVAL
         else:
             monitor_cutover = prepare_monitor_cutover()
-            enable_monitor_jobs(next_run, intervals, now)
+            list1_seed_complete = monitor_list1_seed_is_complete()
+            if list1_seed_complete:
+                enable_remaining_monitor_jobs(next_run, intervals, now)
+            else:
+                enable_monitor_jobs(next_run, intervals, now)
         print(
             "[scheduler] trickle enabled "
             f"bootstrap={'pending' if bootstrap_pending else 'complete'} "
             f"bootstrap_details={'ready' if bootstrap_detail_ready else 'paused_for_monitor'} "
             f"old_coverage={'paused' if monitor_cutover else 'pending'} "
             f"queue_cutoff={monitor_cutover.get('queue_order_cutoff') if monitor_cutover else '-'} "
+            f"list1_seed={'complete' if list1_seed_complete else 'pending'} "
             f"bootstrap_pages={BOOTSTRAP_PAGES} "
             f"since={TRICKLE_SINCE!r} list1={NEW_DISCOVER_INTERVAL}s "
             f"list2={ACTIVE_DISCOVER_INTERVAL}s "
@@ -1700,7 +1740,11 @@ def main() -> int:
             and bootstrap_is_complete()
         ):
             monitor_cutover = prepare_monitor_cutover()
-            enable_monitor_jobs(next_run, intervals, now)
+            list1_seed_complete = monitor_list1_seed_is_complete()
+            if list1_seed_complete:
+                enable_remaining_monitor_jobs(next_run, intervals, now)
+            else:
+                enable_monitor_jobs(next_run, intervals, now)
         due = select_next_job(next_run, now)
         pause = active_pause()
         if pause:
@@ -1753,6 +1797,8 @@ def main() -> int:
                 and result.succeeded
                 and result.source_calls > 0
             ):
+                mark_monitor_list1_seed_complete()
+                list1_seed_complete = True
                 enable_remaining_monitor_jobs(
                     next_run,
                     intervals,

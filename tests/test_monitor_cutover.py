@@ -98,8 +98,13 @@ class MonitorCutoverTest(unittest.TestCase):
         enable_remaining_monitor_jobs(next_run, intervals, 200.0)
         self.assertEqual(
             set(next_run),
-            {"discover_new", "discover_active"},
+            {"trickle_fill", "discover_new", "discover_active"},
         )
+
+        restarted = {}
+        restarted_intervals = {}
+        enable_remaining_monitor_jobs(restarted, restarted_intervals, 300.0)
+        self.assertEqual(set(restarted), set(next_run))
 
 
 if __name__ == "__main__":
