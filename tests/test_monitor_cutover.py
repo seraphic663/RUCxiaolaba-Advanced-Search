@@ -6,7 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from crawler.id_ledger import ledger_state, set_ledger_state
-from jobs.scheduler import prepare_monitor_cutover, run_job
+from jobs.scheduler import (
+    enable_monitor_jobs,
+    enable_remaining_monitor_jobs,
+    prepare_monitor_cutover,
+    run_job,
+)
 from storage.post_writer import SQLitePostStore
 
 
@@ -83,6 +88,18 @@ class MonitorCutoverTest(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(result.error_kind, "quota_window_locked")
         self.assertGreater(result.deferred_until, 0)
+
+    def test_list2_is_not_scheduled_until_list1_seed_request_finishes(self):
+        next_run = {}
+        intervals = {}
+        enable_monitor_jobs(next_run, intervals, 100.0)
+        self.assertEqual(set(next_run), {"discover_new"})
+
+        enable_remaining_monitor_jobs(next_run, intervals, 200.0)
+        self.assertEqual(
+            set(next_run),
+            {"discover_new", "discover_active"},
+        )
 
 
 if __name__ == "__main__":
