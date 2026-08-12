@@ -249,6 +249,38 @@ class CrawlerService:
                     store.init_schema()
                 else:
                     store.ensure_runtime_schema()
+                bootstrap_target_page = max(1, int(max_pages)) if bootstrap else 0
+                bootstrap_start_page = 1
+                if bootstrap and not dry_run:
+                    stored_next_page = safe_int(
+                        ledger_state(
+                            store.conn,
+                            "lists_bootstrap_next_page",
+                            default="0",
+                        )
+                    )
+                    if stored_next_page <= 0:
+                        inferred = store.conn.execute(
+                            """
+                            select coalesce(max(first_seen_page), 0)
+                            from post_id_ledger
+                            where bootstrap_run_id!=''
+                            """
+                        ).fetchone()[0]
+                        stored_next_page = safe_int(inferred) + 1
+                    bootstrap_start_page = max(1, stored_next_page)
+                    set_ledger_state(
+                        store.conn,
+                        "lists_bootstrap_next_page",
+                        str(bootstrap_start_page),
+                    )
+                    if bootstrap_start_page > bootstrap_target_page:
+                        set_ledger_state(
+                            store.conn,
+                            "lists_bootstrap_complete",
+                            "1",
+                        )
+                        stats["bootstrap_complete"] = True
                 baseline_ready = ledger_state(
                     store.conn,
                     "lists2_baseline_ready",
@@ -265,7 +297,9 @@ class CrawlerService:
                 ledger_run_id = f"{command}:{run_started_at}"
                 queue_before = store.crawler_queue_pending_snapshot()
                 self.add_queue_snapshot(stats, before=queue_before)
-                for page in range(1, max_pages + 1):
+                page_start = bootstrap_start_page if bootstrap else 1
+                page_end = bootstrap_target_page if bootstrap else max_pages
+                for page in range(page_start, page_end + 1):
                     time.sleep(random.uniform(min_delay, max_delay))
                     data, error = self._list_page(client, endpoint, page)
                     if error:
@@ -283,7 +317,7 @@ class CrawlerService:
                         print(f"[{command}] page={page} empty stop", flush=True)
                         break
                     signature = self.page_signature(articles)
-                    if stop_on_repeat and signature in seen_signatures:
+                    if stop_on_repeat and not bootstrap and signature in seen_signatures:
                         stats["repeat_stop"] = True
                         print(
                             f"[{command}] page={page} repeats page="
@@ -435,6 +469,12 @@ class CrawlerService:
                             retained_ids.add(post_id)
                             stats["retained_ids"] = len(retained_ids)
                     if not dry_run:
+                        if bootstrap:
+                            set_ledger_state(
+                                store.conn,
+                                "lists_bootstrap_next_page",
+                                str(page + 1),
+                            )
                         store.conn.commit()
                     page_has_ledger_signal = bool(
                         ledger_page
@@ -495,10 +535,21 @@ class CrawlerService:
                     and bootstrap
                     and not dry_run
                     and not stats["quota_stop"]
-                    and stats["pages"] >= max(1, int(min_pages))
                 ):
-                    set_ledger_state(store.conn, "lists_bootstrap_complete", "1")
-                    stats["bootstrap_complete"] = True
+                    next_page = safe_int(
+                        ledger_state(
+                            store.conn,
+                            "lists_bootstrap_next_page",
+                            default="1",
+                        )
+                    )
+                    if next_page - 1 >= max(1, int(min_pages)):
+                        set_ledger_state(
+                            store.conn,
+                            "lists_bootstrap_complete",
+                            "1",
+                        )
+                        stats["bootstrap_complete"] = True
                 queue_after = store.crawler_queue_pending_snapshot()
                 self.add_queue_snapshot(
                     stats,

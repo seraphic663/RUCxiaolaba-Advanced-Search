@@ -107,10 +107,10 @@ priority 大于 0 的 coverage 任务还按 `crawler_queue.queue_order` 升序�
 
 `discover-latest`：
 
-- bootstrap 模式固定完成 `--min-pages=--max-pages=20`；不使用连续无收益页提前停止，也不写 list stub。
+- bootstrap 模式固定完成 `--min-pages=--max-pages=20`；不使用连续无收益页或重复页提前停止，也不写 list stub。每成功提交一页就更新 `ledger_state.lists_bootstrap_next_page`，若额度停止或进程重启，下一轮从该游标续扫；旧状态没有游标时从台账最大 `first_seen_page` 推断。
 - 至少扫描 `--min-pages` 后，连续 `--no-action-page-threshold` 页没有可入队候选即可停止。
 - 连续多页都早于 `--since` 时停止。
-- 页面 ID 签名重复时停止。
+- 非 bootstrap 模式页面 ID 签名重复时停止；bootstrap 必须完成目标页数，重复页仍记录但不会重复入队。
 - `--max-pages` 是硬上限。
 
 `discover-active`：
