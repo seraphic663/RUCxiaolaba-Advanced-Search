@@ -19,7 +19,7 @@ lists / lists2
 
 - `discover-latest` 扫新帖流，只发现候选，不在列表循环中拉详情。
 - `discover-active` 扫活跃/新回复流，只在本地缺详情或列表评论数大于数据库评论数时入队。
-- 首次线上启动先运行 `bootstrap_new`：固定扫 `lists` 20 页，只写 `post_id_ledger` 和去重详情队列，不写正文 stub；初始详情队列完成或明确不可用后才开启两个增量监视任务。
+- 首次线上启动先运行 `bootstrap_new`：固定扫 `lists` 20 页，只写 `post_id_ledger` 和去重详情队列，不写正文 stub；bootstrap 完成后记录一次 queue-order cutover，暂停切换前的普通 coverage 详情任务，先补一次 `lists`，再开启两个增量监视任务。priority 0 的新回刷新和 cutover 后新增 ID 不暂停。
 - `trickle-fill` 按优先级小批量补详情，一次详情请求返回正文和完整评论/回复结构。
 - 每次 list page 还会写入 `post_id_ledger`；`lists2` 的事件键写入 `list2_observation_log`，首次基线不批量触发详情，后续新事件才进入同一个 `crawler_queue`。
 - `plan-gaps` 只规划低密度 ID 区间；未指定结束 ID 时会用一次 `lists?page=1` 探测最新 ID。
@@ -197,7 +197,7 @@ CRAWLER_GAP_PLAN_INTERVAL=21600
 CRAWLER_GAP_PROBE_INTERVAL=7200
 ```
 
-首次启动先固定扫 20 页 list1，随后 `trickle-fill` 按 `queue_order` 串行补详情；初始行全部完成或明确不可用后，才开启正式监视。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每半小时一次；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，新的两个变量优先级更高。
+首次启动先固定扫 20 页 list1，随后 `trickle-fill` 按 `queue_order` 串行补详情；bootstrap 完成后记录 queue-order cutover，旧 coverage 行保持 pending 但不再被领取，先执行一次 list1，再进入正式监视。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每半小时一次；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，新的两个变量优先级更高。
 
 `probe-gaps` 即使被调度，也会在每日 probe budget 为 0 时跳过。不要通过手动 SSH 大跑绕过这一保护。
 

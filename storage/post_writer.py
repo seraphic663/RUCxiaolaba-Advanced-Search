@@ -2230,13 +2230,19 @@ class SQLitePostStore:
         fresh_coverage_after: str = "",
     ) -> list[sqlite3.Row]:
         self.ensure_crawler_queue()
+        # ``ledger_state`` is created by the runtime schema migration, but a
+        # few old/local databases call this queue method directly.  Ensure the
+        # sidecar exists before reading the durable monitor cutover switch.
+        ensure_ledger_schema(self.conn)
+        monitor_filter, monitor_filter_params = self._monitor_queue_filter()
         limit = max(1, int(limit))
         if refresh_limit is None:
             return self.conn.execute(
-                """
+                f"""
             select * from crawler_queue
             where status='pending'
               and (next_attempt_at='' or next_attempt_at <= ?)
+              and ({monitor_filter})
             order by
                 priority asc,
                 case when priority > 0 then coalesce(queue_order, 2147483647)
@@ -2252,7 +2258,7 @@ class SQLitePostStore:
                 cast(post_id as integer) desc
             limit ?
             """,
-                (now_text(), limit),
+                (now_text(), *monitor_filter_params, limit),
             ).fetchall()
 
         selected: list[sqlite3.Row] = []
@@ -2266,6 +2272,7 @@ class SQLitePostStore:
             if lane_limit <= 0 or len(selected) >= limit:
                 return
             params: list[object] = [now_text()]
+            params.extend(monitor_filter_params)
             params.extend(where_params)
             exclude = ""
             if selected_ids:
@@ -2278,6 +2285,7 @@ class SQLitePostStore:
                 select * from crawler_queue
                 where status='pending'
                   and (next_attempt_at='' or next_attempt_at <= ?)
+                  and ({monitor_filter})
                   and ({where})
                   {exclude}
                 order by
@@ -2308,15 +2316,16 @@ class SQLitePostStore:
         if coverage_capacity:
             quiet_available = bool(
                 self.conn.execute(
-                    """
+                    f"""
                     select exists(
                         select 1 from crawler_queue
                         where status='pending'
                           and (next_attempt_at='' or next_attempt_at <= ?)
+                          and ({monitor_filter})
                           and priority >= 40
-                    )
-                    """,
-                    (now_text(),),
+                        )
+                        """,
+                    (now_text(), *monitor_filter_params),
                 ).fetchone()[0]
             )
             # Keep one bounded slot for zero-comment or otherwise quiet posts.
@@ -2344,6 +2353,34 @@ class SQLitePostStore:
         append_lane("priority > 0", limit)
         append_lane("priority = 0", limit)
         return selected
+
+    def _monitor_queue_filter(self) -> tuple[str, tuple[object, ...]]:
+        """Return the durable cutover filter for normal coverage work.
+
+        During monitor cutover, historical positive-priority coverage rows are
+        intentionally left pending.  Priority 0 refreshes (new list2
+        evidence) and rows appended after the cutover remain eligible.  This
+        keeps the single de-duplicated queue while allowing monitoring to start
+        before the historical bootstrap detail backlog is drained.
+        """
+
+        if not self._table_exists("ledger_state"):
+            return "1=1", ()
+        paused = self.conn.execute(
+            "select value from ledger_state where key=?",
+            ("monitor_old_coverage_paused",),
+        ).fetchone()
+        cutoff_row = self.conn.execute(
+            "select value from ledger_state where key=?",
+            ("monitor_queue_order_cutoff",),
+        ).fetchone()
+        if str(paused[0] if paused else "") not in {"1", "true", "True"}:
+            return "1=1", ()
+        try:
+            cutoff = int(str(cutoff_row[0] if cutoff_row else "0"))
+        except (TypeError, ValueError):
+            return "1=1", ()
+        return "(priority <= 0 or coalesce(queue_order, 0) > ?)", (cutoff,)
 
     def recover_expired_crawler_queue_claims(
         self,
