@@ -19,6 +19,8 @@ Web 和 crawler 保持在同一个 service，SQLite 与 Volume 由该 service �
 /app/data/bigram_index.db
 /app/data/symbol_index.db
 /app/data/config.txt
+/app/data/config_small.txt        # 可选，固定 lane 的另一个合法会话
+/app/data/cookie_pool.json        # 可选，只有路径和预算，不含 cookie 值
 ```
 
 上传命令：
@@ -28,6 +30,8 @@ railway volume files upload data\posts.db /posts.db --overwrite
 railway volume files upload data\bigram_index.db /bigram_index.db --overwrite
 railway volume files upload data\symbol_index.db /symbol_index.db --overwrite
 railway volume files upload data\config.txt /config.txt --overwrite
+railway volume files upload data\config_small.txt /config_small.txt --overwrite
+railway volume files upload data\cookie_pool.json /cookie_pool.json --overwrite
 ```
 
 `posts.db` 只在首次部署或灾难恢复时上传；日常数据由线上 crawler 直接更新。不要把本地旧快照覆盖到线上主库。
@@ -44,6 +48,8 @@ ADMIN_PASSWORD=<固定强密码>
 CRAWLER_ENABLED=1
 CRAWLER_TRICKLE_ENABLED=1
 CRAWLER_TRICKLE_SINCE=<需要持续覆盖的起始时间>
+# 可选：固定 lane 池，启用后以 cookie_pool.json 的每 lane 预算为准
+CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json
 ```
 
 不要上传 `admin_password.txt`。Bigram 用于普通中文/混合文本，Symbol 用于特殊符号、表情和符号混合查询；普通单字查询仍可能回退 `LIKE`。旁路索引由 `SQLitePostStore` 随详情写入更新，也可以从主库重建。
@@ -53,8 +59,8 @@ CRAWLER_TRICKLE_SINCE=<需要持续覆盖的起始时间>
 `CRAWLER_ENABLED=1` 让 `start.sh` 启动后台 scheduler；当前线上推荐同时设置 `CRAWLER_TRICKLE_ENABLED=1`，启用 quota-friendly 模式：
 
 ```text
-discover-latest  默认每 30 分钟，受 new-list budget 和 release step 限制
-discover-active  默认每 30 分钟，受 active-list budget 和 release step 限制
+discover-latest  默认每 60 分钟，至少 2 页、最多 5 页，受 new-list budget 和 release step 限制
+discover-active  默认每 30 分钟，至少 2 页、最多 5 页，受 active-list budget 和 release step 限制
 trickle-fill     默认每 10 分钟，每轮最多 12 条详情
 plan-gaps        默认每 6 小时，只规划缺口
 probe-gaps       默认每 2 小时检查，但每日 probe budget 为 0 时不发请求
@@ -65,7 +71,10 @@ probe-gaps       默认每 2 小时检查，但每日 probe budget 为 0 时不�
 主要间隔变量，单位为秒：
 
 ```text
-CRAWLER_DISCOVER_INTERVAL=1800
+CRAWLER_NEW_DISCOVER_INTERVAL=3600
+CRAWLER_ACTIVE_DISCOVER_INTERVAL=1800
+CRAWLER_DISCOVER_LATEST_PAGES=5
+CRAWLER_DISCOVER_ACTIVE_PAGES=5
 CRAWLER_TRICKLE_INTERVAL=600
 CRAWLER_GAP_PLAN_INTERVAL=21600
 CRAWLER_GAP_PROBE_INTERVAL=7200
@@ -77,13 +86,13 @@ CRAWLER_GAP_PROBE_INTERVAL=7200
 
 ## 限流与 Cookie
 
-出现 `cookie_expired` 时，覆盖合法取得的新配置：
+单 cookie 模式出现 `cookie_expired` 时，覆盖合法取得的新配置：
 
 ```powershell
 railway volume files upload data\config.txt /config.txt --overwrite
 ```
 
-调度器下次执行会读取新 cookie，无需上传 DB。`rate_limited` 不是 cookie 格式错误；发生后 scheduler 暂停到下一个北京时间 00:05，恢复后仍受当天阶梯释放约束。不得通过替换身份、轮换 cookie、代理或提高并发规避限制。
+调度器下次执行会读取新 cookie，无需上传 DB。`rate_limited` 不是 cookie 格式错误；发生后 scheduler 暂停到下一个北京时间 00:05，恢复后仍受当天阶梯释放约束。固定池中的多个预先配置 lane 仍共用这个停止闸门，不会通过临时替换身份、轮换 cookie、代理或提高并发规避限制。
 
 ## 兼容的 ID 范围补扫
 

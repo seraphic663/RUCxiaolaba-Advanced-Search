@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from crawler.client import MiniProgramClient, load_cookie
@@ -41,9 +42,11 @@ def latest_list_id(client: MiniProgramClient) -> int:
 
 
 def _service(args) -> CrawlerService:
+    cookie_pool_path = str(getattr(args, "cookie_pool", "") or "").strip()
     return CrawlerService(
         db_path=args.db_path,
-        cookie=load_cookie(args.config),
+        cookie="" if cookie_pool_path else load_cookie(args.config),
+        cookie_pool_path=cookie_pool_path or None,
         lock_timeout=args.lock_timeout,
         init_schema=args.init_schema,
         api_get_fn=api_get,
@@ -94,6 +97,7 @@ def command_discover(args) -> int:
         no_action_page_threshold=args.no_action_page_threshold,
         dry_run=args.dry_run,
         write_stubs=not args.no_write_stubs,
+        bootstrap=args.bootstrap,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
     )
@@ -174,6 +178,11 @@ def command_phase1(args) -> int:
 def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db-path", default=str(DEFAULT_DB))
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
+    parser.add_argument(
+        "--cookie-pool",
+        default=os.environ.get("CRAWLER_COOKIE_POOL", ""),
+        help="JSON file containing fixed cookie lanes and per-lane daily budgets",
+    )
     parser.add_argument("--init-schema", action="store_true")
     parser.add_argument("--lock-timeout", type=int, default=DEFAULT_LOCK_TIMEOUT)
 
@@ -282,9 +291,14 @@ def build_parser() -> argparse.ArgumentParser:
     discover_latest.add_argument("--since", required=True)
     discover_latest.add_argument("--max-pages", type=int, default=180)
     discover_latest.add_argument("--old-page-threshold", type=int, default=5)
-    discover_latest.add_argument("--min-pages", type=int, default=5)
-    discover_latest.add_argument("--no-action-page-threshold", type=int, default=5)
+    discover_latest.add_argument("--min-pages", type=int, default=2)
+    discover_latest.add_argument("--no-action-page-threshold", type=int, default=2)
     discover_latest.add_argument("--no-write-stubs", action="store_true")
+    discover_latest.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="record the initial list1 ID baseline and queue details without writing list stubs",
+    )
     discover_latest.add_argument("--dry-run", action="store_true")
     discover_latest.add_argument("--min-delay", type=float, default=0.1)
     discover_latest.add_argument("--max-delay", type=float, default=0.3)
@@ -303,9 +317,14 @@ def build_parser() -> argparse.ArgumentParser:
     discover_active.add_argument("--since", required=True)
     discover_active.add_argument("--max-pages", type=int, default=120)
     discover_active.add_argument("--old-page-threshold", type=int, default=5)
-    discover_active.add_argument("--min-pages", type=int, default=5)
-    discover_active.add_argument("--no-action-page-threshold", type=int, default=3)
+    discover_active.add_argument("--min-pages", type=int, default=2)
+    discover_active.add_argument("--no-action-page-threshold", type=int, default=2)
     discover_active.add_argument("--no-write-stubs", action="store_true")
+    discover_active.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="reserved for compatibility; bootstrap is only meaningful for list1",
+    )
     discover_active.add_argument("--dry-run", action="store_true")
     discover_active.add_argument("--min-delay", type=float, default=0.1)
     discover_active.add_argument("--max-delay", type=float, default=0.3)

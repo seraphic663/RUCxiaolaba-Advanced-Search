@@ -20,15 +20,20 @@ class AutomaticQuota:
 
     VALID_KINDS = {"new_list", "active_list", "detail", "probe"}
 
-    def __init__(self, kind: str):
+    def __init__(self, kind: str, lane_id: str = ""):
         if kind not in self.VALID_KINDS:
             raise ValueError(f"unsupported automatic quota kind: {kind}")
         self.kind = kind
+        self.lane_id = str(lane_id or "")
 
     @classmethod
-    def from_environment(cls) -> "AutomaticQuota | None":
+    def from_environment(
+        cls,
+        *,
+        lane_id: str = "",
+    ) -> "AutomaticQuota | None":
         kind = str(os.environ.get(AUTOMATIC_QUOTA_KIND_ENV, "")).strip()
-        return cls(kind) if kind else None
+        return cls(kind, lane_id=lane_id) if kind else None
 
     @staticmethod
     def _scheduler():
@@ -51,7 +56,11 @@ class AutomaticQuota:
                     f"crawler paused until {pause.get('until_text') or 'later'}",
                 )
             quota = scheduler.load_quota()
-            remaining = scheduler.remaining_budget(self.kind, quota)
+            remaining = scheduler.remaining_budget(
+                self.kind,
+                quota,
+                lane_id=self.lane_id,
+            )
             if remaining < count:
                 if scheduler.quota_release_fraction() <= 0:
                     raise AutomaticQuotaError(
@@ -65,9 +74,23 @@ class AutomaticQuota:
                 )
             key = scheduler.quota_key(self.kind)
             quota[key] = int(quota.get(key, 0) or 0) + count
+            if self.lane_id:
+                lane = scheduler.ensure_cookie_lane_quota(quota, self.lane_id)
+                lane[key] = int(lane.get(key, 0) or 0) + count
             scheduler.save_quota(quota)
             return {
                 "kind": self.kind,
+                "lane_id": self.lane_id,
                 "used": quota[key],
+                "lane_used": (
+                    int(
+                        scheduler.ensure_cookie_lane_quota(
+                            quota,
+                            self.lane_id,
+                        ).get(key, 0)
+                    )
+                    if self.lane_id
+                    else None
+                ),
                 "remaining": remaining - count,
             }

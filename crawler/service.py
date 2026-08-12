@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import threading
 import time
@@ -12,8 +13,19 @@ from math import gcd
 from pathlib import Path
 
 from crawler.client import MiniProgramClient
+from crawler.cookie_pool import CookiePoolClient
+from crawler.id_ledger import (
+    ledger_state,
+    mark_detail_finished,
+    mark_detail_started,
+    record_list_page,
+    set_ledger_state,
+)
 from crawler.lock import database_write_lock
-from crawler.normalizer import normalize_detail, validate_normalized_detail
+from crawler.normalizer import (
+    normalize_detail,
+    validate_normalized_detail,
+)
 from crawler.strategies.page_scan import PageScanProgress
 from storage.post_writer import SQLitePostStore, has_media_json, safe_int
 
@@ -26,18 +38,24 @@ class CrawlerService:
         self,
         *,
         db_path: str | Path,
-        cookie: str,
+        cookie: str = "",
+        cookie_pool_path: str | Path | None = None,
         lock_timeout: int,
         init_schema: bool = False,
         api_get_fn=None,
     ):
         self.db_path = Path(db_path)
         self.cookie = cookie
+        self.cookie_pool_path = (
+            Path(cookie_pool_path) if cookie_pool_path else None
+        )
         self.lock_timeout = lock_timeout
         self.init_schema = init_schema
         self.api_get_fn = api_get_fn
 
-    def client(self) -> MiniProgramClient:
+    def client(self) -> MiniProgramClient | CookiePoolClient:
+        if self.cookie_pool_path:
+            return CookiePoolClient.from_file(self.cookie_pool_path)
         return MiniProgramClient(self.cookie)
 
     def _article(self, client: MiniProgramClient, post_id: str):
@@ -126,6 +144,16 @@ class CrawlerService:
             stats[f"queue_after_{key}"] = current
             stats[f"queue_delta_{key}"] = current - safe_int(before.get(key))
 
+    @staticmethod
+    def add_client_source_stats(stats: dict, client) -> None:
+        stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
+        lane_counts = getattr(client, "lane_request_counts", None)
+        if lane_counts:
+            stats["cookie_lane_requests"] = {
+                str(key): safe_int(value)
+                for key, value in lane_counts.items()
+            }
+
     def fetch_detail_with_error(
         self,
         client: MiniProgramClient,
@@ -140,8 +168,22 @@ class CrawlerService:
         post, comments = parsed
         payload_error = validate_normalized_detail(post, comments)
         if payload_error:
-            return None, f"suspicious_payload:{payload_error}"
+            return parsed, f"suspicious_payload:{payload_error}"
         return parsed, None
+
+    @staticmethod
+    def merge_partial_detail(
+        store: SQLitePostStore,
+        parsed: tuple[dict, list[dict]],
+        payload_error: str,
+    ) -> dict[str, int]:
+        post, comments = parsed
+        return store.merge_partial_post(
+            post,
+            comments,
+            preserve_existing_content=payload_error.endswith("empty_content"),
+            commit=False,
+        )
 
     def discover_queue(
         self,
@@ -156,6 +198,7 @@ class CrawlerService:
         no_action_page_threshold: int = 3,
         dry_run: bool = False,
         write_stubs: bool = True,
+        bootstrap: bool = False,
         min_delay: float = 0.1,
         max_delay: float = 0.3,
     ) -> dict:
@@ -182,6 +225,15 @@ class CrawlerService:
             "old_page_stop": False,
             "no_action_stop": False,
             "quota_stop": False,
+            "bootstrap": bool(bootstrap),
+            "bootstrap_complete": False,
+            "ledger_baseline": False,
+            "ledger_new_ids": 0,
+            "ledger_new_events": 0,
+            "ledger_actionable": 0,
+            "ledger_stable_pages": 0,
+            "source_create_time_min": "",
+            "source_create_time_max": "",
             "source_calls": 0,
         }
         observed_ids: set[str] = set()
@@ -197,6 +249,20 @@ class CrawlerService:
                     store.init_schema()
                 else:
                     store.ensure_runtime_schema()
+                baseline_ready = ledger_state(
+                    store.conn,
+                    "lists2_baseline_ready",
+                    default="0",
+                ) in {"1", "true", '"1"', '"true"'}
+                if not baseline_ready:
+                    baseline_ready = bool(
+                        store.conn.execute(
+                            "select 1 from list2_observation_log limit 1"
+                        ).fetchone()
+                    )
+                list2_baseline = endpoint == "lists2" and not baseline_ready
+                stats["ledger_baseline"] = bool(list2_baseline)
+                ledger_run_id = f"{command}:{run_started_at}"
                 queue_before = store.crawler_queue_pending_snapshot()
                 self.add_queue_snapshot(stats, before=queue_before)
                 for page in range(1, max_pages + 1):
@@ -228,6 +294,51 @@ class CrawlerService:
                     seen_signatures[signature] = page
                     stats["pages"] += 1
                     stats["seen"] += len(articles)
+                    ledger_page = {}
+                    if not dry_run:
+                        ledger_page = record_list_page(
+                            store.conn,
+                            run_id=ledger_run_id,
+                            endpoint=endpoint,
+                            page=page,
+                            articles=articles,
+                            baseline=list2_baseline,
+                            bootstrap=bootstrap,
+                            observed_at=datetime.now(CHINA_TZ).isoformat(),
+                        )
+                        stats["ledger_new_ids"] += safe_int(
+                            ledger_page.get("new_ids")
+                        )
+                        stats["ledger_new_events"] += safe_int(
+                            ledger_page.get("new_events")
+                        )
+                        stats["ledger_actionable"] += safe_int(
+                            ledger_page.get("actionable")
+                        )
+                        if not ledger_page.get("stable", True):
+                            stats["ledger_stable_pages"] = 0
+                        else:
+                            stats["ledger_stable_pages"] += 1
+                        source_min = str(
+                            ledger_page.get("source_create_time_min") or ""
+                        )
+                        source_max = str(
+                            ledger_page.get("source_create_time_max") or ""
+                        )
+                        if source_min and (
+                            not stats["source_create_time_min"]
+                            or source_min < stats["source_create_time_min"]
+                        ):
+                            stats["source_create_time_min"] = source_min
+                        if source_max and (
+                            not stats["source_create_time_max"]
+                            or source_max > stats["source_create_time_max"]
+                        ):
+                            stats["source_create_time_max"] = source_max
+                    ledger_actionable_ids = set(
+                        str(item)
+                        for item in ledger_page.get("actionable_ids", [])
+                    )
                     page_queued = page_existing = page_changed = page_mutations = 0
                     page_has_since = False
                     for article in articles:
@@ -268,6 +379,10 @@ class CrawlerService:
                                 priority = 0
                                 stats["comment_changed"] += 1
                                 page_changed += 1
+                            elif post_id in ledger_actionable_ids:
+                                reason = "active_event"
+                                priority = 0
+                                page_changed += 1
                             elif needs_detail and update_after_since:
                                 reason = "active_missing"
                                 priority = 20 if comment_count > 0 else 50
@@ -282,16 +397,19 @@ class CrawlerService:
                             stats["observed_missing_queued"] = len(
                                 observed_missing_ids
                             )
+                        if not dry_run and write_stubs and not bootstrap:
+                            # The paid list response already contains current
+                            # counters. Refresh them for full posts too without
+                            # spending an additional detail request.
+                            store.upsert_list_stub(
+                                article,
+                                source=endpoint,
+                                commit=False,
+                            )
                         if reason:
                             page_queued += 1
                             stats["queued"] += 1
                             if not dry_run:
-                                if write_stubs and needs_detail:
-                                    store.upsert_list_stub(
-                                        article,
-                                        source=endpoint,
-                                        commit=False,
-                                    )
                                 action = store.enqueue_crawler_candidate(
                                     post_id=post_id,
                                     source=endpoint,
@@ -318,7 +436,18 @@ class CrawlerService:
                             stats["retained_ids"] = len(retained_ids)
                     if not dry_run:
                         store.conn.commit()
-                    if page_mutations == 0:
+                    page_has_ledger_signal = bool(
+                        ledger_page
+                        and endpoint == "lists2"
+                        and (
+                            safe_int(ledger_page.get("actionable")) > 0
+                            or (
+                                not list2_baseline
+                                and not ledger_page.get("stable", True)
+                            )
+                        )
+                    )
+                    if page_mutations == 0 and not page_has_ledger_signal:
                         no_action_pages += 1
                     else:
                         no_action_pages = 0
@@ -331,7 +460,9 @@ class CrawlerService:
                         f"articles={len(articles)} queued={page_queued} "
                         f"mutations={page_mutations} "
                         f"existing={page_existing} changed={page_changed} "
-                        f"old_pages={old_pages}",
+                        f"old_pages={old_pages} "
+                        f"ledger_stable={ledger_page.get('stable', True)} "
+                        f"ledger_events={safe_int(ledger_page.get('new_events'))}",
                         flush=True,
                     )
                     if endpoint == "lists" and old_pages >= old_page_threshold:
@@ -352,6 +483,22 @@ class CrawlerService:
                             flush=True,
                         )
                         break
+                if (
+                    endpoint == "lists2"
+                    and not dry_run
+                    and not stats["quota_stop"]
+                    and stats["pages"] > 0
+                ):
+                    set_ledger_state(store.conn, "lists2_baseline_ready", "1")
+                if (
+                    endpoint == "lists"
+                    and bootstrap
+                    and not dry_run
+                    and not stats["quota_stop"]
+                    and stats["pages"] >= max(1, int(min_pages))
+                ):
+                    set_ledger_state(store.conn, "lists_bootstrap_complete", "1")
+                    stats["bootstrap_complete"] = True
                 queue_after = store.crawler_queue_pending_snapshot()
                 self.add_queue_snapshot(
                     stats,
@@ -359,7 +506,7 @@ class CrawlerService:
                     after=queue_after,
                 )
                 if not dry_run:
-                    stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
+                    self.add_client_source_stats(stats, client)
                     store.set_state(
                         f"crawler_{command.replace('-', '_')}",
                         json.dumps(stats, ensure_ascii=False),
@@ -399,11 +546,17 @@ class CrawlerService:
             "refresh_limit": None,
             "fresh_coverage_after": "",
             "selected": 0,
+            "claimed": 0,
+            "claim_conflicts": 0,
+            "recovered_claims": 0,
             "written": 0,
             "misses": 0,
             "rate_limited": False,
             "quota_stop": False,
             "suspicious_payloads": 0,
+            "partial_saved": 0,
+            "partial_completed": 0,
+            "partial_comment_rows_added": 0,
             "selected_urgent": 0,
             "selected_refresh": 0,
             "selected_coverage": 0,
@@ -450,6 +603,9 @@ class CrawlerService:
                     store.init_schema()
                 else:
                     store.ensure_runtime_schema()
+                stats["recovered_claims"] = store.recover_expired_crawler_queue_claims(
+                    commit=False
+                )
                 queue_before = store.crawler_queue_pending_snapshot()
                 self.add_queue_snapshot(stats, before=queue_before)
                 effective_refresh_limit = (
@@ -472,6 +628,11 @@ class CrawlerService:
                     fresh_coverage_after=fresh_coverage_after,
                 )
                 stats["selected"] = len(items)
+                claim_owner = f"trickle-fill:{os.getpid()}:{run_started_at}"
+                claim_ttl_seconds = max(
+                    30 * 60,
+                    int(max(1.0, float(max_delay)) * max(1, int(limit)) + 10 * 60),
+                )
                 stats["selected_urgent"] = sum(
                     1 for item in items if safe_int(item["priority"]) < 0
                 )
@@ -511,15 +672,62 @@ class CrawlerService:
                         >= fresh_coverage_after
                     )
                     is_quiet_coverage = priority >= 40
+                    claimed = dry_run or store.claim_crawler_queue_item(
+                        post_id,
+                        owner=claim_owner,
+                        claim_ttl_seconds=claim_ttl_seconds,
+                        commit=False,
+                    )
+                    if not claimed:
+                        stats["claim_conflicts"] += 1
+                        continue
+                    if not dry_run:
+                        stats["claimed"] += 1
+                        store.conn.commit()
+                        mark_detail_started(store.conn, post_id)
+                        store.conn.commit()
                     time.sleep(random.uniform(min_delay, max_delay))
                     parsed, error = self.fetch_detail_with_error(client, post_id)
+                    routed_lane = str(getattr(client, "last_lane_id", "") or "")
+                    if routed_lane and not dry_run:
+                        store.set_crawler_queue_claim_lane(
+                            post_id,
+                            owner=claim_owner,
+                            lane_id=routed_lane,
+                            commit=False,
+                        )
                     if error:
                         if self.is_source_quota_stop(error):
                             stats["quota_stop"] = True
+                            if not dry_run:
+                                mark_detail_finished(
+                                    store.conn,
+                                    post_id,
+                                    status="blocked",
+                                    error=error,
+                                )
+                                store.mark_crawler_queue_item(
+                                    post_id,
+                                    status="pending",
+                                    last_error="",
+                                    increment_attempts=False,
+                                    commit=False,
+                                )
+                                store.conn.commit()
                             print(f"[trickle-fill] stop {error}", flush=True)
                             break
                         if error in {"not_found", "foreign_or_invalid"}:
                             if not dry_run:
+                                mark_detail_finished(
+                                    store.conn,
+                                    post_id,
+                                    status=(
+                                        "not_found"
+                                        if error == "not_found"
+                                        else "failed"
+                                    ),
+                                    error=error,
+                                )
                                 store.mark_crawler_queue_item(
                                     post_id,
                                     status="skipped",
@@ -528,6 +736,12 @@ class CrawlerService:
                                     record_observation=True,
                                     commit=False,
                                 )
+                                if error == "not_found":
+                                    store.mark_post_source_unavailable(
+                                        post_id,
+                                        error,
+                                        commit=False,
+                                    )
                                 store.conn.commit()
                             stats["misses"] += 1
                             stats[f"misses_{lane}"] += 1
@@ -537,21 +751,63 @@ class CrawlerService:
                             )
                             continue
                         if error.startswith("suspicious_payload:"):
-                            if not dry_run:
-                                store.mark_crawler_queue_item(
-                                    post_id,
-                                    status="failed",
-                                    last_error=error,
-                                    increment_attempts=True,
-                                    record_observation=True,
-                                    commit=False,
-                                )
-                                store.conn.commit()
                             stats["misses"] += 1
                             stats[f"misses_{lane}"] += 1
                             stats["suspicious_payloads"] += 1
+                            if not dry_run:
+                                partial = self.merge_partial_detail(
+                                    store,
+                                    parsed,
+                                    error,
+                                )
+                                stats["partial_saved"] += 1
+                                stats["partial_comment_rows_added"] += safe_int(
+                                    partial["added_comment_rows"]
+                                )
+                                mark_detail_finished(
+                                    store.conn,
+                                    post_id,
+                                    status="partial",
+                                    comment_count=safe_int(
+                                        partial["after_comment_rows"]
+                                    ),
+                                    error=error,
+                                )
+                                if error.endswith("empty_content"):
+                                    status = store.defer_crawler_queue_failure(
+                                        post_id,
+                                        last_error=error,
+                                        retry_delay_seconds=transient_retry_delay,
+                                        max_same_observation_attempts=max_transient_attempts,
+                                        commit=False,
+                                    )
+                                    if status == "pending":
+                                        stats["transient_retries"] += 1
+                                    else:
+                                        stats["terminal_failures"] += 1
+                                else:
+                                    status = store.finish_crawler_queue_detail(
+                                        post_id,
+                                        detail_comment_count=safe_int(
+                                            partial["after_comment_rows"]
+                                        ),
+                                        retry_delay_seconds=observation_retry_delay,
+                                        max_same_observation_attempts=(
+                                            max_observation_attempts
+                                        ),
+                                        commit=False,
+                                    )
+                                    if status == "pending":
+                                        stats["retry_scheduled"] += 1
+                                    elif status == "deferred":
+                                        stats["deferred_observations"] += 1
+                                    elif status == "done":
+                                        stats["partial_completed"] += 1
+                                        stats["completed_details"] += 1
+                                        stats[f"completed_{lane}"] += 1
+                                store.conn.commit()
                             print(
-                                f"[trickle-fill] reject #{post_id} err={error}",
+                                f"[trickle-fill] partial #{post_id} err={error}",
                                 flush=True,
                             )
                             continue
@@ -561,6 +817,17 @@ class CrawlerService:
                         if self.is_rate_limited(error):
                             stats["rate_limited"] = True
                         if not dry_run:
+                            mark_detail_finished(
+                                store.conn,
+                                post_id,
+                                status=(
+                                    "blocked"
+                                    if error == "cookie_expired"
+                                    or self.is_rate_limited(error)
+                                    else "failed"
+                                ),
+                                error=error,
+                            )
                             if stats["rate_limited"]:
                                 store.mark_crawler_queue_item(
                                     post_id,
@@ -619,6 +886,17 @@ class CrawlerService:
                         )
                     else:
                         store.upsert_post(post, comments, commit=False)
+                        mark_detail_finished(
+                            store.conn,
+                            post_id,
+                            status="succeeded",
+                            comment_count=safe_int(post["comment_count"]),
+                            source_update_time=str(
+                                post.get("list_update_time")
+                                or post.get("update_time")
+                                or ""
+                            ),
+                        )
                         queue_status = store.finish_crawler_queue_detail(
                             post_id,
                             detail_comment_count=safe_int(post["comment_count"]),
@@ -711,7 +989,7 @@ class CrawlerService:
                     after=queue_after,
                 )
                 if not dry_run:
-                    stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
+                    self.add_client_source_stats(stats, client)
                     store.set_state(
                         "crawler_trickle_fill",
                         json.dumps(stats, ensure_ascii=False),
@@ -936,6 +1214,8 @@ class CrawlerService:
             "sampled": 0,
             "found": 0,
             "saved": 0,
+            "partial_saved": 0,
+            "partial_comment_rows_added": 0,
             "missing": 0,
             "errors": 0,
             "completed": 0,
@@ -1029,7 +1309,12 @@ class CrawlerService:
                         create_time = ""
                         comment_count = 0
                         last_error = error or ""
-                        if error:
+                        partial_payload = bool(
+                            error
+                            and error.startswith("suspicious_payload:")
+                            and parsed is not None
+                        )
+                        if error and not partial_payload:
                             if self.is_rate_limited(error):
                                 stats["rate_limited"] = True
                                 if not dry_run:
@@ -1050,7 +1335,28 @@ class CrawlerService:
                             found += 1
                             stats["found"] += 1
                             if enqueue_found and not dry_run:
-                                store.upsert_post(post, comments, commit=False)
+                                saved_comment_rows = comment_count
+                                if partial_payload:
+                                    partial = self.merge_partial_detail(
+                                        store,
+                                        parsed,
+                                        str(error),
+                                    )
+                                    stats["partial_saved"] += 1
+                                    stats[
+                                        "partial_comment_rows_added"
+                                    ] += safe_int(
+                                        partial["added_comment_rows"]
+                                    )
+                                    saved_comment_rows = safe_int(
+                                        partial["after_comment_rows"]
+                                    )
+                                else:
+                                    store.upsert_post(
+                                        post,
+                                        comments,
+                                        commit=False,
+                                    )
                                 store.enqueue_crawler_candidate(
                                     post_id=str(post_id),
                                     source="id_probe",
@@ -1058,17 +1364,18 @@ class CrawlerService:
                                     list_create_time=create_time,
                                     list_update_time=create_time,
                                     list_comment_count=comment_count,
-                                    db_comment_count=store.get_post_counts(str(post_id)),
+                                    db_comment_count=saved_comment_rows,
                                     reason="id_probe_found",
                                     commit=False,
                                 )
-                                store.finish_crawler_queue_detail(
-                                    str(post_id),
-                                    detail_comment_count=comment_count,
-                                    retry_delay_seconds=0,
-                                    max_same_observation_attempts=1,
-                                    commit=False,
-                                )
+                                if not partial_payload:
+                                    store.finish_crawler_queue_detail(
+                                        str(post_id),
+                                        detail_comment_count=comment_count,
+                                        retry_delay_seconds=0,
+                                        max_same_observation_attempts=1,
+                                        commit=False,
+                                    )
                                 stats["saved"] += 1
                         if not dry_run:
                             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1147,7 +1454,7 @@ class CrawlerService:
                     if stats["quota_stop"]:
                         break
                 if not dry_run:
-                    stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
+                    self.add_client_source_stats(stats, client)
                     store.set_state(
                         "crawler_probe_gaps",
                         json.dumps(stats, ensure_ascii=False),
@@ -1190,6 +1497,8 @@ class CrawlerService:
             "skipped": 0,
             "failed": 0,
             "transient_retries": 0,
+            "partial_saved": 0,
+            "partial_comment_rows_added": 0,
             "rate_limited": False,
             "quota_stop": False,
             "source_calls": 0,
@@ -1250,17 +1559,65 @@ class CrawlerService:
                                     record_observation=True,
                                     commit=False,
                                 )
+                                if error == "not_found":
+                                    store.mark_post_source_unavailable(
+                                        post_id,
+                                        error,
+                                        commit=False,
+                                    )
                                 stats["skipped"] += 1
                             elif error.startswith("suspicious_payload:"):
-                                store.mark_crawler_queue_item(
-                                    post_id,
-                                    status="failed",
-                                    last_error=error,
-                                    increment_attempts=True,
-                                    record_observation=True,
+                                post, _comments = parsed
+                                partial = self.merge_partial_detail(
+                                    store,
+                                    parsed,
+                                    error,
+                                )
+                                stats["partial_saved"] += 1
+                                stats["partial_comment_rows_added"] += safe_int(
+                                    partial["added_comment_rows"]
+                                )
+                                store.enqueue_crawler_candidate(
+                                    post_id=post_id,
+                                    source="manual_ids",
+                                    priority=-10,
+                                    list_create_time=str(
+                                        post.get("create_time") or ""
+                                    ),
+                                    list_update_time=str(
+                                        post.get("create_time") or ""
+                                    ),
+                                    list_comment_count=safe_int(
+                                        post.get("comment_count")
+                                    ),
+                                    db_comment_count=safe_int(
+                                        partial["after_comment_rows"]
+                                    ),
+                                    reason="explicit_id",
                                     commit=False,
                                 )
-                                stats["failed"] += 1
+                                if error.endswith("empty_content"):
+                                    status = store.defer_crawler_queue_failure(
+                                        post_id,
+                                        last_error=error,
+                                        retry_delay_seconds=60 * 60,
+                                        max_same_observation_attempts=3,
+                                        commit=False,
+                                    )
+                                else:
+                                    status = store.finish_crawler_queue_detail(
+                                        post_id,
+                                        detail_comment_count=safe_int(
+                                            partial["after_comment_rows"]
+                                        ),
+                                        retry_delay_seconds=6 * 60 * 60,
+                                        max_same_observation_attempts=2,
+                                        commit=False,
+                                    )
+                                if status == "pending":
+                                    stats["transient_retries"] += 1
+                                elif status in {"failed", "deferred"}:
+                                    stats["failed"] += 1
                             elif stats["rate_limited"] or error == "cookie_expired":
                                 store.mark_crawler_queue_item(
                                     post_id,
@@ -1325,7 +1682,7 @@ class CrawlerService:
                     after=queue_after,
                 )
                 if not dry_run:
-                    stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
+                    self.add_client_source_stats(stats, client)
                     store.set_state(
                         "crawler_fill_details",
                         json.dumps(stats, ensure_ascii=False),
@@ -1566,6 +1923,13 @@ class CrawlerService:
             raise ValueError("--to-date must not be earlier than --from-date")
         if not start_id and not from_date:
             raise ValueError("provide --start-id or --from-date")
+        workers = max(1, int(workers))
+        if self.cookie_pool_path and workers > 1:
+            print(
+                "[scan-id-range] cookie pool enabled; forcing one sequential request stream",
+                flush=True,
+            )
+            workers = 1
 
         probe = self.client()
         with SQLitePostStore(self.db_path) as state_store:
@@ -1660,6 +2024,10 @@ class CrawlerService:
             "filtered": safe_int(saved.get("filtered")),
             "saved_filtered": safe_int(saved.get("saved_filtered")),
             "suspicious": safe_int(saved.get("suspicious")),
+            "partial_saved": safe_int(saved.get("partial_saved")),
+            "partial_comment_rows_added": safe_int(
+                saved.get("partial_comment_rows_added")
+            ),
             "missing": safe_int(saved.get("missing")),
             "foreign": safe_int(saved.get("foreign")),
             "errors": safe_int(saved.get("errors")),
@@ -1698,6 +2066,20 @@ class CrawlerService:
                                 stats["suspicious"] += 1
                                 if not dry_run:
                                     post, _comments = parsed
+                                    partial = store.merge_partial_post(
+                                        post,
+                                        _comments,
+                                        preserve_existing_content=(
+                                            status == "suspicious:empty_content"
+                                        ),
+                                        commit=False,
+                                    )
+                                    stats["partial_saved"] += 1
+                                    stats[
+                                        "partial_comment_rows_added"
+                                    ] += safe_int(
+                                        partial["added_comment_rows"]
+                                    )
                                     store.enqueue_crawler_candidate(
                                         post_id=str(post_id),
                                         source="id_range",
@@ -1707,7 +2089,9 @@ class CrawlerService:
                                         list_comment_count=safe_int(
                                             post.get("comment_count")
                                         ),
-                                        db_comment_count=store.get_post_counts(post_id),
+                                        db_comment_count=safe_int(
+                                            partial["after_comment_rows"]
+                                        ),
                                         reason="id_range_suspicious",
                                         commit=False,
                                     )
