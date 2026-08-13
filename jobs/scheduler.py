@@ -1976,6 +1976,13 @@ def main() -> int:
                     "[scheduler] list1 seed completed; detail backfill started",
                     flush=True,
                 )
+                save_heartbeat(
+                    state="idle",
+                    job=due,
+                    detail="list1_seed_complete_detail_backfill",
+                )
+                last_heartbeat = time.monotonic()
+                continue
             if (
                 due == "bootstrap_new"
                 and result.succeeded
