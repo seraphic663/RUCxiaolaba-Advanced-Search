@@ -49,7 +49,7 @@ class AutomaticQuota:
         scheduler = self._scheduler()
         lock_path = scheduler.QUOTA_PATH.with_name(scheduler.QUOTA_PATH.name + ".lock")
         with exclusive_control_lock(lock_path):
-            pause = scheduler.active_pause()
+            pause = scheduler.active_pause(self.lane_id)
             if pause:
                 raise AutomaticQuotaError(
                     "source_quota_paused",
