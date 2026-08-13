@@ -8,6 +8,7 @@ import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from math import gcd
 from pathlib import Path
@@ -27,6 +28,14 @@ from crawler.normalizer import (
     validate_normalized_detail,
 )
 from crawler.strategies.page_scan import PageScanProgress
+from crawler.task_routing import (
+    TASK_HISTORY_DETAIL,
+    TASK_HISTORY_PROBE,
+    TASK_ID_FOLLOWUP,
+    TASK_LIST_ACTIVE,
+    TASK_LIST_NEW,
+    normalize_task_type,
+)
 from storage.post_writer import SQLitePostStore, has_media_json, safe_int
 
 CHINA_TZ = timezone(timedelta(hours=8))
@@ -58,28 +67,69 @@ class CrawlerService:
             return CookiePoolClient.from_file(self.cookie_pool_path)
         return MiniProgramClient(self.cookie)
 
-    def _article(self, client: MiniProgramClient, post_id: str):
-        if self.api_get_fn:
-            return self.api_get_fn(
-                client,
-                "/article/article/info",
-                {"community_id": 4, "id": str(post_id)},
-            )
-        return client.article(post_id)
+    @contextmanager
+    def _task_scope(self, client, task_type: str):
+        """Pin a pooled client to one semantic queue route for one call."""
 
-    def _list_page(self, client: MiniProgramClient, endpoint: str, page: int):
-        if self.api_get_fn:
-            return self.api_get_fn(
-                client,
-                f"/article/article/{endpoint}",
-                {"community_id": 4, "page": page},
-            )
-        return client.list_page(endpoint, page)
+        task = normalize_task_type(task_type)
+        route = getattr(client, "task", None)
+        if route is None:
+            yield client
+            return
+        with route(task):
+            yield client
 
-    def _latest_id(self, client: MiniProgramClient) -> int:
+    def _article(
+        self,
+        client: MiniProgramClient,
+        post_id: str,
+        *,
+        task_type: str = TASK_ID_FOLLOWUP,
+    ):
+        with self._task_scope(client, task_type):
+            if self.api_get_fn:
+                return self.api_get_fn(
+                    client,
+                    "/article/article/info",
+                    {"community_id": 4, "id": str(post_id)},
+                )
+            return client.article(post_id)
+
+    def _list_page(
+        self,
+        client: MiniProgramClient,
+        endpoint: str,
+        page: int,
+        *,
+        task_type: str = "",
+    ):
+        task = task_type or (
+            TASK_LIST_ACTIVE if endpoint == "lists2" else TASK_LIST_NEW
+        )
+        with self._task_scope(client, task):
+            if self.api_get_fn:
+                return self.api_get_fn(
+                    client,
+                    f"/article/article/{endpoint}",
+                    {"community_id": 4, "page": page},
+                )
+            return client.list_page(endpoint, page)
+
+    def _latest_id(
+        self,
+        client: MiniProgramClient,
+        *,
+        task_type: str = TASK_LIST_NEW,
+    ) -> int:
         if not self.api_get_fn:
-            return client.latest_id()
-        data, error = self._list_page(client, "lists", 1)
+            with self._task_scope(client, task_type):
+                return client.latest_id(task_type=task_type)
+        data, error = self._list_page(
+            client,
+            "lists",
+            1,
+            task_type=task_type,
+        )
         if error:
             raise RuntimeError(f"cannot determine latest id: {error}")
         return max(
@@ -91,8 +141,10 @@ class CrawlerService:
         self,
         client: MiniProgramClient,
         post_id: str,
+        *,
+        task_type: str = TASK_ID_FOLLOWUP,
     ) -> tuple[dict, list[dict]] | None:
-        data, error = self._article(client, post_id)
+        data, error = self._article(client, post_id, task_type=task_type)
         if error or not data:
             return None
         parsed = normalize_detail(str(post_id), data)
@@ -158,8 +210,10 @@ class CrawlerService:
         self,
         client: MiniProgramClient,
         post_id: str,
+        *,
+        task_type: str = TASK_ID_FOLLOWUP,
     ) -> tuple[tuple[dict, list[dict]] | None, str | None]:
-        data, error = self._article(client, post_id)
+        data, error = self._article(client, post_id, task_type=task_type)
         if error or not data:
             return None, error or "empty_detail"
         parsed = normalize_detail(str(post_id), data)
@@ -243,6 +297,9 @@ class CrawlerService:
         seen_signatures: dict[str, int] = {}
         old_pages = 0
         no_action_pages = 0
+        list_task_type = (
+            TASK_LIST_ACTIVE if endpoint == "lists2" else TASK_LIST_NEW
+        )
         with database_write_lock(self.db_path, self.lock_timeout):
             with SQLitePostStore(self.db_path) as store:
                 if self.init_schema:
@@ -301,7 +358,12 @@ class CrawlerService:
                 page_end = bootstrap_target_page if bootstrap else max_pages
                 for page in range(page_start, page_end + 1):
                     time.sleep(random.uniform(min_delay, max_delay))
-                    data, error = self._list_page(client, endpoint, page)
+                    data, error = self._list_page(
+                        client,
+                        endpoint,
+                        page,
+                        task_type=list_task_type,
+                    )
                     if error:
                         if self.is_source_quota_stop(error):
                             stats["quota_stop"] = True
@@ -453,6 +515,7 @@ class CrawlerService:
                                     list_comment_count=comment_count,
                                     db_comment_count=db_comment_count,
                                     reason=reason,
+                                    task_type=TASK_ID_FOLLOWUP,
                                     commit=False,
                                 )
                                 stats[f"queue_{action}"] += 1
@@ -589,11 +652,14 @@ class CrawlerService:
         transient_retry_delay: int = 60 * 60,
         max_transient_attempts: int = 3,
         fresh_coverage_hours: int = 72,
+        task_type: str = TASK_ID_FOLLOWUP,
     ) -> dict:
         run_started_at = datetime.now(CHINA_TZ).isoformat()
+        task_type = normalize_task_type(task_type)
         client = self.client()
         stats = {
             "limit": limit,
+            "task_type": task_type,
             "refresh_limit": None,
             "fresh_coverage_after": "",
             "selected": 0,
@@ -677,6 +743,7 @@ class CrawlerService:
                     limit,
                     refresh_limit=effective_refresh_limit,
                     fresh_coverage_after=fresh_coverage_after,
+                    task_type=task_type,
                 )
                 stats["selected"] = len(items)
                 claim_owner = f"trickle-fill:{os.getpid()}:{run_started_at}"
@@ -723,9 +790,14 @@ class CrawlerService:
                         >= fresh_coverage_after
                     )
                     is_quiet_coverage = priority >= 40
+                    expected_lane = ""
+                    lane_for_task = getattr(client, "lane_for_task", None)
+                    if lane_for_task is not None:
+                        expected_lane = str(lane_for_task(task_type) or "")
                     claimed = dry_run or store.claim_crawler_queue_item(
                         post_id,
                         owner=claim_owner,
+                        lane_id=expected_lane,
                         claim_ttl_seconds=claim_ttl_seconds,
                         commit=False,
                     )
@@ -738,7 +810,11 @@ class CrawlerService:
                         mark_detail_started(store.conn, post_id)
                         store.conn.commit()
                     time.sleep(random.uniform(min_delay, max_delay))
-                    parsed, error = self.fetch_detail_with_error(client, post_id)
+                    parsed, error = self.fetch_detail_with_error(
+                        client,
+                        post_id,
+                        task_type=task_type,
+                    )
                     routed_lane = str(getattr(client, "last_lane_id", "") or "")
                     if routed_lane and not dry_run:
                         store.set_crawler_queue_claim_lane(
@@ -1042,12 +1118,18 @@ class CrawlerService:
                 if not dry_run:
                     self.add_client_source_stats(stats, client)
                     store.set_state(
-                        "crawler_trickle_fill",
+                        "crawler_trickle_fill"
+                        if task_type == TASK_ID_FOLLOWUP
+                        else f"crawler_trickle_fill_{task_type}",
                         json.dumps(stats, ensure_ascii=False),
                         commit=False,
                     )
                     store.record_crawler_run(
-                        command="trickle-fill",
+                        command=(
+                            "trickle-fill"
+                            if task_type == TASK_ID_FOLLOWUP
+                            else f"trickle-fill:{task_type}"
+                        ),
                         stats=stats,
                         started_at=run_started_at,
                         commit=True,
@@ -1349,6 +1431,7 @@ class CrawlerService:
                         parsed, error = self.fetch_detail_with_error(
                             client,
                             str(post_id),
+                            task_type=TASK_HISTORY_PROBE,
                         )
                         if self.is_source_quota_stop(error):
                             stats["quota_stop"] = True
@@ -1417,6 +1500,7 @@ class CrawlerService:
                                     list_comment_count=comment_count,
                                     db_comment_count=saved_comment_rows,
                                     reason="id_probe_found",
+                                    task_type=TASK_HISTORY_DETAIL,
                                     commit=False,
                                 )
                                 if not partial_payload:
@@ -1531,11 +1615,13 @@ class CrawlerService:
         batch_size: int,
         min_delay: float,
         max_delay: float,
+        task_type: str = TASK_ID_FOLLOWUP,
     ) -> dict:
         requested_ids = [str(post_id).strip() for post_id in ids if str(post_id).strip()]
         unique_ids = list(dict.fromkeys(requested_ids))
         if not unique_ids:
             raise RuntimeError("no ids provided")
+        task_type = normalize_task_type(task_type)
         batch_size = max(1, int(batch_size))
         run_started_at = datetime.now(CHINA_TZ).isoformat()
         client = self.client()
@@ -1543,6 +1629,7 @@ class CrawlerService:
             "ids": unique_ids,
             "requested": len(requested_ids),
             "selected": len(unique_ids),
+            "task_type": task_type,
             "written": 0,
             "misses": 0,
             "skipped": 0,
@@ -1584,6 +1671,7 @@ class CrawlerService:
                             list_comment_count=safe_int(db_comment_count),
                             db_comment_count=db_comment_count,
                             reason="explicit_id",
+                            task_type=task_type,
                             commit=False,
                         )
                         stats[f"queue_{action}"] += 1
@@ -1591,7 +1679,11 @@ class CrawlerService:
                     store.conn.commit()
                 for index, post_id in enumerate(unique_ids, 1):
                     time.sleep(random.uniform(min_delay, max_delay))
-                    parsed, error = self.fetch_detail_with_error(client, post_id)
+                    parsed, error = self.fetch_detail_with_error(
+                        client,
+                        post_id,
+                        task_type=task_type,
+                    )
                     if error:
                         if self.is_source_quota_stop(error):
                             stats["quota_stop"] = True
@@ -1645,6 +1737,7 @@ class CrawlerService:
                                         partial["after_comment_rows"]
                                     ),
                                     reason="explicit_id",
+                                    task_type=task_type,
                                     commit=False,
                                 )
                                 if error.endswith("empty_content"):
@@ -1766,8 +1859,17 @@ class CrawlerService:
         dry_run: bool,
         min_delay: float,
         max_delay: float,
+        task_type: str = TASK_ID_FOLLOWUP,
     ) -> dict:
+        task_type = normalize_task_type(task_type)
         client = self.client()
+        list_task_type = (
+            task_type
+            if task_type in {TASK_HISTORY_DETAIL, TASK_HISTORY_PROBE}
+            else TASK_LIST_ACTIVE
+            if endpoint == "lists2"
+            else TASK_LIST_NEW
+        )
         stats = {
             "pages": 0,
             "seen": 0,
@@ -1797,7 +1899,12 @@ class CrawlerService:
                     if limit_reached:
                         break
                     time.sleep(random.uniform(min_delay, max_delay))
-                    data, error = self._list_page(client, endpoint, page)
+                    data, error = self._list_page(
+                        client,
+                        endpoint,
+                        page,
+                        task_type=list_task_type,
+                    )
                     if error:
                         stats["errors"] += 1
                         print(f"[{command}] page={page} err={error}", flush=True)
@@ -1864,6 +1971,7 @@ class CrawlerService:
                                     list_comment_count=comment_count,
                                     db_comment_count=existing,
                                     reason=reason,
+                                    task_type=task_type,
                                     commit=False,
                                 )
                                 stats[f"queue_{queue_action}"] += 1
@@ -1894,7 +2002,11 @@ class CrawlerService:
                         if max_details and stats["details"] >= max_details:
                             limit_reached = True
                             break
-                        parsed = self.fetch_detail(client, post_id)
+                        parsed = self.fetch_detail(
+                            client,
+                            post_id,
+                            task_type=task_type,
+                        )
                         if parsed is None:
                             stats["misses"] += 1
                             if observation["queue_action"] not in {"", "unchanged"}:
@@ -2010,7 +2122,10 @@ class CrawlerService:
                         raise RuntimeError(f"cannot determine end id for {to_date}")
                     resolved_end += 100
                 else:
-                    resolved_end = self._latest_id(probe) + 100
+                    resolved_end = self._latest_id(
+                        probe,
+                        task_type=TASK_HISTORY_DETAIL,
+                    ) + 100
             if resolved_end < resolved_start:
                 raise ValueError(f"end id {resolved_end} is earlier than start id {resolved_start}")
 
@@ -2040,7 +2155,11 @@ class CrawlerService:
             time.sleep(random.uniform(0.15, 0.4))
             last_error = ""
             for attempt in range(3):
-                data, error = self._article(local.client, str(post_id))
+                data, error = self._article(
+                    local.client,
+                    str(post_id),
+                    task_type=TASK_HISTORY_DETAIL,
+                )
                 if error == "cookie_expired":
                     return post_id, None, "cookie_expired"
                 if self.is_rate_limited(error):
@@ -2144,6 +2263,7 @@ class CrawlerService:
                                             partial["after_comment_rows"]
                                         ),
                                         reason="id_range_suspicious",
+                                        task_type=TASK_HISTORY_DETAIL,
                                         commit=False,
                                     )
                             elif status in ("missing", "foreign"):

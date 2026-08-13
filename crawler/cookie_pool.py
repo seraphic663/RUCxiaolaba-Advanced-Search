@@ -8,9 +8,12 @@ it only chooses which already-authorized lane owns that request.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+from crawler.task_routing import TASK_LIST_NEW, normalize_task_type
 
 
 COOKIE_KINDS = ("new_list", "active_list", "detail", "probe")
@@ -34,9 +37,19 @@ class CookieLaneSpec:
     config_path: Path
     daily_budgets: dict[str, int]
     weight: int = 1
+    task_types: tuple[str, ...] = ()
 
     def budget(self, kind: str) -> int:
         return max(0, int(self.daily_budgets.get(kind, 0) or 0))
+
+    def supports_task(self, task_type: str) -> bool:
+        """Return whether this lane is explicitly assigned to a task.
+
+        An empty task list is a backwards-compatible wildcard.  Once a lane
+        has task types, it is never selected for an unrelated queue row.
+        """
+
+        return not self.task_types or normalize_task_type(task_type) in self.task_types
 
 
 def _positive_int(value: object, *, field: str, lane_id: str) -> int:
@@ -87,9 +100,30 @@ def _parse_budgets(item: dict, lane_id: str) -> dict[str, int]:
             field=f"daily_budgets.{kind}",
             lane_id=lane_id,
         )
-    if not any(budgets.values()):
-        raise ValueError(f"cookie lane {lane_id!r} must have a positive budget")
     return budgets
+
+
+def _parse_task_types(item: dict, lane_id: str) -> tuple[str, ...]:
+    raw = item.get("task_types")
+    if raw is None:
+        raw = item.get("tasks")
+    if raw is None:
+        raw = item.get("routes")
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        raw = [part.strip() for part in raw.split(",") if part.strip()]
+    if not isinstance(raw, (list, tuple, set)):
+        raise ValueError(f"cookie lane {lane_id!r} task_types must be a list")
+    result: list[str] = []
+    for value in raw:
+        try:
+            task_type = normalize_task_type(str(value))
+        except ValueError as exc:
+            raise ValueError(f"cookie lane {lane_id!r}: {exc}") from exc
+        if task_type not in result:
+            result.append(task_type)
+    return tuple(result)
 
 
 def load_cookie_pool_specs(path: str | Path) -> tuple[CookieLaneSpec, ...]:
@@ -119,12 +153,19 @@ def load_cookie_pool_specs(path: str | Path) -> tuple[CookieLaneSpec, ...]:
         if not config_path.is_absolute():
             config_path = pool_path.parent / config_path
         weight = _positive_int(item.get("weight", 1), field="weight", lane_id=lane_id)
+        task_types = _parse_task_types(item, lane_id)
+        budgets = _parse_budgets(item, lane_id)
+        if not any(budgets.values()) and not task_types:
+            raise ValueError(
+                f"cookie lane {lane_id!r} must have a positive budget or task_types"
+            )
         specs.append(
             CookieLaneSpec(
                 lane_id=lane_id,
                 config_path=config_path,
-                daily_budgets=_parse_budgets(item, lane_id),
+                daily_budgets=budgets,
                 weight=max(1, weight),
+                task_types=task_types,
             )
         )
     if not specs:
@@ -155,6 +196,7 @@ class CookiePoolClient:
         self._lane_request_counts = {spec.lane_id: 0 for spec in self.specs}
         self.last_lane_id = ""
         self.last_error = ""
+        self._task_type = ""
 
     @classmethod
     def from_file(cls, path: str | Path) -> "CookiePoolClient":
@@ -212,31 +254,80 @@ class CookiePoolClient:
             return "new_list"
         return "detail"
 
-    def _ordered_specs(self, kind: str) -> list[CookieLaneSpec]:
+    @property
+    def task_type(self) -> str:
+        return self._task_type
+
+    def lane_for_task(self, task_type: str) -> str:
+        """Return a unique configured lane for a task, otherwise empty."""
+
+        task = normalize_task_type(task_type)
+        matches = [spec for spec in self.specs if spec.supports_task(task)]
+        if len(matches) == 1:
+            return matches[0].lane_id
+        return ""
+
+    @contextmanager
+    def task(self, task_type: str):
+        """Temporarily pin all requests in a service operation to a route."""
+
+        task = normalize_task_type(task_type)
+        previous = self._task_type
+        self._task_type = task
+        try:
+            yield self
+        finally:
+            self._task_type = previous
+
+    def _ordered_specs(self, kind: str, task_type: str = "") -> list[CookieLaneSpec]:
+        requested_task = normalize_task_type(task_type) if task_type else ""
         candidates = [
             spec
             for spec in self.specs
             if (
                 spec.lane_id not in self._disabled
-                and spec.budget(kind) > 0
-                and self._lane_request_counts[spec.lane_id] < spec.budget(kind)
+                and (not requested_task or spec.supports_task(requested_task))
+                and (
+                    kind in {"new_list", "active_list"}
+                    or spec.budget(kind) > 0
+                )
+                and (
+                    kind in {"new_list", "active_list"}
+                    or self._lane_request_counts[spec.lane_id] < spec.budget(kind)
+                )
             )
         ]
         candidates.sort(
             key=lambda spec: (
-                self._lane_request_counts[spec.lane_id] / max(1, spec.budget(kind)),
+                self._lane_request_counts[spec.lane_id]
+                / max(1, spec.budget(kind)),
                 -spec.weight,
                 self.lane_ids.index(spec.lane_id),
             )
         )
         return candidates
 
-    def get(self, path: str, params: dict | None = None):
+    def get(
+        self,
+        path: str,
+        params: dict | None = None,
+        *,
+        task_type: str = "",
+    ):
         kind = self._kind(path)
         self.last_lane_id = ""
-        candidates = self._ordered_specs(kind)
+        requested_task = task_type or self._task_type
+        if requested_task:
+            requested_task = normalize_task_type(requested_task)
+        candidates = self._ordered_specs(kind, requested_task)
         if not candidates:
-            self.last_error = f"source_quota_budget_exhausted:{kind}"
+            reason = (
+                f"source_quota_no_lane_for_task:{requested_task}"
+                if requested_task
+                and not any(spec.supports_task(requested_task) for spec in self.specs)
+                else f"source_quota_budget_exhausted:{kind}"
+            )
+            self.last_error = reason
             return None, self.last_error
         last_error = "source_quota_budget_exhausted"
         for spec in candidates:
@@ -261,26 +352,30 @@ class CookiePoolClient:
         self.last_error = last_error
         return None, last_error
 
-    def list_page(self, endpoint: str, page: int):
+    def list_page(self, endpoint: str, page: int, *, task_type: str = ""):
         return self.get(
             f"/article/article/{endpoint}",
             {"community_id": 4, "page": page},
+            task_type=task_type,
         )
 
-    def article(self, post_id: str):
+    def article(self, post_id: str, *, task_type: str = ""):
         return self.get(
             "/article/article/info",
             {"community_id": 4, "id": str(post_id)},
+            task_type=task_type,
         )
 
-    def search(self, keyword: str, page: int):
+    def search(self, keyword: str, page: int, *, task_type: str = ""):
         return self.get(
             "/article/article/search",
             {"community_id": 4, "search": keyword, "page": page},
+            task_type=task_type,
         )
 
-    def latest_id(self) -> int:
-        data, error = self.list_page("lists", 1)
+    def latest_id(self, *, task_type: str = TASK_LIST_NEW) -> int:
+        with self.task(task_type):
+            data, error = self.list_page("lists", 1, task_type=task_type)
         if error:
             raise RuntimeError(f"cannot determine latest id: {error}")
         ids = []

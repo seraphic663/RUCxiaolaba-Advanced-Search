@@ -104,7 +104,7 @@ class MiniProgramClient:
             {"community_id": COMMUNITY_ID, "search": keyword, "page": page},
         )
 
-    def latest_id(self) -> int:
+    def latest_id(self, *, task_type: str = "") -> int:
         data, error = self.list_page("lists", 1)
         if error:
             raise RemoteAPIError(f"cannot determine latest id: {error}")

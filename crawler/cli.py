@@ -14,6 +14,11 @@ from crawler.config import (
 )
 from crawler.normalizer import normalize_detail
 from crawler.service import CrawlerService
+from crawler.task_routing import (
+    TASK_HISTORY_DETAIL,
+    TASK_ID_FOLLOWUP,
+    TASK_TYPES,
+)
 
 
 def make_session(cookie: str):
@@ -65,6 +70,7 @@ def command_detail_fill(args) -> int:
         batch_size=args.batch_size,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
+        task_type=args.task_type,
     )
     return 0
 
@@ -81,6 +87,7 @@ def command_incremental(args) -> int:
         dry_run=args.dry_run,
         min_delay=args.min_delay,
         max_delay=args.max_delay,
+        task_type=args.task_type,
     )
     return 0
 
@@ -117,6 +124,7 @@ def command_trickle_fill(args) -> int:
         transient_retry_delay=args.transient_retry_delay,
         max_transient_attempts=args.max_transient_attempts,
         fresh_coverage_hours=args.fresh_coverage_hours,
+        task_type=args.task_type,
     )
     return 0
 
@@ -212,6 +220,12 @@ def add_scan_options(
         default=0,
         help="stop after this many detail records; 0 means unlimited",
     )
+    parser.add_argument(
+        "--task-type",
+        choices=TASK_TYPES,
+        default=TASK_ID_FOLLOWUP,
+        help="detail route for records produced by this command",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--min-delay", type=float, default=0.3)
     parser.add_argument("--max-delay", type=float, default=0.8)
@@ -271,6 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
         stop_unchanged=600,
     )
     history.set_defaults(start_page=2)
+    history.set_defaults(task_type=TASK_HISTORY_DETAIL)
     history.add_argument(
         "--force-start-page",
         action="store_true",
@@ -335,6 +350,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_common(trickle)
     trickle.add_argument("--limit", type=int, default=40)
+    trickle.add_argument(
+        "--task-type",
+        choices=(TASK_ID_FOLLOWUP, TASK_HISTORY_DETAIL),
+        default=TASK_ID_FOLLOWUP,
+        help="queue route to drain: current ID-table or historical tasks",
+    )
     trickle.add_argument("--dry-run", action="store_true")
     trickle.add_argument("--min-delay", type=float, default=5.0)
     trickle.add_argument("--max-delay", type=float, default=10.0)
@@ -403,6 +424,12 @@ def build_parser() -> argparse.ArgumentParser:
     detail.add_argument("--dry-run", action="store_true")
     detail.add_argument("--min-delay", type=float, default=0.8)
     detail.add_argument("--max-delay", type=float, default=2.0)
+    detail.add_argument(
+        "--task-type",
+        choices=(TASK_ID_FOLLOWUP, TASK_HISTORY_DETAIL),
+        default=TASK_ID_FOLLOWUP,
+        help="cookie route for the explicit IDs",
+    )
     detail.set_defaults(func=command_detail_fill)
 
     scan_ids = sub.add_parser(

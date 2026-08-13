@@ -3,6 +3,7 @@
     {
       "id": "new",
       "config": "config_small.txt",
+      "task_types": ["list_new", "list_active", "id_followup"],
       "daily_budgets": {
         "new_list": 0,
         "active_list": 0,
@@ -13,9 +14,8 @@
     {
       "id": "old",
       "config": "config.txt",
+      "task_types": ["history_detail", "history_probe"],
       "daily_budgets": {
-        "new_list": 80,
-        "active_list": 160,
         "detail": 500,
         "probe": 0
       }
