@@ -38,6 +38,7 @@ class CookieLaneSpec:
     daily_budgets: dict[str, int]
     weight: int = 1
     task_types: tuple[str, ...] = ()
+    enabled: bool = True
 
     def budget(self, kind: str) -> int:
         return max(0, int(self.daily_budgets.get(kind, 0) or 0))
@@ -49,7 +50,9 @@ class CookieLaneSpec:
         has task types, it is never selected for an unrelated queue row.
         """
 
-        return not self.task_types or normalize_task_type(task_type) in self.task_types
+        return self.enabled and (
+            not self.task_types or normalize_task_type(task_type) in self.task_types
+        )
 
 
 def _positive_int(value: object, *, field: str, lane_id: str) -> int:
@@ -126,6 +129,20 @@ def _parse_task_types(item: dict, lane_id: str) -> tuple[str, ...]:
     return tuple(result)
 
 
+def _parse_enabled(item: dict, lane_id: str) -> bool:
+    value = item.get("enabled", True)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    raise ValueError(f"cookie lane {lane_id!r} has invalid enabled flag")
+
+
 def load_cookie_pool_specs(path: str | Path) -> tuple[CookieLaneSpec, ...]:
     """Load lane metadata from JSON without reading any cookie value."""
 
@@ -155,7 +172,8 @@ def load_cookie_pool_specs(path: str | Path) -> tuple[CookieLaneSpec, ...]:
         weight = _positive_int(item.get("weight", 1), field="weight", lane_id=lane_id)
         task_types = _parse_task_types(item, lane_id)
         budgets = _parse_budgets(item, lane_id)
-        if not any(budgets.values()) and not task_types:
+        enabled = _parse_enabled(item, lane_id)
+        if enabled and not any(budgets.values()) and not task_types:
             raise ValueError(
                 f"cookie lane {lane_id!r} must have a positive budget or task_types"
             )
@@ -166,6 +184,7 @@ def load_cookie_pool_specs(path: str | Path) -> tuple[CookieLaneSpec, ...]:
                 daily_budgets=budgets,
                 weight=max(1, weight),
                 task_types=task_types,
+                enabled=enabled,
             )
         )
     if not specs:
@@ -285,6 +304,8 @@ class CookiePoolClient:
             spec
             for spec in self.specs
             if (
+                spec.enabled
+                and
                 spec.lane_id not in self._disabled
                 and (not requested_task or spec.supports_task(requested_task))
                 and (

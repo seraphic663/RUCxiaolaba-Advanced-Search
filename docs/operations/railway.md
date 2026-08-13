@@ -94,7 +94,7 @@ CRAWLER_GAP_PROBE_INTERVAL=7200
 railway volume files upload data\config.txt /config.txt --overwrite
 ```
 
-调度器下次执行会读取新 cookie，无需上传 DB。`rate_limited` 不是 cookie 格式错误；发生后 scheduler 暂停到下一个北京时间 00:05，恢复后仍受当天阶梯释放约束。固定池中的多个预先配置 lane 仍共用这个停止闸门，不会通过临时替换身份、轮换 cookie、代理或提高并发规避限制。
+调度器下次执行会读取新 cookie，无需上传 DB。`rate_limited` 不是 cookie 格式错误；单 cookie 模式发生后 scheduler 暂停到下一个北京时间 00:05，恢复后仍受当天阶梯释放约束。固定池模式改为按 lane 保存 cooldown/次日暂停和 pacing 状态，某个 lane 被限流不再阻塞其他健康 lane；不会通过临时替换身份、轮换 cookie、代理或提高并发规避限制。
 
 ## 兼容的 ID 范围补扫
 

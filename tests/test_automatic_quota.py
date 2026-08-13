@@ -641,6 +641,128 @@ class RateLimitRecoveryTest(unittest.TestCase):
             ["rate_limited_soft", "rate_limited"],
         )
 
+    def test_lane_pause_does_not_block_other_cookie_lane(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("small", "main"):
+                (root / f"{name}.txt").write_text(
+                    f"ys7_ysxy_session={name}\n",
+                    encoding="utf-8",
+                )
+            pool_path = root / "pool.json"
+            pool_path.write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "small",
+                                "config": "small.txt",
+                                "task_types": ["id_followup"],
+                                "daily_budgets": {"detail": 2},
+                            },
+                            {
+                                "id": "main",
+                                "config": "main.txt",
+                                "task_types": ["history_detail"],
+                                "daily_budgets": {"detail": 2},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pause_path = root / "pause.json"
+            quota_path = root / "quota.json"
+            now = datetime(
+                2026,
+                8,
+                13,
+                23,
+                59,
+                tzinfo=timezone(timedelta(hours=8)),
+            )
+            with (
+                patch.object(scheduler, "COOKIE_POOL_PATH", str(pool_path)),
+                patch.object(scheduler, "PAUSE_PATH", pause_path),
+                patch.object(scheduler, "QUOTA_PATH", quota_path),
+                patch.object(scheduler, "beijing_now", return_value=now),
+            ):
+                scheduler.save_pause(
+                    reason="rate_limited_cooldown",
+                    job="trickle_fill",
+                    seconds=3600,
+                    detail="small lane limited",
+                    lane_id="small",
+                )
+                self.assertTrue(scheduler.active_pause("small"))
+                self.assertEqual(scheduler.active_pause("main"), {})
+
+                main_quota = AutomaticQuota("detail", lane_id="main")
+                result = main_quota.claim()
+
+            self.assertEqual(result["lane_id"], "main")
+
+    def test_lane_rate_limit_writes_lane_pause_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("small", "main"):
+                (root / f"{name}.txt").write_text(
+                    f"ys7_ysxy_session={name}\n",
+                    encoding="utf-8",
+                )
+            pool_path = root / "pool.json"
+            pool_path.write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "small",
+                                "config": "small.txt",
+                                "task_types": ["id_followup"],
+                                "daily_budgets": {"detail": 2},
+                            },
+                            {
+                                "id": "main",
+                                "config": "main.txt",
+                                "task_types": ["history_detail"],
+                                "daily_budgets": {"detail": 2},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            pause_path = root / "pause.json"
+            quota_path = root / "quota.json"
+            history_path = root / "history.jsonl"
+            now = datetime(
+                2026,
+                8,
+                13,
+                12,
+                0,
+                tzinfo=timezone(timedelta(hours=8)),
+            )
+            with (
+                patch.object(scheduler, "COOKIE_POOL_PATH", str(pool_path)),
+                patch.object(scheduler, "PAUSE_PATH", pause_path),
+                patch.object(scheduler, "QUOTA_PATH", quota_path),
+                patch.object(scheduler, "QUOTA_HISTORY_PATH", history_path),
+                patch.object(scheduler, "beijing_now", return_value=now),
+                patch.object(scheduler, "RATE_LIMIT_RETRY_COOLDOWN", 3600),
+            ):
+                result = scheduler.handle_rate_limit(
+                    job="trickle_fill",
+                    detail="rate_limited:small",
+                    lane_id="small",
+                )
+                pause = json.loads(pause_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(result["lane_id"], "small")
+            self.assertIn("lanes", pause)
+            self.assertIn("small", pause["lanes"])
+            self.assertNotIn("until", pause)
+
 
 if __name__ == "__main__":
     unittest.main()

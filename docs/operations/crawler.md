@@ -46,7 +46,7 @@ Copy-Item data\cookie_pool.example.json data\cookie_pool.json
 python crawler_db.py trickle-fill --cookie-pool data\cookie_pool.json --limit 5 --min-delay 8 --max-delay 14
 ```
 
-`daily_budgets` 的键是 `new_list`、`active_list`、`detail`、`probe`。`task_types` 决定语义路由：示例中的新 cookie lane 负责 `list_new`、`list_active`、`id_followup`，旧 cookie lane 负责 `history_detail`、`history_probe`。详情任务会在一个共享去重队列中按任务类型路由；不是启动两个 crawler，也不是并发请求。三阶段主线中 list1/list2 的两个计数只作审计，不再用 lane 的列表预算挡住列表观察；详情 lane 的显式上限仍然有效。quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。真实 `rate_limited:*` 或 `cookie_expired` 仍会触发现有停止/暂停语义，不用切换身份掩盖上游限制。
+`daily_budgets` 的键是 `new_list`、`active_list`、`detail`、`probe`。`task_types` 决定语义路由：示例中的新 cookie lane 负责 `list_new`、`list_active`、`id_followup`，旧 cookie lane 负责 `history_detail`、`history_probe`。`enabled: false` 可以临时保留一个 lane 但禁止它领取任何任务。详情任务会在一个共享去重队列中按任务类型路由；不是启动两个 crawler，也不是并发请求。三阶段主线中 list1/list2 的两个计数只作审计，不再用 lane 的列表预算挡住列表观察；详情 lane 的显式上限仍然有效。quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。真实 `rate_limited:*` 或 `cookie_expired` 会只暂停产生错误的 lane；池模式下旧的单 cookie 全局暂停记录不会阻塞其他健康 lane。系统不会用另一个 cookie 隐藏或重试同一个已被上游拒绝的请求。
 
 池模式也会把兼容的 `scan-id-range` 强制为单 worker；如果需要日常自动调度，应使用上面的 `trickle` 主线，避免旧的并发扫描路径绕开这套逐请求配额。
 
@@ -163,13 +163,13 @@ CRAWLER_BOOTSTRAP_PAGES=20
 CRAWLER_BOOTSTRAP_SINCE=1970-01-01 00:00:00
 ```
 
-设置 `CRAWLER_COOKIE_POOL` 后，`CRAWLER_DAILY_*` 的单会话默认预算不再替代池文件中的 lane 预算；scheduler 会按所有 lane 预算的合计裁剪本轮 `limit/max-pages`，子进程再在每一次真实请求前原子扣减对应 lane。详情仍保持单请求、串行和 8–14 秒间隔，队列不会因为增加 lane 而复制同一帖子。
+设置 `CRAWLER_COOKIE_POOL` 后，`CRAWLER_DAILY_*` 的单会话默认预算不再替代池文件中的 lane 预算；scheduler 会按所有启用 lane 预算的合计裁剪本轮 `limit/max-pages`，子进程再在每一次真实请求前原子扣减对应 lane。详情仍保持单请求、串行和 8–14 秒间隔，队列不会因为增加 lane 而复制同一帖子。每个启用 lane 维护独立的计数、限流暂停和 pacing 状态；一个 lane 被上游限流时，其他健康 lane 不会被全局暂停记录连带阻塞。`enabled: false` 可用于临时把全部任务切给另一个 lane，保留旧配置但不实际发请求。
 
 三阶段架构下，`CRAWLER_DAILY_NEW_LIST_BUDGET` 和
 `CRAWLER_DAILY_ACTIVE_LIST_BUDGET` 仍保留为历史配置项和审计字段，但不再
 裁剪 list1/list2，也不再参与详情额度计算；`CRAWLER_DAILY_DETAIL_BUDGET`
 是自动详情的唯一内部预算。它不是上游承诺的无限额度：如果真实接口返回
-`rate_limited`，全局暂停和次日恢复规则仍然生效。
+`rate_limited`，对应 lane 会进入 cooldown/次日恢复规则；单 cookie 兼容模式仍使用原来的全局暂停文件。
 
 当前积压加速配置把详情目标范围设为 900–1000，从 900 起步；旧目标低于 900 时会立即抬到 900，在安全满载或时间窗满载且无限流时，次日再增加 100 到 1000。详情使用独立的提前释放曲线：10:00 释放 20%、12:00 释放 40%、15:00 释放 65%、18:00 释放 82%、20:00 释放 93%、21:00 全量释放；按 10 分钟一轮、每轮最多 12 次计算，1000 次详情在午夜前可达。列表不再等待这条详情释放曲线或旧公共 source window，只按各自监视间隔请求并保留数字审计。
 

@@ -202,6 +202,45 @@ class CookiePoolTest(unittest.TestCase):
             "/article/article/info",
         ])
 
+    def test_disabled_lane_is_never_selected(self):
+        self.pool_path.write_text(
+            json.dumps(
+                {
+                    "lanes": [
+                        {
+                            "id": "small",
+                            "config": "small.txt",
+                            "task_types": [TASK_ID_FOLLOWUP],
+                            "daily_budgets": {"detail": 2},
+                        },
+                        {
+                            "id": "main",
+                            "config": "main.txt",
+                            "enabled": False,
+                            "daily_budgets": {"detail": 100},
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        created: dict[str, FakeLaneClient] = {}
+
+        def factory(cookie, lane_id):
+            client = FakeLaneClient(lane_id)
+            created[lane_id] = client
+            return client
+
+        with patch("crawler.client.load_cookie", side_effect=lambda path: "unused"):
+            pool = CookiePoolClient(
+                load_cookie_pool_specs(self.pool_path),
+                client_factory=factory,
+            )
+            data, error = pool.article("current", task_type=TASK_ID_FOLLOWUP)
+
+        self.assertEqual((data, error), ({"lane": "small"}, None))
+        self.assertEqual(set(created), {"small"})
+
 
 class CookieLaneQuotaTest(unittest.TestCase):
     def test_each_lane_has_an_independent_hard_daily_counter(self):

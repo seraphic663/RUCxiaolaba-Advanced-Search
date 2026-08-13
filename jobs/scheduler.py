@@ -297,10 +297,10 @@ def cookie_pool_budget(kind: str, lane_id: str = "") -> int | None:
         return None
     if lane_id:
         for spec in specs:
-            if spec.lane_id == lane_id:
+            if spec.lane_id == lane_id and spec.enabled:
                 return spec.budget(kind)
         return 0
-    return sum(spec.budget(kind) for spec in specs)
+    return sum(spec.budget(kind) for spec in specs if spec.enabled)
 
 
 def ensure_cookie_lane_quota(quota: dict, lane_id: str) -> dict:
@@ -312,6 +312,9 @@ def ensure_cookie_lane_quota(quota: dict, lane_id: str) -> dict:
     )
     for kind in COOKIE_KINDS:
         lane.setdefault(f"{kind}_calls", 0)
+    lane.setdefault("rate_limited", 0)
+    lane.setdefault("rate_limit_state", "")
+    lane.setdefault("rate_limit_pacing_anchor", 0)
     return lane
 
 
@@ -491,6 +494,7 @@ class JobResult:
     returncode: int = 0
     deferred_until: float = 0.0
     source_calls: int = 0
+    lane_id: str = ""
 
 
 OVERDUE_JOB_PRIORITY = {
@@ -733,6 +737,16 @@ def quota_source_calls(quota: dict) -> int:
     )
 
 
+def lane_source_calls(quota: dict, lane_id: str) -> int:
+    lane = (quota.get("cookie_lanes") or {}).get(str(lane_id))
+    if not isinstance(lane, dict):
+        return 0
+    return sum(
+        int(lane.get(f"{kind}_calls", 0) or 0)
+        for kind in COOKIE_KINDS
+    )
+
+
 def configured_source_budget() -> int:
     pool_total = sum(
         value or 0
@@ -806,13 +820,20 @@ def next_detail_budget_target(previous: dict) -> tuple[int, str]:
     return target, "underused_hold"
 
 
-def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
+def append_quota_history(
+    quota: dict,
+    *,
+    reason: str,
+    job: str = "",
+    lane_id: str = "",
+) -> None:
     if not quota or not quota.get("date"):
         return
     record = {
         "date": quota.get("date"),
         "reason": reason,
         "job": job,
+        "lane_id": str(lane_id or ""),
         "recorded_at": beijing_now().isoformat(),
         "source_calls": quota_source_calls(quota),
         "new_list_calls": int(quota.get("new_list_calls", 0) or 0),
@@ -861,6 +882,13 @@ def append_quota_history(quota: dict, *, reason: str, job: str = "") -> None:
                     lane.get(f"{kind}_calls", 0) or 0
                 )
                 for kind in COOKIE_KINDS
+            }
+            | {
+                "rate_limited": int(lane.get("rate_limited", 0) or 0),
+                "rate_limit_state": str(lane.get("rate_limit_state", "")),
+                "rate_limit_pacing_anchor": int(
+                    lane.get("rate_limit_pacing_anchor", 0) or 0
+                ),
             }
             for lane_id, lane in (quota.get("cookie_lanes") or {}).items()
             if isinstance(lane, dict)
@@ -944,22 +972,29 @@ def daily_budget(
     return max(1, int(base * adaptive_scale()))
 
 
-def current_source_budget(quota: dict | None = None) -> int:
+def current_source_budget(quota: dict | None = None, lane_id: str = "") -> int:
     return sum(
-        daily_budget(kind, quota)
+        daily_budget(kind, quota, lane_id=lane_id)
         for kind in ("new_list", "active_list", "detail", "probe")
     )
 
 
-def source_pacing_allowance(quota: dict | None = None) -> int:
+def source_pacing_allowance(
+    quota: dict | None = None,
+    lane_id: str = "",
+) -> int:
     """Pace near the observed wall, then restore the full ceiling at 23:30."""
     quota = quota or {}
-    total_budget = current_source_budget(quota)
-    anchor = int(
-        quota.get("rate_limit_pacing_anchor", 0)
-        or rate_limit_pacing_anchor()
-        or 0
-    )
+    total_budget = current_source_budget(quota, lane_id=lane_id)
+    if lane_id and cookie_pool_specs():
+        lane = ensure_cookie_lane_quota(quota, lane_id)
+        anchor = int(lane.get("rate_limit_pacing_anchor", 0) or 0)
+    else:
+        anchor = int(
+            quota.get("rate_limit_pacing_anchor", 0)
+            or rate_limit_pacing_anchor()
+            or 0
+        )
     fraction = detail_quota_release_fraction()
     if anchor <= 0 or fraction >= 1.0:
         return total_budget
@@ -985,9 +1020,40 @@ def load_pause() -> dict:
         return {}
 
 
-def save_pause(*, reason: str, job: str, seconds: int, detail: str) -> dict:
+def _write_pause_document(document: dict) -> None:
+    PAUSE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not document:
+        try:
+            PAUSE_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    temporary = PAUSE_PATH.with_name(
+        f"{PAUSE_PATH.name}.{os.getpid()}.tmp"
+    )
+    temporary.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(PAUSE_PATH)
+
+
+def save_pause(
+    *,
+    reason: str,
+    job: str,
+    seconds: int,
+    detail: str,
+    lane_id: str = "",
+) -> dict:
     until_dt = datetime.fromtimestamp(now_wall() + max(1, int(seconds)), CHINA_TZ)
-    return save_pause_until(reason=reason, job=job, until_dt=until_dt, detail=detail)
+    return save_pause_until(
+        reason=reason,
+        job=job,
+        until_dt=until_dt,
+        detail=detail,
+        lane_id=lane_id,
+    )
 
 
 def save_pause_until(
@@ -996,9 +1062,10 @@ def save_pause_until(
     job: str,
     until_dt: datetime,
     detail: str,
+    lane_id: str = "",
 ) -> dict:
     until = until_dt.timestamp()
-    pause = {
+    entry = {
         "reason": reason,
         "job": job,
         "until": until,
@@ -1006,51 +1073,111 @@ def save_pause_until(
         "detail": detail[-500:],
         "updated_at": beijing_now().isoformat(),
     }
-    PAUSE_PATH.write_text(
-        json.dumps(pause, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    document = load_pause()
+    if lane_id:
+        lanes = document.get("lanes")
+        if not isinstance(lanes, dict):
+            lanes = {}
+        lanes[str(lane_id)] = entry
+        document["lanes"] = lanes
+        pause = dict(entry)
+        pause["lane_id"] = str(lane_id)
+    else:
+        lanes = document.get("lanes")
+        pause = dict(entry)
+        document = dict(entry)
+        if isinstance(lanes, dict) and lanes:
+            document["lanes"] = lanes
+    _write_pause_document(document)
     print(
-        f"[scheduler] pause crawler reason={reason} job={job} until={pause['until_text']}",
+        f"[scheduler] pause crawler reason={reason} job={job} "
+        f"lane={lane_id or 'global'} until={pause['until_text']}",
         flush=True,
     )
     return pause
 
 
-def clear_pause(reason: str) -> None:
-    try:
-        PAUSE_PATH.unlink()
-    except FileNotFoundError:
-        pass
-    print(f"[scheduler] clear pause reason={reason}", flush=True)
+def clear_pause(reason: str, lane_id: str = "") -> None:
+    document = load_pause()
+    if lane_id:
+        lanes = document.get("lanes")
+        if isinstance(lanes, dict):
+            lanes.pop(str(lane_id), None)
+            if lanes:
+                document["lanes"] = lanes
+            else:
+                document.pop("lanes", None)
+        _write_pause_document(document)
+    else:
+        lanes = document.get("lanes")
+        document = {"lanes": lanes} if isinstance(lanes, dict) and lanes else {}
+        _write_pause_document(document)
+    print(
+        f"[scheduler] clear pause reason={reason} "
+        f"lane={lane_id or 'global'}",
+        flush=True,
+    )
+
+
+def _normalize_pause_entry(pause: dict) -> dict:
+    normalized = dict(pause)
+    if normalized.get("reason") != "rate_limited":
+        return normalized
+    if str(normalized.get("updated_at", ""))[:10] != quota_date():
+        return normalized
+    reset_dt = next_beijing_reset()
+    reset_ts = reset_dt.timestamp()
+    until = float(normalized.get("until") or 0)
+    if until >= reset_ts:
+        return normalized
+    normalized["until"] = reset_ts
+    normalized["until_text"] = reset_dt.isoformat()
+    normalized["detail"] = str(normalized.get("detail", ""))[-500:]
+    normalized["updated_at"] = beijing_now().isoformat()
+    return normalized
 
 
 def normalize_pause(pause: dict) -> dict:
-    if pause.get("reason") != "rate_limited":
-        return pause
-    if str(pause.get("updated_at", ""))[:10] != quota_date():
-        return pause
-    reset_dt = next_beijing_reset()
-    reset_ts = reset_dt.timestamp()
-    until = float(pause.get("until") or 0)
-    if until >= reset_ts:
-        return pause
-    pause["until"] = reset_ts
-    pause["until_text"] = reset_dt.isoformat()
-    pause["detail"] = str(pause.get("detail", ""))[-500:]
-    pause["updated_at"] = beijing_now().isoformat()
-    PAUSE_PATH.write_text(
-        json.dumps(pause, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    normalized = _normalize_pause_entry(pause)
+    if normalized != pause:
+        document = load_pause()
+        lanes = document.get("lanes")
+        document = dict(normalized)
+        if isinstance(lanes, dict) and lanes:
+            document["lanes"] = lanes
+        _write_pause_document(document)
     print(
-        f"[scheduler] extend rate-limit pause until={pause['until_text']}",
+        f"[scheduler] extend rate-limit pause until={normalized['until_text']}",
         flush=True,
     )
-    return pause
+    return normalized
 
 
-def active_pause() -> dict:
+def active_pause(lane_id: str = "") -> dict:
+    pool_enabled = bool(cookie_pool_specs())
+    if lane_id and pool_enabled:
+        document = load_pause()
+        lanes = document.get("lanes")
+        pause = lanes.get(str(lane_id), {}) if isinstance(lanes, dict) else {}
+        if not isinstance(pause, dict):
+            pause = {}
+        if pause:
+            normalized = _normalize_pause_entry(pause)
+            if normalized != pause:
+                lanes[str(lane_id)] = normalized
+                document["lanes"] = lanes
+                _write_pause_document(document)
+            pause = normalized
+        until = float(pause.get("until") or 0)
+        if until > now_wall():
+            return pause
+        if pause:
+            clear_pause("expired", lane_id=lane_id)
+        return {}
+    # In pool mode a legacy global pause belongs to the old single-cookie
+    # route. It must not stop an otherwise healthy lane.
+    if pool_enabled:
+        return {}
     pause = load_pause()
     if pause:
         pause = normalize_pause(pause)
@@ -1062,7 +1189,7 @@ def active_pause() -> dict:
     return {}
 
 
-def handle_rate_limit(*, job: str, detail: str) -> dict:
+def handle_rate_limit(*, job: str, detail: str, lane_id: str = "") -> dict:
     """Record a bounded soft-limit recovery before declaring a daily hard wall."""
     lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
     with exclusive_control_lock(lock_path):
@@ -1071,8 +1198,19 @@ def handle_rate_limit(*, job: str, detail: str) -> dict:
         quota["rate_limited"] = count
         quota["last_rate_limited_at"] = beijing_now().isoformat()
         quota["last_rate_limited_job"] = job
+        quota["last_rate_limited_lane"] = str(lane_id or "")
         quota["last_rate_limited_source_calls"] = quota_source_calls(quota)
-        hard = count >= RATE_LIMIT_HARD_THRESHOLD
+        lane = None
+        if lane_id:
+            lane = ensure_cookie_lane_quota(quota, lane_id)
+            lane["rate_limited"] = int(lane.get("rate_limited", 0) or 0) + 1
+            lane["last_rate_limited_at"] = beijing_now().isoformat()
+            lane["last_rate_limited_job"] = job
+            lane["rate_limit_pacing_anchor"] = lane_source_calls(quota, lane_id)
+            hard = lane["rate_limited"] >= RATE_LIMIT_HARD_THRESHOLD
+            lane["rate_limit_state"] = "hard" if hard else "cooldown"
+        else:
+            hard = count >= RATE_LIMIT_HARD_THRESHOLD
         quota["rate_limit_state"] = "hard" if hard else "cooldown"
         quota["rate_limit_pacing_anchor"] = quota_source_calls(quota)
         save_quota(quota)
@@ -1080,6 +1218,7 @@ def handle_rate_limit(*, job: str, detail: str) -> dict:
             quota,
             reason="rate_limited" if hard else "rate_limited_soft",
             job=job,
+            lane_id=lane_id,
         )
 
     if hard:
@@ -1088,6 +1227,7 @@ def handle_rate_limit(*, job: str, detail: str) -> dict:
             job=job,
             until_dt=next_beijing_reset(),
             detail=detail,
+            lane_id=lane_id,
         )
 
     cooldown_until = beijing_now() + timedelta(seconds=RATE_LIMIT_RETRY_COOLDOWN)
@@ -1096,6 +1236,7 @@ def handle_rate_limit(*, job: str, detail: str) -> dict:
         job=job,
         until_dt=min(cooldown_until, next_beijing_reset()),
         detail=detail,
+        lane_id=lane_id,
     )
 
 
@@ -1668,7 +1809,8 @@ def remaining_budget(
         return lane_remaining
     pacing_remaining = max(
         0,
-        source_pacing_allowance(quota) - quota_source_calls(quota),
+        source_pacing_allowance(quota, lane_id=lane_id)
+        - (lane_source_calls(quota, lane_id) if lane_id else quota_source_calls(quota)),
     )
     return min(lane_remaining, pacing_remaining)
 
@@ -1825,6 +1967,7 @@ def job_args(name: str) -> list[str]:
 
 
 def run_job(name: str) -> JobResult:
+    lane_id = job_lane_id(name)
     args, quota_note = prepare_job(name)
     if args is None:
         print(f"[scheduler] skip {name} reason={quota_note}", flush=True)
@@ -1844,6 +1987,7 @@ def run_job(name: str) -> JobResult:
             error_kind="quota_window_locked" if deferred_until else "",
             stderr=quota_note,
             deferred_until=deferred_until,
+            lane_id=lane_id,
         )
     if quota_note:
         print(f"[scheduler] quota {name} {quota_note}", flush=True)
@@ -1871,7 +2015,6 @@ def run_job(name: str) -> JobResult:
     else:
         child_env.pop(AUTOMATIC_QUOTA_KIND_ENV, None)
     run_started_at = beijing_now().isoformat()
-    lane_id = job_lane_id(name)
     before_date, before_calls = quota_counter_snapshot(kind, lane_id=lane_id)
     route = job_task_type(name)
     route_note = f" task={route}" if route else ""
@@ -1919,6 +2062,7 @@ def run_job(name: str) -> JobResult:
         stderr=stderr,
         returncode=result.returncode,
         source_calls=source_calls,
+        lane_id=lane_id,
     )
     if not job_result.succeeded:
         record_failed_crawler_run(
@@ -2026,7 +2170,7 @@ def main() -> int:
                 phase = PIPELINE_PHASE_BOOTSTRAP
             sync_pipeline_jobs(phase, next_run, intervals, now)
         due = select_next_job(next_run, now)
-        pause = active_pause()
+        pause = active_pause(job_lane_id(due))
         if pause:
             until_monotonic = now + max(1.0, float(pause["until"]) - now_wall())
             last_logged = last_pause_log.get(due, 0.0)
@@ -2062,13 +2206,18 @@ def main() -> int:
             with running_heartbeat(due):
                 result = run_job(due)
             if result.error_kind == "rate_limited":
-                handle_rate_limit(job=due, detail=result.stderr)
+                handle_rate_limit(
+                    job=due,
+                    detail=result.stderr,
+                    lane_id=result.lane_id,
+                )
             elif result.error_kind == "cookie_expired":
                 save_pause(
                     reason="cookie_expired",
                     job=due,
                     seconds=COOKIE_ERROR_COOLDOWN,
                     detail=result.stderr,
+                    lane_id=result.lane_id,
                 )
             if due == "phase1" and result.succeeded:
                 PHASE1_MARKER.touch()
