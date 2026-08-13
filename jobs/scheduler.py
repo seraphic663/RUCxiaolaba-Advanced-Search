@@ -421,6 +421,18 @@ OVERDUE_JOB_PRIORITY = {
 }
 
 MONITOR_LIST1_SEED_KEY = "monitor_list1_seed_complete"
+PIPELINE_PHASE_KEY = "crawler_pipeline_phase"
+PIPELINE_PHASE_BOOTSTRAP = "bootstrap"
+PIPELINE_PHASE_LIST1_SEED = "list1_seed"
+PIPELINE_PHASE_DETAIL_BACKFILL = "detail_backfill"
+PIPELINE_PHASE_MONITORING = "monitoring"
+PIPELINE_PHASES = {
+    PIPELINE_PHASE_BOOTSTRAP,
+    PIPELINE_PHASE_LIST1_SEED,
+    PIPELINE_PHASE_DETAIL_BACKFILL,
+    PIPELINE_PHASE_MONITORING,
+}
+UNMETERED_LIST_KINDS = {"new_list", "active_list"}
 
 
 def now_wall() -> float:
@@ -520,6 +532,54 @@ def release_fraction_for_steps(
 
 def detail_quota_release_fraction(at: datetime | None = None) -> float:
     return release_fraction_for_steps(detail_quota_release_steps(), at)
+
+
+def next_detail_quota_release(at: datetime | None = None) -> datetime:
+    """Return the next release point for the detail-only budget lane."""
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    current_minute = at.hour * 60 + at.minute
+    current_fraction = detail_quota_release_fraction(at)
+    steps = detail_quota_release_steps()
+    for minute, fraction in steps:
+        if minute > current_minute and fraction > current_fraction:
+            return at.replace(
+                hour=minute // 60,
+                minute=minute % 60,
+                second=0,
+                microsecond=0,
+            )
+    tomorrow = at.date() + timedelta(days=1)
+    first_minute = steps[0][0]
+    return datetime.combine(
+        tomorrow,
+        datetime.min.time(),
+        tzinfo=CHINA_TZ,
+    ).replace(
+        hour=first_minute // 60,
+        minute=first_minute % 60,
+    )
+
+
+def quota_release_fraction_for_kind(
+    kind: str,
+    at: datetime | None = None,
+) -> float:
+    return (
+        detail_quota_release_fraction(at)
+        if kind == "detail"
+        else quota_release_fraction(at)
+    )
+
+
+def next_quota_release_for_kind(
+    kind: str,
+    at: datetime | None = None,
+) -> datetime:
+    return (
+        next_detail_quota_release(at)
+        if kind == "detail"
+        else next_quota_release(at)
+    )
 
 
 def quota_record_release_steps(quota: dict) -> list[tuple[int, float]]:
@@ -1117,6 +1177,74 @@ def bootstrap_is_complete() -> bool:
         return False
 
 
+def pipeline_phase() -> str:
+    """Read the durable three-stage crawler phase without source I/O."""
+    try:
+        with database_write_lock(DB_PATH):
+            with SQLitePostStore(DB_PATH) as store:
+                store.ensure_runtime_schema()
+                value = ledger_state(store.conn, PIPELINE_PHASE_KEY, "")
+                return value if value in PIPELINE_PHASES else ""
+    except Exception as exc:
+        print(
+            f"[scheduler] pipeline phase check failed: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return ""
+
+
+def set_pipeline_phase(phase: str) -> str:
+    """Persist one of the explicit crawler phases across restarts."""
+    if phase not in PIPELINE_PHASES:
+        raise ValueError(f"unsupported crawler pipeline phase: {phase}")
+    with database_write_lock(DB_PATH):
+        with SQLitePostStore(DB_PATH) as store:
+            store.ensure_runtime_schema()
+            set_ledger_state(store.conn, PIPELINE_PHASE_KEY, phase)
+            store.conn.commit()
+    return phase
+
+
+def ensure_pipeline_phase() -> str:
+    """Migrate old monitor state into list1 -> backfill -> monitoring.
+
+    The previous scheduler used ``monitor_list1_seed_complete`` as a gate and
+    could start monitoring before the initial detail queue was drained.  The
+    new phase is authoritative.  The old ``monitor_list1_seed_complete``
+    marker is deliberately ignored, so a fresh list1 seed is required before
+    any detail task or list2 monitor is scheduled.
+    """
+    with database_write_lock(DB_PATH):
+        with SQLitePostStore(DB_PATH) as store:
+            store.ensure_runtime_schema()
+            current = ledger_state(store.conn, PIPELINE_PHASE_KEY, "")
+            bootstrap_done = ledger_state(
+                store.conn,
+                "lists_bootstrap_complete",
+                "0",
+            ) in {"1", "true", "True", '"1"', '"true"'}
+            if not bootstrap_done:
+                target = PIPELINE_PHASE_BOOTSTRAP
+            elif current == PIPELINE_PHASE_BOOTSTRAP:
+                target = PIPELINE_PHASE_DETAIL_BACKFILL
+            elif current in {
+                PIPELINE_PHASE_LIST1_SEED,
+                PIPELINE_PHASE_DETAIL_BACKFILL,
+                PIPELINE_PHASE_MONITORING,
+            }:
+                target = current
+            else:
+                # ``monitor_list1_seed_complete`` belongs to the retired
+                # scheduler.  Do not let that legacy marker skip the fresh
+                # list1 stage after this architecture is enabled.
+                target = PIPELINE_PHASE_LIST1_SEED
+            if current != target:
+                set_ledger_state(store.conn, PIPELINE_PHASE_KEY, target)
+                store.conn.commit()
+            return target
+
+
 def bootstrap_details_are_complete() -> bool:
     """Return whether every ID from the bootstrap queue reached a terminal state."""
     try:
@@ -1170,6 +1298,11 @@ def bootstrap_details_are_complete() -> bool:
             flush=True,
         )
         return False
+
+
+def detail_backfill_is_complete() -> bool:
+    """Return whether the initial list1 ID cohort reached terminal detail state."""
+    return bootstrap_details_are_complete()
 
 
 def prepare_monitor_cutover() -> dict[str, object]:
@@ -1293,6 +1426,44 @@ def enable_remaining_monitor_jobs(
         )
 
 
+def sync_pipeline_jobs(
+    phase: str,
+    next_run: dict[str, float],
+    intervals: dict[str, float],
+    now: float,
+) -> None:
+    """Make the in-memory schedule match the durable three-stage phase."""
+    desired: set[str]
+    if phase == PIPELINE_PHASE_BOOTSTRAP:
+        desired = {"bootstrap_new"}
+    elif phase == PIPELINE_PHASE_LIST1_SEED:
+        desired = {"discover_new"}
+    elif phase == PIPELINE_PHASE_DETAIL_BACKFILL:
+        desired = {"trickle_fill"}
+    elif phase == PIPELINE_PHASE_MONITORING:
+        desired = {"trickle_fill", "discover_new", "discover_active"}
+        prepare_monitor_cutover()
+    else:
+        raise ValueError(f"unsupported pipeline phase: {phase}")
+
+    for name in list(next_run):
+        if name not in desired:
+            next_run.pop(name, None)
+            intervals.pop(name, None)
+
+    starts = {
+        "bootstrap_new": (60.0, BOOTSTRAP_RETRY_INTERVAL),
+        "discover_new": (60.0 if phase == PIPELINE_PHASE_LIST1_SEED else 3 * 60, NEW_DISCOVER_INTERVAL),
+        "discover_active": (8 * 60, ACTIVE_DISCOVER_INTERVAL),
+        "trickle_fill": (90.0, TRICKLE_INTERVAL),
+    }
+    for name in desired:
+        if name not in next_run:
+            delay, interval = starts[name]
+            next_run[name] = now + delay
+            intervals[name] = interval
+
+
 @contextmanager
 def running_heartbeat(job: str):
     """Keep liveness fresh while a long crawler subprocess is running."""
@@ -1376,6 +1547,11 @@ def remaining_budget(
     *,
     lane_id: str = "",
 ) -> int:
+    # List observations remain counted for audit, but do not consume the
+    # detail-only budget or the old all-source pacing wall.  The upstream API
+    # can still return rate_limited, which the scheduler handles separately.
+    if kind in UNMETERED_LIST_KINDS:
+        return 2**31 - 1
     fraction = (
         detail_quota_release_fraction()
         if kind == "detail"
@@ -1391,6 +1567,11 @@ def remaining_budget(
         used = int(quota.get(key, 0) or 0)
     allowed = int(daily_budget(kind, quota, lane_id=lane_id) * fraction)
     lane_remaining = max(0, allowed - used)
+    if kind == "detail":
+        # Detail is the only internally budgeted source lane now.  Subtracting
+        # list calls here would make an otherwise available detail slot look
+        # exhausted.
+        return lane_remaining
     pacing_remaining = max(
         0,
         source_pacing_allowance(quota) - quota_source_calls(quota),
@@ -1472,11 +1653,17 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
         kind = job_budget_kind(name)
         if not kind:
             return args, ""
+        if kind in UNMETERED_LIST_KINDS:
+            planned = planned_job_calls(name, args)
+            return args, f"{kind}_observation_unmetered planned_max={planned}"
         quota = load_quota()
         remaining = remaining_budget(kind, quota)
         if remaining <= 0:
-            if quota_release_fraction() <= 0:
-                return None, f"quota_window_locked_until={next_quota_release().isoformat()}"
+            if quota_release_fraction_for_kind(kind) <= 0:
+                return None, (
+                    f"{kind}_quota_window_locked_until="
+                    f"{next_quota_release_for_kind(kind).isoformat()}"
+                )
             return None, f"{kind}_budget_exhausted"
         if name in {"discover_new", "discover_active"}:
             max_pages = max(
@@ -1534,10 +1721,12 @@ def run_job(name: str) -> JobResult:
     if args is None:
         print(f"[scheduler] skip {name} reason={quota_note}", flush=True)
         deferred_until = 0.0
-        if quota_note.startswith("quota_window_locked_until="):
+        if "_quota_window_locked_until=" in quota_note or quota_note.startswith(
+            "quota_window_locked_until="
+        ):
             try:
                 release_at = datetime.fromisoformat(
-                    quota_note.split("=", 1)[1]
+                    quota_note.rsplit("=", 1)[1]
                 )
                 deferred_until = release_at.timestamp()
             except (TypeError, ValueError):
@@ -1672,32 +1861,16 @@ def main() -> int:
     now = time.monotonic()
     if TRICKLE_ENABLED:
         bootstrap_pending = not bootstrap_is_complete()
-        bootstrap_detail_ready = (
-            not bootstrap_pending and bootstrap_details_are_complete()
-        )
-        monitor_cutover = None
-        list1_seed_complete = False
+        phase = ensure_pipeline_phase()
+        if bootstrap_pending:
+            phase = PIPELINE_PHASE_BOOTSTRAP
         next_run: dict[str, float] = {}
         intervals: dict[str, float] = {}
-        if bootstrap_pending:
-            next_run["trickle_fill"] = now + 90
-            intervals["trickle_fill"] = TRICKLE_INTERVAL
-            next_run["bootstrap_new"] = now + 60
-            intervals["bootstrap_new"] = BOOTSTRAP_RETRY_INTERVAL
-        else:
-            monitor_cutover = prepare_monitor_cutover()
-            list1_seed_complete = monitor_list1_seed_is_complete()
-            if list1_seed_complete:
-                enable_remaining_monitor_jobs(next_run, intervals, now)
-            else:
-                enable_monitor_jobs(next_run, intervals, now)
+        sync_pipeline_jobs(phase, next_run, intervals, now)
         print(
             "[scheduler] trickle enabled "
             f"bootstrap={'pending' if bootstrap_pending else 'complete'} "
-            f"bootstrap_details={'ready' if bootstrap_detail_ready else 'paused_for_monitor'} "
-            f"old_coverage={'paused' if monitor_cutover else 'pending'} "
-            f"queue_cutoff={monitor_cutover.get('queue_order_cutoff') if monitor_cutover else '-'} "
-            f"list1_seed={'complete' if list1_seed_complete else 'pending'} "
+            f"phase={phase} "
             f"bootstrap_pages={BOOTSTRAP_PAGES} "
             f"since={TRICKLE_SINCE!r} list1={NEW_DISCOVER_INTERVAL}s "
             f"list2={ACTIVE_DISCOVER_INTERVAL}s "
@@ -1734,17 +1907,11 @@ def main() -> int:
     save_heartbeat(state="started")
     while True:
         now = time.monotonic()
-        if (
-            TRICKLE_ENABLED
-            and "discover_new" not in next_run
-            and bootstrap_is_complete()
-        ):
-            monitor_cutover = prepare_monitor_cutover()
-            list1_seed_complete = monitor_list1_seed_is_complete()
-            if list1_seed_complete:
-                enable_remaining_monitor_jobs(next_run, intervals, now)
-            else:
-                enable_monitor_jobs(next_run, intervals, now)
+        if TRICKLE_ENABLED:
+            phase = ensure_pipeline_phase()
+            if not bootstrap_is_complete():
+                phase = PIPELINE_PHASE_BOOTSTRAP
+            sync_pipeline_jobs(phase, next_run, intervals, now)
         due = select_next_job(next_run, now)
         pause = active_pause()
         if pause:
@@ -1796,16 +1963,17 @@ def main() -> int:
                 due == "discover_new"
                 and result.succeeded
                 and result.source_calls > 0
+                and pipeline_phase() == PIPELINE_PHASE_LIST1_SEED
             ):
-                mark_monitor_list1_seed_complete()
-                list1_seed_complete = True
-                enable_remaining_monitor_jobs(
+                set_pipeline_phase(PIPELINE_PHASE_DETAIL_BACKFILL)
+                sync_pipeline_jobs(
+                    PIPELINE_PHASE_DETAIL_BACKFILL,
                     next_run,
                     intervals,
                     time.monotonic(),
                 )
                 print(
-                    "[scheduler] list1 seed completed; list2 monitor scheduled",
+                    "[scheduler] list1 seed completed; detail backfill started",
                     flush=True,
                 )
             if (
@@ -1813,12 +1981,41 @@ def main() -> int:
                 and result.succeeded
                 and bootstrap_is_complete()
             ):
-                next_run.pop(due, None)
-                intervals.pop(due, None)
+                set_pipeline_phase(PIPELINE_PHASE_DETAIL_BACKFILL)
+                sync_pipeline_jobs(
+                    PIPELINE_PHASE_DETAIL_BACKFILL,
+                    next_run,
+                    intervals,
+                    time.monotonic(),
+                )
                 save_heartbeat(
                     state="idle",
                     job=due,
-                    detail="bootstrap_complete",
+                    detail="bootstrap_complete_detail_backfill",
+                )
+                last_heartbeat = time.monotonic()
+                continue
+            if (
+                due == "trickle_fill"
+                and result.succeeded
+                and pipeline_phase() == PIPELINE_PHASE_DETAIL_BACKFILL
+                and detail_backfill_is_complete()
+            ):
+                set_pipeline_phase(PIPELINE_PHASE_MONITORING)
+                sync_pipeline_jobs(
+                    PIPELINE_PHASE_MONITORING,
+                    next_run,
+                    intervals,
+                    time.monotonic(),
+                )
+                print(
+                    "[scheduler] detail backfill completed; list1/list2 monitoring started",
+                    flush=True,
+                )
+                save_heartbeat(
+                    state="idle",
+                    job=due,
+                    detail="detail_backfill_complete_monitoring",
                 )
                 last_heartbeat = time.monotonic()
                 continue

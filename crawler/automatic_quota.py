@@ -62,11 +62,11 @@ class AutomaticQuota:
                 lane_id=self.lane_id,
             )
             if remaining < count:
-                if scheduler.quota_release_fraction() <= 0:
+                if scheduler.quota_release_fraction_for_kind(self.kind) <= 0:
                     raise AutomaticQuotaError(
                         "source_quota_window_locked",
                         f"automatic quota locked until "
-                        f"{scheduler.next_quota_release().isoformat()}",
+                        f"{scheduler.next_quota_release_for_kind(self.kind).isoformat()}",
                     )
                 raise AutomaticQuotaError(
                     "source_quota_budget_exhausted",
