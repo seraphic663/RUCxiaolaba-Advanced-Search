@@ -9,8 +9,12 @@ from crawler.id_ledger import ledger_state, set_ledger_state
 from jobs.scheduler import (
     enable_monitor_jobs,
     enable_remaining_monitor_jobs,
+    ensure_pipeline_phase,
+    pipeline_phase,
     prepare_monitor_cutover,
     run_job,
+    set_pipeline_phase,
+    sync_pipeline_jobs,
 )
 from storage.post_writer import SQLitePostStore
 
@@ -88,6 +92,61 @@ class MonitorCutoverTest(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(result.error_kind, "quota_window_locked")
         self.assertGreater(result.deferred_until, 0)
+
+    def test_pipeline_runs_list1_then_backfill_then_monitoring(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "posts.db"
+            with SQLitePostStore(db_path) as store:
+                store.init_schema()
+                set_ledger_state(store.conn, "lists_bootstrap_complete", "1")
+                store.conn.commit()
+
+            next_run = {}
+            intervals = {}
+            with patch("jobs.scheduler.DB_PATH", str(db_path)):
+                self.assertEqual(ensure_pipeline_phase(), "list1_seed")
+                self.assertEqual(pipeline_phase(), "list1_seed")
+                sync_pipeline_jobs("list1_seed", next_run, intervals, 100.0)
+                self.assertEqual(set(next_run), {"discover_new"})
+
+                set_pipeline_phase("detail_backfill")
+                sync_pipeline_jobs("detail_backfill", next_run, intervals, 200.0)
+                self.assertEqual(set(next_run), {"trickle_fill"})
+
+                set_pipeline_phase("monitoring")
+                sync_pipeline_jobs("monitoring", next_run, intervals, 300.0)
+                self.assertEqual(
+                    set(next_run),
+                    {"trickle_fill", "discover_new", "discover_active"},
+                )
+
+    def test_detail_backfill_queue_only_returns_bootstrap_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "posts.db"
+            with SQLitePostStore(db_path) as store:
+                store.init_schema()
+                self.enqueue(store, "bootstrap-id", 10)
+                self.enqueue(store, "unrelated-old-id", 10)
+                store.conn.execute(
+                    """
+                    insert into post_id_ledger(
+                        post_id,first_seen_at,first_seen_source,last_list_seen_at,
+                        bootstrap_run_id,updated_at
+                    ) values (?,?,?,?,?,?)
+                    """,
+                    (
+                        "bootstrap-id",
+                        "2026-08-12T00:00:00+08:00",
+                        "lists",
+                        "2026-08-12T00:00:00+08:00",
+                        "run-1",
+                        "2026-08-12T00:00:00+08:00",
+                    ),
+                )
+                set_ledger_state(store.conn, "crawler_pipeline_phase", "detail_backfill")
+                store.conn.commit()
+                rows = store.next_crawler_queue_items(10, refresh_limit=10)
+            self.assertEqual([row["post_id"] for row in rows], ["bootstrap-id"])
 
     def test_list2_is_not_scheduled_until_list1_seed_request_finishes(self):
         next_run = {}
