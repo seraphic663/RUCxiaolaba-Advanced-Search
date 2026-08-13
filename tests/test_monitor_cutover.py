@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from crawler.id_ledger import ledger_state, set_ledger_state
+from crawler.task_routing import TASK_HISTORY_DETAIL, TASK_ID_FOLLOWUP
 from jobs.scheduler import (
     enable_monitor_jobs,
     enable_remaining_monitor_jobs,
@@ -20,7 +21,14 @@ from storage.post_writer import SQLitePostStore
 
 
 class MonitorCutoverTest(unittest.TestCase):
-    def enqueue(self, store, post_id: str, priority: int) -> None:
+    def enqueue(
+        self,
+        store,
+        post_id: str,
+        priority: int,
+        *,
+        task_type: str = TASK_ID_FOLLOWUP,
+    ) -> None:
         store.enqueue_crawler_candidate(
             post_id=post_id,
             source="lists" if priority > 0 else "lists2",
@@ -30,6 +38,7 @@ class MonitorCutoverTest(unittest.TestCase):
             list_comment_count=1,
             db_comment_count=0,
             reason="test",
+            task_type=task_type,
         )
 
     def test_cutover_pauses_old_coverage_but_keeps_refresh_and_new_ids(self):
@@ -107,17 +116,25 @@ class MonitorCutoverTest(unittest.TestCase):
                 self.assertEqual(ensure_pipeline_phase(), "list1_seed")
                 self.assertEqual(pipeline_phase(), "list1_seed")
                 sync_pipeline_jobs("list1_seed", next_run, intervals, 100.0)
-                self.assertEqual(set(next_run), {"discover_new"})
+                self.assertEqual(set(next_run), {"discover_new", "trickle_fill_history"})
 
                 set_pipeline_phase("detail_backfill")
                 sync_pipeline_jobs("detail_backfill", next_run, intervals, 200.0)
-                self.assertEqual(set(next_run), {"trickle_fill"})
+                self.assertEqual(
+                    set(next_run),
+                    {"trickle_fill", "trickle_fill_history"},
+                )
 
                 set_pipeline_phase("monitoring")
                 sync_pipeline_jobs("monitoring", next_run, intervals, 300.0)
                 self.assertEqual(
                     set(next_run),
-                    {"trickle_fill", "discover_new", "discover_active"},
+                    {
+                        "trickle_fill",
+                        "trickle_fill_history",
+                        "discover_new",
+                        "discover_active",
+                    },
                 )
 
     def test_detail_backfill_queue_only_returns_bootstrap_ids(self):
@@ -126,7 +143,12 @@ class MonitorCutoverTest(unittest.TestCase):
             with SQLitePostStore(db_path) as store:
                 store.init_schema()
                 self.enqueue(store, "bootstrap-id", 10)
-                self.enqueue(store, "unrelated-old-id", 10)
+                self.enqueue(
+                    store,
+                    "unrelated-old-id",
+                    10,
+                    task_type=TASK_HISTORY_DETAIL,
+                )
                 store.conn.execute(
                     """
                     insert into post_id_ledger(
@@ -157,7 +179,12 @@ class MonitorCutoverTest(unittest.TestCase):
         enable_remaining_monitor_jobs(next_run, intervals, 200.0)
         self.assertEqual(
             set(next_run),
-            {"trickle_fill", "discover_new", "discover_active"},
+            {
+                "trickle_fill",
+                "trickle_fill_history",
+                "discover_new",
+                "discover_active",
+            },
         )
 
         restarted = {}

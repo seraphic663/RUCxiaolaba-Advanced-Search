@@ -17,6 +17,7 @@ from typing import Iterable
 
 from app.domain.search import bigram_tokens, symbol_tokens
 from crawler.id_ledger import ensure_ledger_schema
+from crawler.task_routing import TASK_HISTORY_DETAIL, TASK_ID_FOLLOWUP, normalize_task_type
 
 
 def safe_int(value, default=0) -> int:
@@ -300,6 +301,7 @@ class SQLitePostStore:
                 claim_started_at text not null default '',
                 claim_until text not null default '',
                 last_lane_id text not null default '',
+                task_type text not null default '',
                 created_at text not null,
                 updated_at text not null
             );
@@ -438,6 +440,7 @@ class SQLitePostStore:
                 )
         self.ensure_crawler_queue(commit=False)
         ensure_ledger_schema(self.conn)
+        task_type_migration = self.migrate_crawler_queue_task_types(commit=False)
         self.ensure_gap_tables(commit=False)
         self.ensure_crawler_run_history(commit=False)
         self.ensure_crawler_quarantine(commit=False)
@@ -498,6 +501,11 @@ class SQLitePostStore:
                 f"{empty_content_migration}",
                 flush=True,
             )
+        if task_type_migration:
+            print(
+                f"[queue] migrated task routes {task_type_migration}",
+                flush=True,
+            )
         self._post_columns = self._columns("posts") if self._table_exists("posts") else set()
         self._comment_columns = (
             self._columns("comments") if self._table_exists("comments") else set()
@@ -529,6 +537,7 @@ class SQLitePostStore:
                 claim_started_at text not null default '',
                 claim_until text not null default '',
                 last_lane_id text not null default '',
+                task_type text not null default '',
                 created_at text not null,
                 updated_at text not null
             )
@@ -583,6 +592,10 @@ class SQLitePostStore:
                 "alter table crawler_queue "
                 "add column last_lane_id text not null default ''"
             ),
+            "task_type": (
+                "alter table crawler_queue "
+                "add column task_type text not null default ''"
+            ),
         }.items():
             if name not in columns:
                 self.conn.execute(ddl)
@@ -618,8 +631,42 @@ class SQLitePostStore:
             "create index if not exists idx_crawler_queue_claim_until "
             "on crawler_queue(status, claim_until)"
         )
+        self.conn.execute(
+            "create index if not exists idx_crawler_queue_task_status "
+            "on crawler_queue(task_type, status, priority, queue_order)"
+        )
         if commit:
             self.conn.commit()
+
+    def migrate_crawler_queue_task_types(self, commit: bool = True) -> int:
+        """Assign routes to queue rows created before task routing existed."""
+
+        if not self._table_exists("crawler_queue"):
+            return 0
+        ensure_ledger_schema(self.conn)
+        current = self.conn.execute(
+            """
+            update crawler_queue
+            set task_type=?
+            where coalesce(task_type, '')=''
+              and exists(
+                  select 1 from post_id_ledger l
+                  where l.post_id=crawler_queue.post_id
+              )
+            """,
+            (TASK_ID_FOLLOWUP,),
+        ).rowcount
+        history = self.conn.execute(
+            """
+            update crawler_queue
+            set task_type=?
+            where coalesce(task_type, '')=''
+            """,
+            (TASK_HISTORY_DETAIL,),
+        ).rowcount
+        if commit:
+            self.conn.commit()
+        return int(current or 0) + int(history or 0)
 
     def migrate_crawler_not_found_posts(self, commit: bool = True) -> dict:
         """Materialize previously observed missing posts and hide them publicly."""
@@ -2047,9 +2094,15 @@ class SQLitePostStore:
         list_comment_count: int,
         db_comment_count: int | None,
         reason: str,
+        task_type: str | None = None,
         commit: bool = True,
     ) -> str:
         self.ensure_crawler_queue(commit=False)
+        requested_task_type = (
+            normalize_task_type(task_type)
+            if task_type
+            else ""
+        )
         now = now_text()
         existing = self.conn.execute(
             """
@@ -2057,7 +2110,7 @@ class SQLitePostStore:
                    list_update_time, list_comment_count, db_comment_count,
                    last_attempt_list_comment_count,
                    last_attempt_list_update_time,
-                   same_observation_attempts, next_attempt_at
+                   same_observation_attempts, next_attempt_at, task_type
             from crawler_queue where post_id=?
             """,
             (str(post_id),),
@@ -2077,8 +2130,9 @@ class SQLitePostStore:
                     last_attempt_list_comment_count,
                     last_attempt_list_update_time, last_detail_comment_count,
                     same_observation_attempts, next_attempt_at,
+                    task_type,
                     created_at, updated_at
-                ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     str(post_id),
@@ -2098,6 +2152,7 @@ class SQLitePostStore:
                     None,
                     0,
                     "",
+                    requested_task_type or TASK_ID_FOLLOWUP,
                     now,
                     now,
                 ),
@@ -2109,6 +2164,8 @@ class SQLitePostStore:
             reasons = set(filter(None, str(existing["reason"]).split("|")))
             reasons.add(reason)
             old_status = str(existing["status"] or "")
+            old_task_type = str(existing["task_type"] or "")
+            new_task_type = requested_task_type or old_task_type or TASK_ID_FOLLOWUP
             status = old_status
             old_list_count = safe_int(existing["list_comment_count"])
             attempted_count = existing["last_attempt_list_comment_count"]
@@ -2170,6 +2227,7 @@ class SQLitePostStore:
                     safe_int(existing["priority"]) == new_priority,
                     str(existing["reason"] or "") == new_reason,
                     str(existing["status"] or "") == status,
+                    old_task_type == new_task_type,
                     str(existing["list_create_time"] or "") == new_create_time,
                     str(existing["list_update_time"] or "") == new_update_time,
                     safe_int(existing["list_comment_count"]) == list_comment_count,
@@ -2194,7 +2252,7 @@ class SQLitePostStore:
                     list_create_time=?,
                     list_update_time=?,
                     list_comment_count=?, db_comment_count=?,
-                    status=?, reason=?,
+                    status=?, reason=?, task_type=?,
                     same_observation_attempts=case when ? then 0
                         else same_observation_attempts end,
                     next_attempt_at=case when ? then '' else next_attempt_at end,
@@ -2211,6 +2269,7 @@ class SQLitePostStore:
                     db_comment_count,
                     status,
                     new_reason,
+                    new_task_type,
                     reset_observation,
                     reset_observation,
                     reset_observation,
@@ -2228,14 +2287,15 @@ class SQLitePostStore:
         limit: int,
         refresh_limit: int | None = None,
         fresh_coverage_after: str = "",
+        task_type: str = "",
     ) -> list[sqlite3.Row]:
         self.ensure_crawler_queue()
         # ``ledger_state`` is created by the runtime schema migration, but a
         # few old/local databases call this queue method directly.  Ensure the
         # sidecar exists before reading the durable monitor cutover switch.
         ensure_ledger_schema(self.conn)
-        monitor_filter, monitor_filter_params = self._monitor_queue_filter()
-        phase_filter, phase_filter_params = self._pipeline_queue_filter()
+        monitor_filter, monitor_filter_params = self._monitor_queue_filter(task_type)
+        phase_filter, phase_filter_params = self._pipeline_queue_filter(task_type)
         queue_filter = f"({phase_filter}) and ({monitor_filter})"
         queue_filter_params = (*phase_filter_params, *monitor_filter_params)
         limit = max(1, int(limit))
@@ -2357,7 +2417,10 @@ class SQLitePostStore:
         append_lane("priority = 0", limit)
         return selected
 
-    def _pipeline_queue_filter(self) -> tuple[str, tuple[object, ...]]:
+    def _pipeline_queue_filter(
+        self,
+        task_type: str = "",
+    ) -> tuple[str, tuple[object, ...]]:
         """Scope detail work to the current durable pipeline phase.
 
         ``list1_seed`` deliberately exposes no detail rows.  During
@@ -2367,27 +2430,32 @@ class SQLitePostStore:
         held back.
         """
 
+        normalized_task = ""
+        if task_type:
+            normalized_task = normalize_task_type(task_type)
+        filters: list[str] = []
+        params: list[object] = []
+        if normalized_task:
+            filters.append("crawler_queue.task_type=?")
+            params.append(normalized_task)
         if not self._table_exists("ledger_state"):
-            return "1=1", ()
+            return (" and ".join(filters) or "1=1", tuple(params))
         phase_row = self.conn.execute(
             "select value from ledger_state where key=?",
             ("crawler_pipeline_phase",),
         ).fetchone()
         phase = str(phase_row[0] if phase_row else "")
-        if phase == "list1_seed":
-            return "0=1", ()
-        if phase == "detail_backfill":
-            return (
-                "exists ("
-                "select 1 from post_id_ledger l "
-                "where l.post_id=crawler_queue.post_id "
-                "and l.bootstrap_run_id!=''"
-                ")",
-                (),
-            )
-        return "1=1", ()
+        if phase == "list1_seed" and normalized_task != TASK_HISTORY_DETAIL:
+            filters.append("0=1")
+        elif phase == "detail_backfill" and normalized_task != TASK_HISTORY_DETAIL:
+            filters.append("crawler_queue.task_type=?")
+            params.append(TASK_ID_FOLLOWUP)
+        return (" and ".join(filters) or "1=1", tuple(params))
 
-    def _monitor_queue_filter(self) -> tuple[str, tuple[object, ...]]:
+    def _monitor_queue_filter(
+        self,
+        task_type: str = "",
+    ) -> tuple[str, tuple[object, ...]]:
         """Return the durable cutover filter for normal coverage work.
 
         During monitor cutover, historical positive-priority coverage rows are
@@ -2398,6 +2466,19 @@ class SQLitePostStore:
         """
 
         if not self._table_exists("ledger_state"):
+            return "1=1", ()
+        normalized_task = normalize_task_type(task_type) if task_type else ""
+        phase_row = self.conn.execute(
+            "select value from ledger_state where key=?",
+            ("crawler_pipeline_phase",),
+        ).fetchone()
+        phase = str(phase_row[0] if phase_row else "")
+        # The monitor cutoff is only a post-cutover current-coverage rule.
+        # During bootstrap/list1/detail backfill all current rows are eligible,
+        # and historical work remains independently drainable in every phase.
+        if phase in {"bootstrap", "list1_seed", "detail_backfill"}:
+            return "1=1", ()
+        if normalized_task == TASK_HISTORY_DETAIL:
             return "1=1", ()
         paused = self.conn.execute(
             "select value from ledger_state where key=?",

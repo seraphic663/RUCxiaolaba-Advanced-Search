@@ -9,6 +9,11 @@ from unittest.mock import patch
 
 from crawler.automatic_quota import AutomaticQuota, AutomaticQuotaError
 from crawler.cookie_pool import CookiePoolClient, load_cookie_pool_specs
+from crawler.task_routing import (
+    TASK_HISTORY_DETAIL,
+    TASK_ID_FOLLOWUP,
+    TASK_LIST_NEW,
+)
 from jobs import scheduler
 from storage.post_writer import SQLitePostStore
 
@@ -152,6 +157,50 @@ class CookiePoolTest(unittest.TestCase):
         self.assertIsNone(data)
         self.assertEqual(error, "cookie_expired")
         self.assertEqual(set(created), {"small"})
+
+    def test_task_routes_keep_current_and_history_work_on_the_assigned_lane(self):
+        self.pool_path.write_text(
+            json.dumps(
+                {
+                    "lanes": [
+                        {
+                            "id": "small",
+                            "config": "small.txt",
+                            "task_types": [TASK_LIST_NEW, TASK_ID_FOLLOWUP],
+                            "daily_budgets": {"detail": 2},
+                        },
+                        {
+                            "id": "main",
+                            "config": "main.txt",
+                            "task_types": [TASK_HISTORY_DETAIL],
+                            "daily_budgets": {"detail": 2},
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        created: dict[str, FakeLaneClient] = {}
+
+        def factory(cookie, lane_id):
+            client = FakeLaneClient(lane_id)
+            created[lane_id] = client
+            return client
+
+        with patch("crawler.client.load_cookie", side_effect=lambda path: "unused"):
+            pool = CookiePoolClient(load_cookie_pool_specs(self.pool_path), client_factory=factory)
+            data, error = pool.list_page("lists", 1, task_type=TASK_LIST_NEW)
+            self.assertEqual((data, error), ({"lane": "small"}, None))
+            data, error = pool.article("old", task_type=TASK_HISTORY_DETAIL)
+            self.assertEqual((data, error), ({"lane": "main"}, None))
+            data, error = pool.article("current", task_type=TASK_ID_FOLLOWUP)
+            self.assertEqual((data, error), ({"lane": "small"}, None))
+
+        self.assertEqual(pool.lane_request_counts, {"small": 2, "main": 1})
+        self.assertEqual(created["small"].paths, [
+            "/article/article/lists",
+            "/article/article/info",
+        ])
 
 
 class CookieLaneQuotaTest(unittest.TestCase):

@@ -12,14 +12,14 @@
 lists
   -> bootstrap/list1 seed
   -> post_id_ledger + crawler_queue
-  -> detail backfill (only the initial list1 ID cohort)
+  -> detail backfill (current ID-table route; initial and newly observed IDs)
   -> posts(full) + comments + search indexes
   -> lists / lists2 monitoring
 ```
 
 - scheduler 的持久阶段是 `bootstrap`、`list1_seed`、`detail_backfill`、`monitoring`；重启不会跳过阶段。
 - `bootstrap`/`list1_seed` 只请求 `lists` 并更新 ID 台账，不领取详情队列；`lists2` 在此期间不启动。
-- `detail_backfill` 只从初始 list1 台账 cohort 中按去重队列补详情；不以旧 coverage 完成度作为监视启动条件，也不把旧 coverage 队列混入这次回补。
+- `detail_backfill` 只从 `id_followup` 路由按去重队列补详情；初始 list1 台账和阶段内新观察到的当前 ID 都会进入，`history_detail` 旧任务不会混入这次回补。
 - `monitoring` 才同时启动 `lists` 和 `lists2` 的低强度监视，再把新 ID 和新事件追加到共享去重队列。
 - 列表请求仍写入 `new_list_calls`/`active_list_calls` 供审计，但不再占用详情额度、详情释放曲线或旧的总 pacing；详情请求只受 `detail` lane 的内部预算控制。
 - `trickle-fill` 按优先级小批量补详情，一次详情请求返回正文和完整评论/回复结构。
@@ -46,7 +46,7 @@ Copy-Item data\cookie_pool.example.json data\cookie_pool.json
 python crawler_db.py trickle-fill --cookie-pool data\cookie_pool.json --limit 5 --min-delay 8 --max-delay 14
 ```
 
-`daily_budgets` 的键是 `new_list`、`active_list`、`detail`、`probe`。当前示例把新 cookie lane 配置为 `detail: 500`、旧 cookie lane 配置为 `detail: 500`，详情任务会在一个共享队列中按剩余 lane 配额路由；不是启动两个 crawler，也不是并发请求。三阶段主线中 list1/list2 的两个计数只作审计，不再用 lane 的列表预算挡住列表观察；详情 lane 的显式上限仍然有效。quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。真实 `rate_limited:*` 或 `cookie_expired` 仍会触发现有停止/暂停语义，不用切换身份掩盖上游限制。
+`daily_budgets` 的键是 `new_list`、`active_list`、`detail`、`probe`。`task_types` 决定语义路由：示例中的新 cookie lane 负责 `list_new`、`list_active`、`id_followup`，旧 cookie lane 负责 `history_detail`、`history_probe`。详情任务会在一个共享去重队列中按任务类型路由；不是启动两个 crawler，也不是并发请求。三阶段主线中 list1/list2 的两个计数只作审计，不再用 lane 的列表预算挡住列表观察；详情 lane 的显式上限仍然有效。quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。真实 `rate_limited:*` 或 `cookie_expired` 仍会触发现有停止/暂停语义，不用切换身份掩盖上游限制。
 
 池模式也会把兼容的 `scan-id-range` 强制为单 worker；如果需要日常自动调度，应使用上面的 `trickle` 主线，避免旧的并发扫描路径绕开这套逐请求配额。
 
@@ -205,7 +205,7 @@ CRAWLER_GAP_PLAN_INTERVAL=21600
 CRAWLER_GAP_PROBE_INTERVAL=7200
 ```
 
-首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按初始 list1 台账的 `queue_order` 串行补详情。只有这批 ID 全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2。旧 coverage 不再作为前置完成度门槛，也不会混入这次初始回补。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每半小时一次；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，新的两个变量优先级更高。
+首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；`history_detail` 旧任务在各阶段独立低速排队，不会改变这个门槛。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每半小时一次；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，新的两个变量优先级更高。
 
 `probe-gaps` 即使被调度，也会在每日 probe budget 为 0 时跳过。不要通过手动 SSH 大跑绕过这一保护。
 

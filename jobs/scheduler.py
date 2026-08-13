@@ -20,6 +20,13 @@ from crawler.id_ledger import ledger_state, set_ledger_state
 from crawler.lock import database_write_lock
 from crawler.manual_quota import exclusive_control_lock
 from storage.post_writer import SQLitePostStore
+from crawler.task_routing import (
+    TASK_HISTORY_DETAIL,
+    TASK_HISTORY_PROBE,
+    TASK_ID_FOLLOWUP,
+    TASK_LIST_ACTIVE,
+    TASK_LIST_NEW,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = os.environ.get("SQLITE_DB", "/app/data/posts.db")
@@ -117,6 +124,14 @@ BOOTSTRAP_RETRY_INTERVAL = env_int(
 TRICKLE_INTERVAL = env_int("CRAWLER_TRICKLE_INTERVAL", 10 * 60)
 TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 12)
 TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 12), TRICKLE_LIMIT_CAP)
+HISTORY_TRICKLE_INTERVAL = env_int(
+    "CRAWLER_HISTORY_TRICKLE_INTERVAL",
+    30 * 60,
+)
+HISTORY_TRICKLE_LIMIT = min(
+    env_int("CRAWLER_HISTORY_TRICKLE_LIMIT", 12),
+    TRICKLE_LIMIT_CAP,
+)
 TRICKLE_REFRESH_LIMIT = min(
     env_nonnegative_int("CRAWLER_TRICKLE_REFRESH_LIMIT", 5),
     TRICKLE_LIMIT,
@@ -232,6 +247,48 @@ def cookie_pool_specs() -> tuple[CookieLaneSpec, ...]:
     if not str(COOKIE_POOL_PATH or "").strip():
         return ()
     return load_cookie_pool_specs(COOKIE_POOL_PATH)
+
+
+def job_task_type(name: str) -> str:
+    """Map a scheduler job to its semantic queue/cookie route."""
+
+    return {
+        "bootstrap_new": TASK_LIST_NEW,
+        "discover_new": TASK_LIST_NEW,
+        "discover_active": TASK_LIST_ACTIVE,
+        "trickle_fill": TASK_ID_FOLLOWUP,
+        "trickle_fill_history": TASK_HISTORY_DETAIL,
+        "probe_gaps": TASK_HISTORY_PROBE,
+        "phase1": TASK_HISTORY_DETAIL,
+        "backfill": TASK_HISTORY_DETAIL,
+    }.get(name, "")
+
+
+def job_lane_id(name: str) -> str:
+    """Return a lane only when the configured route is unambiguous.
+
+    With multiple lanes assigned to one task, the pool itself performs the
+    weighted sequential choice and the automatic quota is aggregated.  A
+    unique route gets a per-lane scheduler budget so the other cookie cannot
+    consume it accidentally.
+    """
+
+    task_type = job_task_type(name)
+    if not task_type:
+        return ""
+    specs = cookie_pool_specs()
+    if not specs:
+        return ""
+    matches = [spec for spec in specs if spec.supports_task(task_type)]
+    return matches[0].lane_id if len(matches) == 1 else ""
+
+
+def pool_supports_job(name: str) -> bool:
+    task_type = job_task_type(name)
+    if not task_type:
+        return True
+    specs = cookie_pool_specs()
+    return not specs or any(spec.supports_task(task_type) for spec in specs)
 
 
 def cookie_pool_budget(kind: str, lane_id: str = "") -> int | None:
@@ -353,10 +410,35 @@ TRICKLE_JOBS = {
     ],
     "trickle_fill": [
         "trickle-fill",
+        "--task-type",
+        TASK_ID_FOLLOWUP,
         "--limit",
         str(TRICKLE_LIMIT),
         "--refresh-limit",
         str(TRICKLE_REFRESH_LIMIT),
+        "--observation-retry-delay",
+        str(TRICKLE_OBSERVATION_RETRY_DELAY),
+        "--max-observation-attempts",
+        str(TRICKLE_MAX_OBSERVATION_ATTEMPTS),
+        "--transient-retry-delay",
+        str(TRICKLE_TRANSIENT_RETRY_DELAY),
+        "--max-transient-attempts",
+        str(TRICKLE_MAX_TRANSIENT_ATTEMPTS),
+        "--fresh-coverage-hours",
+        str(TRICKLE_FRESH_COVERAGE_HOURS),
+        "--min-delay",
+        str(TRICKLE_MIN_DELAY),
+        "--max-delay",
+        str(TRICKLE_MAX_DELAY),
+    ],
+    "trickle_fill_history": [
+        "trickle-fill",
+        "--task-type",
+        TASK_HISTORY_DETAIL,
+        "--limit",
+        str(HISTORY_TRICKLE_LIMIT),
+        "--refresh-limit",
+        "0",
         "--observation-retry-delay",
         str(TRICKLE_OBSERVATION_RETRY_DELAY),
         "--max-observation-attempts",
@@ -414,6 +496,7 @@ class JobResult:
 OVERDUE_JOB_PRIORITY = {
     "bootstrap_new": 0,
     "trickle_fill": 0,
+    "trickle_fill_history": 3,
     "discover_active": 1,
     "discover_new": 2,
     "plan_gaps": 3,
@@ -1246,7 +1329,7 @@ def ensure_pipeline_phase() -> str:
 
 
 def bootstrap_details_are_complete() -> bool:
-    """Return whether every ID from the bootstrap queue reached a terminal state."""
+    """Return whether all current ID-table detail rows reached a terminal state."""
     try:
         with database_write_lock(DB_PATH):
             with SQLitePostStore(DB_PATH) as store:
@@ -1254,8 +1337,8 @@ def bootstrap_details_are_complete() -> bool:
                 total = int(
                     store.conn.execute(
                         """
-                        select count(*) from post_id_ledger
-                        where bootstrap_run_id!=''
+                        select count(*) from crawler_queue
+                        where task_type='id_followup'
                         """
                     ).fetchone()[0]
                     or 0
@@ -1266,10 +1349,10 @@ def bootstrap_details_are_complete() -> bool:
                     store.conn.execute(
                         """
                         select count(*)
-                        from post_id_ledger l
-                        left join crawler_queue q on q.post_id=l.post_id
+                        from crawler_queue q
+                        left join post_id_ledger l on l.post_id=q.post_id
                         left join posts p on p.id=l.post_id
-                        where l.bootstrap_run_id!=''
+                        where q.task_type='id_followup'
                           and not (
                               (
                                   l.detail_status='succeeded'
@@ -1408,6 +1491,9 @@ def enable_remaining_monitor_jobs(
     if "trickle_fill" not in next_run:
         next_run["trickle_fill"] = now + 90
         intervals["trickle_fill"] = TRICKLE_INTERVAL
+    if "trickle_fill_history" not in next_run:
+        next_run["trickle_fill_history"] = now + 3 * 60
+        intervals["trickle_fill_history"] = HISTORY_TRICKLE_INTERVAL
     if "discover_active" not in next_run:
         next_run["discover_active"] = now + 8 * 60
         intervals["discover_active"] = ACTIVE_DISCOVER_INTERVAL
@@ -1435,13 +1521,18 @@ def sync_pipeline_jobs(
     """Make the in-memory schedule match the durable three-stage phase."""
     desired: set[str]
     if phase == PIPELINE_PHASE_BOOTSTRAP:
-        desired = {"bootstrap_new"}
+        desired = {"bootstrap_new", "trickle_fill_history"}
     elif phase == PIPELINE_PHASE_LIST1_SEED:
-        desired = {"discover_new"}
+        desired = {"discover_new", "trickle_fill_history"}
     elif phase == PIPELINE_PHASE_DETAIL_BACKFILL:
-        desired = {"trickle_fill"}
+        desired = {"trickle_fill", "trickle_fill_history"}
     elif phase == PIPELINE_PHASE_MONITORING:
-        desired = {"trickle_fill", "discover_new", "discover_active"}
+        desired = {
+            "trickle_fill",
+            "trickle_fill_history",
+            "discover_new",
+            "discover_active",
+        }
         prepare_monitor_cutover()
     else:
         raise ValueError(f"unsupported pipeline phase: {phase}")
@@ -1456,6 +1547,7 @@ def sync_pipeline_jobs(
         "discover_new": (60.0 if phase == PIPELINE_PHASE_LIST1_SEED else 3 * 60, NEW_DISCOVER_INTERVAL),
         "discover_active": (8 * 60, ACTIVE_DISCOVER_INTERVAL),
         "trickle_fill": (90.0, TRICKLE_INTERVAL),
+        "trickle_fill_history": (3 * 60, HISTORY_TRICKLE_INTERVAL),
     }
     for name in desired:
         if name not in next_run:
@@ -1522,7 +1614,7 @@ def job_budget_kind(name: str) -> str:
         return "new_list"
     if name == "discover_active":
         return "active_list"
-    if name == "trickle_fill":
+    if name in {"trickle_fill", "trickle_fill_history", "phase1"}:
         return "detail"
     if name == "probe_gaps":
         return "probe"
@@ -1532,12 +1624,14 @@ def job_budget_kind(name: str) -> str:
 def planned_job_calls(name: str, args: list[str]) -> int:
     if name in {"bootstrap_new", "discover_new", "discover_active"}:
         return int(args[args.index("--max-pages") + 1])
-    if name == "trickle_fill":
+    if name in {"trickle_fill", "trickle_fill_history"}:
         return int(args[args.index("--limit") + 1])
     if name == "probe_gaps":
         ranges = int(args[args.index("--range-limit") + 1])
         samples = int(args[args.index("--samples-per-range") + 1])
         return ranges * samples
+    if name == "phase1":
+        return 0
     return 0
 
 
@@ -1588,16 +1682,18 @@ def quota_key(kind: str) -> str:
     }[kind]
 
 
-def quota_counter_snapshot(kind: str) -> tuple[str, int]:
+def quota_counter_snapshot(kind: str, lane_id: str = "") -> tuple[str, int]:
     if not kind:
         return "", 0
     lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
     with exclusive_control_lock(lock_path):
         quota = load_quota()
-        return (
-            str(quota.get("date") or ""),
-            int(quota.get(quota_key(kind), 0) or 0),
-        )
+        if lane_id:
+            lane = ensure_cookie_lane_quota(quota, lane_id)
+            calls = int(lane.get(quota_key(kind), 0) or 0)
+        else:
+            calls = int(quota.get(quota_key(kind), 0) or 0)
+        return str(quota.get("date") or ""), calls
 
 
 def record_failed_crawler_run(
@@ -1615,6 +1711,8 @@ def record_failed_crawler_run(
         "discover_new": "discover-latest",
         "discover_active": "discover-active",
         "trickle_fill": "trickle-fill",
+        "trickle_fill_history": "trickle-fill:history_detail",
+        "phase1": "scan-id-range:history_detail",
         "plan_gaps": "plan-gaps",
         "probe_gaps": "probe-gaps",
     }.get(name, name.replace("_", "-"))
@@ -1653,11 +1751,18 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
         kind = job_budget_kind(name)
         if not kind:
             return args, ""
+        if not pool_supports_job(name):
+            return None, f"cookie_pool_no_lane_for_task={job_task_type(name)}"
         if kind in UNMETERED_LIST_KINDS:
             planned = planned_job_calls(name, args)
-            return args, f"{kind}_observation_unmetered planned_max={planned}"
+            lane_id = job_lane_id(name)
+            lane_note = f" lane={lane_id}" if lane_id else ""
+            return args, (
+                f"{kind}_observation_unmetered{lane_note} planned_max={planned}"
+            )
         quota = load_quota()
-        remaining = remaining_budget(kind, quota)
+        lane_id = job_lane_id(name)
+        remaining = remaining_budget(kind, quota, lane_id=lane_id)
         if remaining <= 0:
             if quota_release_fraction_for_kind(kind) <= 0:
                 return None, (
@@ -1671,7 +1776,7 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
                 min(int(args[args.index("--max-pages") + 1]), remaining),
             )
             args = replace_arg(args, "--max-pages", max_pages)
-        elif name == "trickle_fill":
+        elif name in {"trickle_fill", "trickle_fill_history"}:
             args = replace_arg(
                 args,
                 "--limit",
@@ -1694,7 +1799,10 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
             args = replace_arg(args, "--range-limit", range_limit)
             args = replace_arg(args, "--samples-per-range", samples)
         planned = planned_job_calls(name, args)
-        return args, f"{kind}_calls_available={remaining} planned_max={planned}"
+        lane_note = f" lane={lane_id}" if lane_id else ""
+        return args, (
+            f"{kind}_calls_available={remaining}{lane_note} planned_max={planned}"
+        )
 
 
 def job_args(name: str) -> list[str]:
@@ -1763,8 +1871,13 @@ def run_job(name: str) -> JobResult:
     else:
         child_env.pop(AUTOMATIC_QUOTA_KIND_ENV, None)
     run_started_at = beijing_now().isoformat()
-    before_date, before_calls = quota_counter_snapshot(kind)
-    print(f"[scheduler] start {name}", flush=True)
+    lane_id = job_lane_id(name)
+    before_date, before_calls = quota_counter_snapshot(kind, lane_id=lane_id)
+    route = job_task_type(name)
+    route_note = f" task={route}" if route else ""
+    if lane_id:
+        route_note += f" lane={lane_id}"
+    print(f"[scheduler] start {name}{route_note}", flush=True)
     try:
         result = subprocess.run(
             command,
@@ -1775,7 +1888,7 @@ def run_job(name: str) -> JobResult:
             stderr=subprocess.PIPE,
         )
     except Exception as exc:
-        after_date, after_calls = quota_counter_snapshot(kind)
+        after_date, after_calls = quota_counter_snapshot(kind, lane_id=lane_id)
         source_calls = (
             max(0, after_calls - before_calls)
             if before_date == after_date
@@ -1794,7 +1907,7 @@ def run_job(name: str) -> JobResult:
     if stderr:
         print(stderr, file=sys.stderr, end="" if stderr.endswith("\n") else "\n")
     print(f"[scheduler] done {name} exit={result.returncode}", flush=True)
-    after_date, after_calls = quota_counter_snapshot(kind)
+    after_date, after_calls = quota_counter_snapshot(kind, lane_id=lane_id)
     source_calls = (
         max(0, after_calls - before_calls)
         if before_date == after_date
