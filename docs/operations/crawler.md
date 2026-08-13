@@ -6,20 +6,22 @@
 
 ## 运行主线
 
-当前推荐路径是“快发现、慢补详情”：
+当前推荐路径是“先建 list1 台账、再回补详情、最后监视”：
 
 ```text
-lists / lists2
-  -> bootstrap 20 pages / discover-latest / discover-active
+lists
+  -> bootstrap/list1 seed
   -> post_id_ledger + crawler_queue
-  -> posts(list_only) (only when normal discovery is configured to write stubs)
-  -> trickle-fill
+  -> detail backfill (only the initial list1 ID cohort)
   -> posts(full) + comments + search indexes
+  -> lists / lists2 monitoring
 ```
 
-- `discover-latest` 扫新帖流，只发现候选，不在列表循环中拉详情。
-- `discover-active` 扫活跃/新回复流，只在本地缺详情或列表评论数大于数据库评论数时入队。
-- 首次线上启动先运行 `bootstrap_new`：固定扫 `lists` 20 页，只写 `post_id_ledger` 和去重详情队列，不写正文 stub；bootstrap 完成后记录一次 queue-order cutover，暂停切换前的普通 coverage 详情任务，先补一次 `lists`，再开启两个增量监视任务。priority 0 的新回刷新和 cutover 后新增 ID 不暂停。
+- scheduler 的持久阶段是 `bootstrap`、`list1_seed`、`detail_backfill`、`monitoring`；重启不会跳过阶段。
+- `bootstrap`/`list1_seed` 只请求 `lists` 并更新 ID 台账，不领取详情队列；`lists2` 在此期间不启动。
+- `detail_backfill` 只从初始 list1 台账 cohort 中按去重队列补详情；不以旧 coverage 完成度作为监视启动条件，也不把旧 coverage 队列混入这次回补。
+- `monitoring` 才同时启动 `lists` 和 `lists2` 的低强度监视，再把新 ID 和新事件追加到共享去重队列。
+- 列表请求仍写入 `new_list_calls`/`active_list_calls` 供审计，但不再占用详情额度、详情释放曲线或旧的总 pacing；详情请求只受 `detail` lane 的内部预算控制。
 - `trickle-fill` 按优先级小批量补详情，一次详情请求返回正文和完整评论/回复结构。
 - 每次 list page 还会写入 `post_id_ledger`；`lists2` 的事件键写入 `list2_observation_log`，首次基线不批量触发详情，后续新事件才进入同一个 `crawler_queue`。
 - `plan-gaps` 只规划低密度 ID 区间；未指定结束 ID 时会用一次 `lists?page=1` 探测最新 ID。
@@ -44,7 +46,7 @@ Copy-Item data\cookie_pool.example.json data\cookie_pool.json
 python crawler_db.py trickle-fill --cookie-pool data\cookie_pool.json --limit 5 --min-delay 8 --max-delay 14
 ```
 
-`daily_budgets` 的键是 `new_list`、`active_list`、`detail`、`probe`。当前示例把新 cookie lane 配置为 `detail: 500`、旧 cookie lane 配置为 `detail: 500`，详情任务会在一个共享队列中按剩余 lane 配额路由；不是启动两个 crawler，也不是并发请求。池模式下这些 lane 的显式上限优先于单 cookie 的全局默认值，quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。`source_quota_*` 只表示该 lane 的本地配额或释放窗口已到上限，路由器可以选择另一个仍有预算的 lane；真实 `rate_limited:*` 或 `cookie_expired` 仍会触发现有停止/暂停语义，不用切换身份掩盖上游限制。
+`daily_budgets` 的键是 `new_list`、`active_list`、`detail`、`probe`。当前示例把新 cookie lane 配置为 `detail: 500`、旧 cookie lane 配置为 `detail: 500`，详情任务会在一个共享队列中按剩余 lane 配额路由；不是启动两个 crawler，也不是并发请求。三阶段主线中 list1/list2 的两个计数只作审计，不再用 lane 的列表预算挡住列表观察；详情 lane 的显式上限仍然有效。quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。真实 `rate_limited:*` 或 `cookie_expired` 仍会触发现有停止/暂停语义，不用切换身份掩盖上游限制。
 
 池模式也会把兼容的 `scan-id-range` 强制为单 worker；如果需要日常自动调度，应使用上面的 `trickle` 主线，避免旧的并发扫描路径绕开这套逐请求配额。
 
@@ -54,9 +56,9 @@ python crawler_db.py trickle-fill --cookie-pool data\cookie_pool.json --limit 5 
 
 | 类型 | 端点 | 用途 | 调度计费 |
 |---|---|---|---:|
-| 新帖列表 | `/article/article/lists?page=N` | 发现新帖 ID、时间和评论数 | 每页 1 次 new-list |
-| 活跃列表 | `/article/article/lists2?page=N` | 发现评论增量和活跃帖子 | 每页 1 次 active-list |
-| 详情 | `/article/article/info?id=ID` | 正文、评论和回复 | 每帖 1 次 detail |
+| 新帖列表 | `/article/article/lists?page=N` | 发现新帖 ID、时间和评论数 | 每页 1 次 new-list；只记账，不扣 detail |
+| 活跃列表 | `/article/article/lists2?page=N` | 发现评论增量和活跃帖子 | 每页 1 次 active-list；只记账，不扣 detail |
+| 详情 | `/article/article/info?id=ID` | 正文、评论和回复 | 每帖 1 次 detail；唯一自动详情预算 |
 | 最新 ID 探测 | `lists?page=1` | `plan-gaps` 确定规划上界 | 1 次 new-list |
 | 缺口抽样 | `info?id=ID` | `probe-gaps` 验证某 ID | 每个样本 1 次 probe |
 | Admin 候选预览 | `search/lists/lists2` | 先展示上游候选供管理员勾选 | 每页 1 次 admin-preview 独立额度 |
@@ -75,7 +77,7 @@ python crawler_db.py discover-active --db-path data\posts.db --since $since --ma
 python crawler_db.py trickle-fill --db-path data\posts.db --limit 5 --min-delay 8 --max-delay 14
 ```
 
-这组命令最多规划 10 次列表请求和 5 次详情请求；列表扫描可能提前停止。手动 SSH 大跑不会经过 scheduler 的配额窗口和暂停保护，不应用于日常补爬。
+这组命令最多规划 10 次列表请求和 5 次详情请求；列表扫描可能提前停止。手动 SSH 大跑不会经过 scheduler 的阶段、详情预算和暂停保护，不应用于日常补爬。
 
 只检查候选、不写数据库时使用 `--dry-run`。发现阶段默认写 `list_only` 快照；如不希望写快照，可加 `--no-write-stubs`。
 
@@ -163,13 +165,19 @@ CRAWLER_BOOTSTRAP_SINCE=1970-01-01 00:00:00
 
 设置 `CRAWLER_COOKIE_POOL` 后，`CRAWLER_DAILY_*` 的单会话默认预算不再替代池文件中的 lane 预算；scheduler 会按所有 lane 预算的合计裁剪本轮 `limit/max-pages`，子进程再在每一次真实请求前原子扣减对应 lane。详情仍保持单请求、串行和 8–14 秒间隔，队列不会因为增加 lane 而复制同一帖子。
 
-当前积压加速配置把详情目标范围设为 900–1000，从 900 起步；旧目标低于 900 时会立即抬到 900，在安全满载或时间窗满载且无限流时，次日再增加 100 到 1000。新帖列表 80、活跃列表 160、缺口探测 0，因此自动源请求配置上限为 1240。详情使用独立的提前释放曲线：10:00 释放 20%、12:00 释放 40%、15:00 释放 65%、18:00 释放 82%、20:00 释放 93%、21:00 全量释放；按 10 分钟一轮、每轮最多 12 次计算，1000 次详情在午夜前可达。列表仍使用 11:00 才开始的保守公共释放曲线。
+三阶段架构下，`CRAWLER_DAILY_NEW_LIST_BUDGET` 和
+`CRAWLER_DAILY_ACTIVE_LIST_BUDGET` 仍保留为历史配置项和审计字段，但不再
+裁剪 list1/list2，也不再参与详情额度计算；`CRAWLER_DAILY_DETAIL_BUDGET`
+是自动详情的唯一内部预算。它不是上游承诺的无限额度：如果真实接口返回
+`rate_limited`，全局暂停和次日恢复规则仍然生效。
+
+当前积压加速配置把详情目标范围设为 900–1000，从 900 起步；旧目标低于 900 时会立即抬到 900，在安全满载或时间窗满载且无限流时，次日再增加 100 到 1000。详情使用独立的提前释放曲线：10:00 释放 20%、12:00 释放 40%、15:00 释放 65%、18:00 释放 82%、20:00 释放 93%、21:00 全量释放；按 10 分钟一轮、每轮最多 12 次计算，1000 次详情在午夜前可达。列表不再等待这条详情释放曲线或旧公共 source window，只按各自监视间隔请求并保留数字审计。
 
 日切升级既看详情总目标利用率，也看旧释放曲线下的理论可达容量：如果昨日没有限流，虽然未达到目标的 95%，但已经使用了当日时间窗理论容量的 98%，视为 `schedule_limited_increase`，而不是错误判为需求不足。发生 `rate_limited` 时仍由全局 80% 安全回退统一缩减，详情控制器不重复降额。每轮 12 个详情默认最多 5 个 priority 0 新回复任务，剩余至少 7 个位置继续补新帖和历史覆盖。
 
 2026-08-05 上线前快照显示：最近无 `rate_limited`，已验证最高约 816 次源请求/天；队列仍有 20,983 个 pending，其中 priority 0 新回复 4,172 个、priority 10 有评论新帖 12,371 个。该数据说明 700 详情上限只能接近追平新增，无法明显消化积压，因此提高到 1000；如果更高请求强度触发真实限流，全局 pause 仍会立即停止当天请求并在次日按 80% 安全系数回退。
 
-Admin 使用独立额外额度：每天 20 次候选预览和 10 次人工详情，不扣减 new-list、active-list 或 detail 主计数，也不受主额度阶梯释放约束；按当前线上配置，请求上界是 1240 次自动源额度加 30 次人工额度，共 1270 次。人工调用仍读取同一个全局 pause，发生 `rate_limited` 时会和 scheduler 一起暂停；人工计数也会进入 quota history 的真实 `source_calls`，不能在限流分析中漏算。一次预览最多 3 页，一次任务最多 10 个帖子；详情任务第一个帖子立即请求，后续帖子继续使用 8–14 秒串行间隔。
+Admin 使用独立额外额度：每天 20 次候选预览和 10 次人工详情，不扣减 new-list、active-list 或自动 detail 主计数，也不受自动详情释放约束；列表观察不再用固定的内部日上限裁剪，因此不能再用旧的 1240/1270 总数描述新主线。人工调用仍读取同一个全局 pause，发生 `rate_limited` 时会和 scheduler 一起暂停；人工计数也会进入 quota history 的真实 `source_calls`，不能在限流分析中漏算。一次预览最多 3 页，一次任务最多 10 个帖子；详情任务第一个帖子立即请求，后续帖子继续使用 8–14 秒串行间隔。
 
 后台方案语义：
 
@@ -197,7 +205,7 @@ CRAWLER_GAP_PLAN_INTERVAL=21600
 CRAWLER_GAP_PROBE_INTERVAL=7200
 ```
 
-首次启动先固定扫 20 页 list1，随后 `trickle-fill` 按 `queue_order` 串行补详情；bootstrap 完成后记录 queue-order cutover，旧 coverage 行保持 pending 但不再被领取，先执行一次 list1，再进入正式监视。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每半小时一次；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，新的两个变量优先级更高。
+首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按初始 list1 台账的 `queue_order` 串行补详情。只有这批 ID 全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2。旧 coverage 不再作为前置完成度门槛，也不会混入这次初始回补。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每半小时一次；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，新的两个变量优先级更高。
 
 `probe-gaps` 即使被调度，也会在每日 probe budget 为 0 时跳过。不要通过手动 SSH 大跑绕过这一保护。
 

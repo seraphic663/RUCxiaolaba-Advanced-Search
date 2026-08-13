@@ -84,14 +84,14 @@ class AutomaticQuotaTest(unittest.TestCase):
         self.now = self.now + timedelta(minutes=2)
         with self.assertRaises(AutomaticQuotaError) as caught:
             quota.claim()
-        self.assertEqual(caught.exception.code, "source_quota_window_locked")
+        self.assertEqual(caught.exception.code, "source_quota_budget_exhausted")
         current = self._quota()
         self.assertEqual(current["date"], "2026-07-12")
         self.assertEqual(current["detail_calls"], 0)
         history = self.history_path.read_text(encoding="utf-8")
         self.assertIn('"reason": "day_rollover"', history)
 
-    def test_prepare_job_only_crops_limit_without_reserving(self):
+    def test_list_observation_is_not_cropped_or_reserved_by_old_budget(self):
         self.quota_path.write_text(
             json.dumps(
                 {
@@ -110,8 +110,32 @@ class AutomaticQuotaTest(unittest.TestCase):
             return_value=["discover-latest", "--max-pages", "7"],
         ):
             args, note = scheduler.prepare_job("discover_new")
-        self.assertEqual(args[-1], "2")
-        self.assertIn("planned_max=2", note)
+        self.assertEqual(args[-1], "7")
+        self.assertIn("observation_unmetered", note)
+        self.assertEqual(self._quota()["new_list_calls"], 1)
+
+    def test_list_observation_can_claim_before_source_release_window(self):
+        self.quota_path.write_text(
+            json.dumps(
+                {
+                    "date": "2026-07-11",
+                    "new_list_calls": 0,
+                    "active_list_calls": 0,
+                    "detail_calls": 0,
+                    "probe_calls": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.now = datetime(
+            2026,
+            7,
+            11,
+            3,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        AutomaticQuota("new_list").claim()
         self.assertEqual(self._quota()["new_list_calls"], 1)
 
     def test_prepare_gap_probe_spreads_small_budget_across_ranges(self):
@@ -516,7 +540,7 @@ class RateLimitAttributionTest(unittest.TestCase):
             ),
         ):
             self.assertEqual(scheduler.source_pacing_allowance(quota), 751)
-            self.assertEqual(scheduler.remaining_budget("detail", quota), 11)
+            self.assertEqual(scheduler.remaining_budget("detail", quota), 350)
 
         with (
             patch.object(scheduler, "DAILY_NEW_LIST_BUDGET", 80),

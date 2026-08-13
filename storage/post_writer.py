@@ -2235,6 +2235,9 @@ class SQLitePostStore:
         # sidecar exists before reading the durable monitor cutover switch.
         ensure_ledger_schema(self.conn)
         monitor_filter, monitor_filter_params = self._monitor_queue_filter()
+        phase_filter, phase_filter_params = self._pipeline_queue_filter()
+        queue_filter = f"({phase_filter}) and ({monitor_filter})"
+        queue_filter_params = (*phase_filter_params, *monitor_filter_params)
         limit = max(1, int(limit))
         if refresh_limit is None:
             return self.conn.execute(
@@ -2242,7 +2245,7 @@ class SQLitePostStore:
             select * from crawler_queue
             where status='pending'
               and (next_attempt_at='' or next_attempt_at <= ?)
-              and ({monitor_filter})
+              and ({queue_filter})
             order by
                 priority asc,
                 case when priority > 0 then coalesce(queue_order, 2147483647)
@@ -2258,7 +2261,7 @@ class SQLitePostStore:
                 cast(post_id as integer) desc
             limit ?
             """,
-                (now_text(), *monitor_filter_params, limit),
+                (now_text(), *queue_filter_params, limit),
             ).fetchall()
 
         selected: list[sqlite3.Row] = []
@@ -2272,7 +2275,7 @@ class SQLitePostStore:
             if lane_limit <= 0 or len(selected) >= limit:
                 return
             params: list[object] = [now_text()]
-            params.extend(monitor_filter_params)
+            params.extend(queue_filter_params)
             params.extend(where_params)
             exclude = ""
             if selected_ids:
@@ -2285,7 +2288,7 @@ class SQLitePostStore:
                 select * from crawler_queue
                 where status='pending'
                   and (next_attempt_at='' or next_attempt_at <= ?)
-                  and ({monitor_filter})
+                  and ({queue_filter})
                   and ({where})
                   {exclude}
                 order by
@@ -2321,11 +2324,11 @@ class SQLitePostStore:
                         select 1 from crawler_queue
                         where status='pending'
                           and (next_attempt_at='' or next_attempt_at <= ?)
-                          and ({monitor_filter})
+                          and ({queue_filter})
                           and priority >= 40
                         )
                         """,
-                    (now_text(), *monitor_filter_params),
+                    (now_text(), *queue_filter_params),
                 ).fetchone()[0]
             )
             # Keep one bounded slot for zero-comment or otherwise quiet posts.
@@ -2353,6 +2356,36 @@ class SQLitePostStore:
         append_lane("priority > 0", limit)
         append_lane("priority = 0", limit)
         return selected
+
+    def _pipeline_queue_filter(self) -> tuple[str, tuple[object, ...]]:
+        """Scope detail work to the current durable pipeline phase.
+
+        ``list1_seed`` deliberately exposes no detail rows.  During
+        ``detail_backfill`` only IDs tagged by the completed bootstrap list1
+        cohort are eligible.  Monitoring returns to the normal shared queue;
+        the older cutover filter then decides whether historical coverage is
+        held back.
+        """
+
+        if not self._table_exists("ledger_state"):
+            return "1=1", ()
+        phase_row = self.conn.execute(
+            "select value from ledger_state where key=?",
+            ("crawler_pipeline_phase",),
+        ).fetchone()
+        phase = str(phase_row[0] if phase_row else "")
+        if phase == "list1_seed":
+            return "0=1", ()
+        if phase == "detail_backfill":
+            return (
+                "exists ("
+                "select 1 from post_id_ledger l "
+                "where l.post_id=crawler_queue.post_id "
+                "and l.bootstrap_run_id!=''"
+                ")",
+                (),
+            )
+        return "1=1", ()
 
     def _monitor_queue_filter(self) -> tuple[str, tuple[object, ...]]:
         """Return the durable cutover filter for normal coverage work.
