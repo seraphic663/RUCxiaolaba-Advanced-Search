@@ -9,3 +9,18 @@ __pycache__/
 *.csv
 *.jsonl
 *.log
+
+# Development, documentation, and local-only material
+tests/
+docs/
+tools/
+demo/
+local-only/
+.agents/
+.claude/
+.codex/
+.reasonix/
+.ruff_cache/
+AGENTS.md
+requirements-dev.txt
+pyproject.toml
