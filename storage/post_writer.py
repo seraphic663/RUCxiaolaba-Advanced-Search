@@ -17,7 +17,12 @@ from typing import Iterable
 
 from app.domain.search import bigram_tokens, symbol_tokens
 from crawler.id_ledger import ensure_ledger_schema
-from crawler.task_routing import TASK_HISTORY_DETAIL, TASK_ID_FOLLOWUP, normalize_task_type
+from crawler.task_routing import (
+    TASK_HISTORY_DETAIL,
+    TASK_HISTORY_PROBE,
+    TASK_ID_FOLLOWUP,
+    normalize_task_type,
+)
 
 
 def safe_int(value, default=0) -> int:
@@ -441,6 +446,9 @@ class SQLitePostStore:
         self.ensure_crawler_queue(commit=False)
         ensure_ledger_schema(self.conn)
         task_type_migration = self.migrate_crawler_queue_task_types(commit=False)
+        history_duplicate_migration = (
+            self.migrate_history_duplicates_to_id_followup(commit=False)
+        )
         self.ensure_gap_tables(commit=False)
         self.ensure_crawler_run_history(commit=False)
         self.ensure_crawler_quarantine(commit=False)
@@ -465,6 +473,12 @@ class SQLitePostStore:
         if observation_migration:
             print(
                 f"[queue] migrated observation state {observation_migration}",
+                flush=True,
+            )
+        if history_duplicate_migration:
+            print(
+                "[queue] routed history duplicates to id_followup "
+                f"{history_duplicate_migration}",
                 flush=True,
             )
         if terminal_migration:
@@ -667,6 +681,35 @@ class SQLitePostStore:
         if commit:
             self.conn.commit()
         return int(current or 0) + int(history or 0)
+
+    def migrate_history_duplicates_to_id_followup(self, commit: bool = True) -> int:
+        """Move active historical rows that are already in the ID ledger.
+
+        The queue is keyed by ``post_id``.  A post can therefore be discovered
+        by the historical path before the list/ledger path sees it.  Once the
+        ID ledger knows the post, it belongs to the current-ID route and must
+        not remain stranded behind the historical queue filter.
+        """
+
+        if not self._table_exists("crawler_queue"):
+            return 0
+        ensure_ledger_schema(self.conn)
+        cursor = self.conn.execute(
+            """
+            update crawler_queue
+            set task_type=?, updated_at=?
+            where task_type=?
+              and status in ('pending', 'deferred', 'failed', 'in_progress')
+              and exists(
+                  select 1 from post_id_ledger l
+                  where l.post_id=crawler_queue.post_id
+              )
+            """,
+            (TASK_ID_FOLLOWUP, now_text(), TASK_HISTORY_DETAIL),
+        )
+        if commit:
+            self.conn.commit()
+        return int(cursor.rowcount or 0)
 
     def migrate_crawler_not_found_posts(self, commit: bool = True) -> dict:
         """Materialize previously observed missing posts and hide them publicly."""
@@ -2083,6 +2126,31 @@ class SQLitePostStore:
         ).fetchone()
         return row is not None
 
+    def _queue_task_type_for_post(
+        self,
+        post_id: str,
+        requested_task_type: str,
+        existing_task_type: str = "",
+    ) -> str:
+        """Resolve a queue route without downgrading an ID-ledger post.
+
+        ``crawler_queue`` is one row per post, so the current-ID route must
+        win over historical work whenever the post is present in the ledger.
+        Keeping an existing ``id_followup`` route is also safer for legacy
+        rows that predate the ledger migration.
+        """
+
+        if self._table_exists("post_id_ledger"):
+            known = self.conn.execute(
+                "select 1 from post_id_ledger where post_id=? limit 1",
+                (str(post_id),),
+            ).fetchone()
+            if known is not None:
+                return TASK_ID_FOLLOWUP
+        if existing_task_type == TASK_ID_FOLLOWUP:
+            return TASK_ID_FOLLOWUP
+        return requested_task_type or existing_task_type or TASK_ID_FOLLOWUP
+
     def enqueue_crawler_candidate(
         self,
         *,
@@ -2115,6 +2183,14 @@ class SQLitePostStore:
             """,
             (str(post_id),),
         ).fetchone()
+        existing_task_type = (
+            str(existing["task_type"] or "") if existing is not None else ""
+        )
+        resolved_task_type = self._queue_task_type_for_post(
+            str(post_id),
+            requested_task_type,
+            existing_task_type,
+        )
         if existing is None:
             queue_order = safe_int(
                 self.conn.execute(
@@ -2152,7 +2228,7 @@ class SQLitePostStore:
                     None,
                     0,
                     "",
-                    requested_task_type or TASK_ID_FOLLOWUP,
+                    resolved_task_type,
                     now,
                     now,
                 ),
@@ -2164,8 +2240,8 @@ class SQLitePostStore:
             reasons = set(filter(None, str(existing["reason"]).split("|")))
             reasons.add(reason)
             old_status = str(existing["status"] or "")
-            old_task_type = str(existing["task_type"] or "")
-            new_task_type = requested_task_type or old_task_type or TASK_ID_FOLLOWUP
+            old_task_type = existing_task_type
+            new_task_type = resolved_task_type
             status = old_status
             old_list_count = safe_int(existing["list_comment_count"])
             attempted_count = existing["last_attempt_list_comment_count"]
@@ -2445,6 +2521,17 @@ class SQLitePostStore:
             ("crawler_pipeline_phase",),
         ).fetchone()
         phase = str(phase_row[0] if phase_row else "")
+        if normalized_task in {TASK_HISTORY_DETAIL, TASK_HISTORY_PROBE}:
+            # Historical work must never reclaim a post that the ID ledger
+            # already owns.  The enqueue/migration path routes normal active
+            # rows to id_followup; this predicate also protects legacy rows
+            # that were written before the route was made explicit.
+            filters.append(
+                "not exists("
+                "select 1 from post_id_ledger l "
+                "where l.post_id=crawler_queue.post_id"
+                ")"
+            )
         if phase == "list1_seed" and normalized_task != TASK_HISTORY_DETAIL:
             filters.append("0=1")
         elif phase == "detail_backfill" and normalized_task != TASK_HISTORY_DETAIL:
