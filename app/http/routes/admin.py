@@ -61,12 +61,6 @@ def dashboard(handler):
         "admin_dashboard.html",
         CSV_SOURCE=f"SQLite · {os.path.basename(handler.context.posts_db)}",
         TOTAL=stats["total"],
-        UNIQUE_USERS=stats["unique_users"],
-        MULTI=stats["multi"],
-        TOTAL_COMMENTS=stats["total_comments"],
-        UNIQUE_COMMENTERS=stats["unique_commenters"],
-        DANGER="SQLite 数据(含ID)",
-        USER_ROWS=stats["user_rows"],
         ADMIN_CSRF_TOKEN=csrf,
     )
     handler.serve_html(content)
