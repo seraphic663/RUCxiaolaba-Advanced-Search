@@ -102,6 +102,8 @@ PHASE1_INTERVAL = env_int("CRAWLER_PHASE1_INTERVAL", 7 * 24 * 60 * 60)
 PHASE1_MARKER = Path(DB_PATH).with_name(".phase1_weekly_last")
 CHINA_TZ = timezone(timedelta(hours=8))
 TRICKLE_ENABLED = os.environ.get("CRAWLER_TRICKLE_ENABLED", "0") == "1"
+PARALLEL_LANES_ENABLED = os.environ.get("CRAWLER_PARALLEL_LANES", "0") == "1"
+LANE_WORKER_MODE = os.environ.get("CRAWLER_LANE_WORKER_MODE", "").strip().lower()
 TRICKLE_SINCE = os.environ.get("CRAWLER_TRICKLE_SINCE", "2026-06-25 00:00:00")
 DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 30 * 60)
 NEW_DISCOVER_INTERVAL = env_int(
@@ -122,6 +124,13 @@ BOOTSTRAP_RETRY_INTERVAL = env_int(
     60 * 60,
 )
 TRICKLE_INTERVAL = env_int("CRAWLER_TRICKLE_INTERVAL", 10 * 60)
+DAY_TRICKLE_INTERVAL = env_int("CRAWLER_DAY_TRICKLE_INTERVAL", 60 * 60)
+NIGHT_TRICKLE_INTERVAL = env_int(
+    "CRAWLER_NIGHT_TRICKLE_INTERVAL",
+    TRICKLE_INTERVAL,
+)
+DETAIL_NIGHT_START = os.environ.get("CRAWLER_DETAIL_NIGHT_START", "04:00")
+DETAIL_NIGHT_END = os.environ.get("CRAWLER_DETAIL_NIGHT_END", "06:00")
 TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 12)
 TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 12), TRICKLE_LIMIT_CAP)
 HISTORY_TRICKLE_INTERVAL = env_int(
@@ -169,6 +178,7 @@ GAP_PLAN_INTERVAL = env_int("CRAWLER_GAP_PLAN_INTERVAL", 6 * 60 * 60)
 GAP_PROBE_INTERVAL = env_int("CRAWLER_GAP_PROBE_INTERVAL", 2 * 60 * 60)
 GAP_RANGE_LIMIT = env_int("CRAWLER_GAP_RANGE_LIMIT", 12)
 GAP_SAMPLES = env_int("CRAWLER_GAP_SAMPLES", 1)
+NIGHT_PROBE_SAMPLES = env_int("CRAWLER_NIGHT_PROBE_SAMPLES", 25)
 GAP_CHUNK_SIZE = env_int("CRAWLER_GAP_CHUNK_SIZE", 1000)
 GAP_DENSITY_THRESHOLD = env_float("CRAWLER_GAP_DENSITY_THRESHOLD", 0.35)
 COOKIE_ERROR_COOLDOWN = env_int("CRAWLER_COOKIE_ERROR_COOLDOWN", 6 * 60 * 60)
@@ -194,6 +204,14 @@ QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
 DETAIL_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
     "CRAWLER_DETAIL_QUOTA_RELEASE_STEPS",
     "0=0.05,6=0.10,10=0.20,12=0.38,15=0.58,18=0.74,20=0.84,21=0.91,22=0.97,23=0.99,23:30=1.00",
+)
+NEW_DETAIL_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
+    "CRAWLER_NEW_DETAIL_QUOTA_RELEASE_STEPS",
+    "0=0.05,04:00=0.75,06:00=1.00",
+)
+OLD_PROBE_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
+    "CRAWLER_OLD_PROBE_QUOTA_RELEASE_STEPS",
+    "23:00=1.00",
 )
 QUOTA_ADAPTIVE_ENABLED = os.environ.get("CRAWLER_QUOTA_ADAPTIVE_ENABLED", "1") == "1"
 QUOTA_ADAPTIVE_LOOKBACK_DAYS = env_int("CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14)
@@ -476,7 +494,7 @@ if GAP_ENABLED:
                 "--range-limit",
                 str(GAP_RANGE_LIMIT),
                 "--samples-per-range",
-                str(GAP_SAMPLES),
+                str(NIGHT_PROBE_SAMPLES),
                 "--min-delay",
                 "8",
                 "--max-delay",
@@ -585,8 +603,13 @@ def quota_release_steps() -> list[tuple[int, float]]:
     return [(first_hour * 60, 0.5), (second_hour * 60, 1.0)]
 
 
-def detail_quota_release_steps() -> list[tuple[int, float]]:
-    steps = parse_release_steps(DETAIL_QUOTA_RELEASE_STEPS_TEXT)
+def detail_quota_release_steps(lane_id: str = "") -> list[tuple[int, float]]:
+    text = (
+        NEW_DETAIL_QUOTA_RELEASE_STEPS_TEXT
+        if str(lane_id or "") == "new"
+        else DETAIL_QUOTA_RELEASE_STEPS_TEXT
+    )
+    steps = parse_release_steps(text)
     return steps or quota_release_steps()
 
 
@@ -617,16 +640,30 @@ def release_fraction_for_steps(
     return released
 
 
-def detail_quota_release_fraction(at: datetime | None = None) -> float:
-    return release_fraction_for_steps(detail_quota_release_steps(), at)
+def detail_quota_release_fraction(
+    at: datetime | None = None,
+    lane_id: str = "",
+) -> float:
+    return release_fraction_for_steps(detail_quota_release_steps(lane_id), at)
 
 
-def next_detail_quota_release(at: datetime | None = None) -> datetime:
+def old_probe_quota_release_steps() -> list[tuple[int, float]]:
+    return parse_release_steps(OLD_PROBE_QUOTA_RELEASE_STEPS_TEXT) or quota_release_steps()
+
+
+def old_probe_quota_release_fraction(at: datetime | None = None) -> float:
+    return release_fraction_for_steps(old_probe_quota_release_steps(), at)
+
+
+def next_detail_quota_release(
+    at: datetime | None = None,
+    lane_id: str = "",
+) -> datetime:
     """Return the next release point for the detail-only budget lane."""
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
     current_minute = at.hour * 60 + at.minute
-    current_fraction = detail_quota_release_fraction(at)
-    steps = detail_quota_release_steps()
+    current_fraction = detail_quota_release_fraction(at, lane_id=lane_id)
+    steps = detail_quota_release_steps(lane_id)
     for minute, fraction in steps:
         if minute > current_minute and fraction > current_fraction:
             return at.replace(
@@ -650,10 +687,13 @@ def next_detail_quota_release(at: datetime | None = None) -> datetime:
 def quota_release_fraction_for_kind(
     kind: str,
     at: datetime | None = None,
+    lane_id: str = "",
 ) -> float:
     return (
-        detail_quota_release_fraction(at)
+        detail_quota_release_fraction(at, lane_id=lane_id)
         if kind == "detail"
+        else old_probe_quota_release_fraction(at)
+        if kind == "probe" and str(lane_id or "") == "old"
         else quota_release_fraction(at)
     )
 
@@ -661,10 +701,13 @@ def quota_release_fraction_for_kind(
 def next_quota_release_for_kind(
     kind: str,
     at: datetime | None = None,
+    lane_id: str = "",
 ) -> datetime:
     return (
-        next_detail_quota_release(at)
+        next_detail_quota_release(at, lane_id=lane_id)
         if kind == "detail"
+        else next_quota_release_from_steps(old_probe_quota_release_steps(), at)
+        if kind == "probe" and str(lane_id or "") == "old"
         else next_quota_release(at)
     )
 
@@ -700,10 +743,18 @@ def estimated_released_capacity(
 
 
 def next_quota_release(at: datetime | None = None) -> datetime:
+    return next_quota_release_from_steps(quota_release_steps(), at)
+
+
+def next_quota_release_from_steps(
+    steps: list[tuple[int, float]],
+    at: datetime | None = None,
+) -> datetime:
+    steps = steps or quota_release_steps()
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
     current_minute = at.hour * 60 + at.minute
-    current_fraction = quota_release_fraction(at)
-    for minute, fraction in quota_release_steps():
+    current_fraction = release_fraction_for_steps(steps, at)
+    for minute, fraction in steps:
         if minute > current_minute and fraction > current_fraction:
             return at.replace(
                 hour=minute // 60,
@@ -712,7 +763,7 @@ def next_quota_release(at: datetime | None = None) -> datetime:
                 microsecond=0,
             )
     tomorrow = at.date() + timedelta(days=1)
-    first_minute = quota_release_steps()[0][0]
+    first_minute = steps[0][0]
     return datetime.combine(
         tomorrow,
         datetime.min.time(),
@@ -995,7 +1046,7 @@ def source_pacing_allowance(
             or rate_limit_pacing_anchor()
             or 0
         )
-    fraction = detail_quota_release_fraction()
+    fraction = detail_quota_release_fraction(lane_id=lane_id)
     if anchor <= 0 or fraction >= 1.0:
         return total_budget
     return min(total_budget, max(1, int(anchor * fraction)))
@@ -1670,13 +1721,25 @@ def sync_pipeline_jobs(
     elif phase == PIPELINE_PHASE_MONITORING:
         desired = {
             "trickle_fill",
-            "trickle_fill_history",
             "discover_new",
             "discover_active",
         }
+        if not PARALLEL_LANES_ENABLED:
+            desired.add("trickle_fill_history")
+        if GAP_ENABLED:
+            desired.add("plan_gaps")
+            if not PARALLEL_LANES_ENABLED:
+                desired.add("probe_gaps")
         prepare_monitor_cutover()
     else:
         raise ValueError(f"unsupported pipeline phase: {phase}")
+
+    if PARALLEL_LANES_ENABLED:
+        # The old/history lane is owned by jobs.lane_worker in parallel mode.
+        # Keeping it here would let the main scheduler and the lane worker
+        # compete for the same queue route.
+        desired.discard("trickle_fill_history")
+        desired.discard("probe_gaps")
 
     for name in list(next_run):
         if name not in desired:
@@ -1687,8 +1750,10 @@ def sync_pipeline_jobs(
         "bootstrap_new": (60.0, BOOTSTRAP_RETRY_INTERVAL),
         "discover_new": (60.0 if phase == PIPELINE_PHASE_LIST1_SEED else 3 * 60, NEW_DISCOVER_INTERVAL),
         "discover_active": (8 * 60, ACTIVE_DISCOVER_INTERVAL),
-        "trickle_fill": (90.0, TRICKLE_INTERVAL),
+        "trickle_fill": (90.0, detail_trickle_interval()),
         "trickle_fill_history": (3 * 60, HISTORY_TRICKLE_INTERVAL),
+        "plan_gaps": (10 * 60, GAP_PLAN_INTERVAL),
+        "probe_gaps": (20 * 60, GAP_PROBE_INTERVAL),
     }
     for name in desired:
         if name not in next_run:
@@ -1740,6 +1805,63 @@ def next_job_run(started_at: float, finished_at: float, interval: float) -> floa
     return max(started_at + interval, finished_at + 1.0)
 
 
+def _clock_minute(value: str, default: int) -> int:
+    text = str(value or "").strip()
+    try:
+        if ":" in text:
+            hour, minute = text.split(":", 1)
+            result = int(hour) * 60 + int(minute)
+        else:
+            result = int(text) * 60
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(23 * 60 + 59, result))
+
+
+def detail_night_bounds() -> tuple[int, int]:
+    start = _clock_minute(DETAIL_NIGHT_START, 4 * 60)
+    end = _clock_minute(DETAIL_NIGHT_END, 6 * 60)
+    if end <= start:
+        return 4 * 60, 6 * 60
+    return start, end
+
+
+def detail_night_active(at: datetime | None = None) -> bool:
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    start, end = detail_night_bounds()
+    minute = at.hour * 60 + at.minute
+    return start <= minute < end
+
+
+def detail_trickle_interval(at: datetime | None = None) -> int:
+    return NIGHT_TRICKLE_INTERVAL if detail_night_active(at) else DAY_TRICKLE_INTERVAL
+
+
+def next_detail_trickle_run(finished_at: float) -> float:
+    """Schedule current-ID detail work across the configured night window."""
+
+    now = beijing_now()
+    start_minute, end_minute = detail_night_bounds()
+    today = now.date()
+    start_today = datetime.combine(today, datetime.min.time(), tzinfo=CHINA_TZ).replace(
+        hour=start_minute // 60,
+        minute=start_minute % 60,
+    )
+    end_today = datetime.combine(today, datetime.min.time(), tzinfo=CHINA_TZ).replace(
+        hour=end_minute // 60,
+        minute=end_minute % 60,
+    )
+    if detail_night_active(now):
+        target = now + timedelta(seconds=NIGHT_TRICKLE_INTERVAL)
+        if target >= end_today:
+            target = end_today
+    else:
+        target = now + timedelta(seconds=DAY_TRICKLE_INTERVAL)
+        if now < start_today <= target:
+            target = start_today
+    return finished_at + max(1.0, (target - now).total_seconds())
+
+
 def replace_arg(args: list[str], flag: str, value: int) -> list[str]:
     updated = list(args)
     try:
@@ -1788,9 +1910,9 @@ def remaining_budget(
     if kind in UNMETERED_LIST_KINDS:
         return 2**31 - 1
     fraction = (
-        detail_quota_release_fraction()
+        detail_quota_release_fraction(lane_id=lane_id)
         if kind == "detail"
-        else quota_release_fraction()
+        else quota_release_fraction_for_kind(kind, lane_id=lane_id)
     )
     if fraction <= 0:
         return 0
@@ -1906,10 +2028,10 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
         lane_id = job_lane_id(name)
         remaining = remaining_budget(kind, quota, lane_id=lane_id)
         if remaining <= 0:
-            if quota_release_fraction_for_kind(kind) <= 0:
+            if quota_release_fraction_for_kind(kind, lane_id=lane_id) <= 0:
                 return None, (
                     f"{kind}_quota_window_locked_until="
-                    f"{next_quota_release_for_kind(kind).isoformat()}"
+                    f"{next_quota_release_for_kind(kind, lane_id=lane_id).isoformat()}"
                 )
             return None, f"{kind}_budget_exhausted"
         if name in {"discover_new", "discover_active"}:
@@ -2131,7 +2253,10 @@ def main() -> int:
             f"bootstrap_pages={BOOTSTRAP_PAGES} "
             f"since={TRICKLE_SINCE!r} list1={NEW_DISCOVER_INTERVAL}s "
             f"list2={ACTIVE_DISCOVER_INTERVAL}s "
-            f"trickle={TRICKLE_INTERVAL}s limit={TRICKLE_LIMIT} "
+            f"detail_day={DAY_TRICKLE_INTERVAL}s "
+            f"detail_night={NIGHT_TRICKLE_INTERVAL}s "
+            f"night_window={DETAIL_NIGHT_START}-{DETAIL_NIGHT_END} "
+            f"limit={TRICKLE_LIMIT} parallel_lanes={PARALLEL_LANES_ENABLED} "
             f"refresh_limit={TRICKLE_REFRESH_LIMIT} "
             f"fresh_hours={TRICKLE_FRESH_COVERAGE_HOURS} "
             f"gap={GAP_ENABLED} gap_since={GAP_SINCE!r}",
@@ -2309,9 +2434,16 @@ def main() -> int:
             save_heartbeat(state="error", job=due, detail=str(exc))
             next_run[due] = time.monotonic() + 60
             continue
-        retry_delay = 60 * 60 if due == "phase1" and not result.succeeded else intervals[due]
         finished_at = time.monotonic()
-        next_run[due] = next_job_run(started_at, finished_at, retry_delay)
+        if due == "trickle_fill" and result.succeeded:
+            next_run[due] = next_detail_trickle_run(finished_at)
+        else:
+            retry_delay = (
+                60 * 60
+                if due == "phase1" and not result.succeeded
+                else intervals[due]
+            )
+            next_run[due] = next_job_run(started_at, finished_at, retry_delay)
         save_heartbeat(
             state="idle",
             job=due,

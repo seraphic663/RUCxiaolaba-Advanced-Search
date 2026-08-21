@@ -67,6 +67,28 @@ class CrawlerService:
             return CookiePoolClient.from_file(self.cookie_pool_path)
         return MiniProgramClient(self.cookie)
 
+    def _write_lock(self, task_type: str = "", client=None):
+        """Use a cooperative lane lock only for explicitly parallel workers.
+
+        The default remains the historical global writer lock.  In parallel
+        mode each worker still relies on SQLite WAL and queue claims for
+        correctness, while a lane-specific lease prevents duplicate workers
+        for the same cookie route from running at once.
+        """
+
+        if os.environ.get("CRAWLER_PARALLEL_LANES", "0") != "1":
+            return database_write_lock(self.db_path, self.lock_timeout)
+        route = getattr(client, "lane_for_task", None)
+        lane_id = str(route(task_type) or "") if route and task_type else ""
+        if not lane_id:
+            return database_write_lock(self.db_path, self.lock_timeout)
+        lane_lock = Path(f"{self.db_path}.crawler.{lane_id}.lock")
+        return database_write_lock(
+            self.db_path,
+            self.lock_timeout,
+            lock_path=lane_lock,
+        )
+
     @contextmanager
     def _task_scope(self, client, task_type: str):
         """Pin a pooled client to one semantic queue route for one call."""
@@ -300,7 +322,7 @@ class CrawlerService:
         list_task_type = (
             TASK_LIST_ACTIVE if endpoint == "lists2" else TASK_LIST_NEW
         )
-        with database_write_lock(self.db_path, self.lock_timeout):
+        with self._write_lock(list_task_type, client=client):
             with SQLitePostStore(self.db_path) as store:
                 if self.init_schema:
                     store.init_schema()
@@ -714,7 +736,7 @@ class CrawlerService:
         stats["completed_backlog_coverage"] = 0
         stats["completed_quiet_coverage"] = 0
         consecutive_misses = 0
-        with database_write_lock(self.db_path, self.lock_timeout):
+        with self._write_lock(task_type, client=client):
             with SQLitePostStore(self.db_path) as store:
                 if self.init_schema:
                     store.init_schema()
@@ -1356,7 +1378,7 @@ class CrawlerService:
             "quota_stop": False,
             "source_calls": 0,
         }
-        with database_write_lock(self.db_path, self.lock_timeout):
+        with self._write_lock(TASK_HISTORY_PROBE, client=client):
             with SQLitePostStore(self.db_path) as store:
                 if self.init_schema:
                     store.init_schema()
@@ -1540,6 +1562,12 @@ class CrawlerService:
                                     now,
                                 ),
                             )
+                            # Release SQLite's short write transaction after
+                            # each probe sample.  The network call happens
+                            # before this point, so a nightly probe cannot
+                            # hold the database writer while waiting on the
+                            # upstream API.
+                            store.conn.commit()
                     if not dry_run:
                         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         span = max(

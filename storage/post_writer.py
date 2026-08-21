@@ -175,9 +175,14 @@ class SQLitePostStore:
             else os.environ.get("SYMBOL_INDEX_DB_PATH") or os.environ.get("SYMBOL_INDEX_DB", "")
         )
         self.symbol_path = Path(configured_symbol).resolve() if configured_symbol else None
-        self.conn = sqlite3.connect(self.db_path)
+        # Parallel lane workers claim different queue rows and commit each
+        # source result separately.  WAL allows their reads to overlap, while
+        # a generous busy timeout lets SQLite serialize the short write
+        # transactions instead of failing during a concurrent commit.
+        self.conn = sqlite3.connect(self.db_path, timeout=60)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("pragma journal_mode=wal")
+        self.conn.execute("pragma busy_timeout=60000")
         self.conn.execute("pragma synchronous=normal")
         self.conn.execute("pragma foreign_keys=off")
         self.conn.execute("pragma mmap_size=0")
