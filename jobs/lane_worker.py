@@ -24,6 +24,7 @@ LANE_ID = os.environ.get("CRAWLER_LANE_WORKER_MODE", "").strip().lower()
 WORKER_LOCK_TIMEOUT = scheduler.env_int("CRAWLER_LANE_WORKER_LOCK_TIMEOUT", 3600)
 PROBE_START = os.environ.get("CRAWLER_PROBE_START", "23:00")
 PROBE_CHECK_INTERVAL = scheduler.env_int("CRAWLER_PROBE_CHECK_INTERVAL", 60)
+STARTUP_GRACE_SECONDS = scheduler.env_int("CRAWLER_LANE_STARTUP_GRACE", 90)
 PROBE_STATE_KEY = "crawler_probe_last_run_date"
 
 
@@ -109,11 +110,12 @@ def main() -> int:
         flush=True,
     )
     with _single_worker_lock():
-        next_history = time.monotonic() + 3 * 60
+        started_at = time.monotonic()
+        next_history = started_at + 3 * 60
         while True:
             now_mono = time.monotonic()
             now_wall = scheduler.beijing_now()
-            if _monitoring_ready():
+            if now_mono - started_at >= STARTUP_GRACE_SECONDS and _monitoring_ready():
                 if now_mono >= next_history:
                     started = now_mono
                     result = scheduler.run_job("trickle_fill_history")
