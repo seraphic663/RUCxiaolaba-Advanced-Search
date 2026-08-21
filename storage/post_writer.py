@@ -181,8 +181,8 @@ class SQLitePostStore:
         # transactions instead of failing during a concurrent commit.
         self.conn = sqlite3.connect(self.db_path, timeout=60)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("pragma journal_mode=wal")
         self.conn.execute("pragma busy_timeout=60000")
+        self.conn.execute("pragma journal_mode=wal")
         self.conn.execute("pragma synchronous=normal")
         self.conn.execute("pragma foreign_keys=off")
         self.conn.execute("pragma mmap_size=0")
