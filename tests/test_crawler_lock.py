@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 import time
 from pathlib import Path
 
@@ -158,3 +159,36 @@ def test_owned_lock_is_released_after_exception(tmp_path):
         ):
             raise RuntimeError("boom")
     assert not marker.exists()
+
+
+def test_parallel_lane_lock_paths_do_not_serialize_different_lanes(tmp_path):
+    db_path = tmp_path / "posts.db"
+    entered = {"new": threading.Event(), "old": threading.Event()}
+    release = threading.Event()
+    errors: list[BaseException] = []
+
+    def worker(lane: str) -> None:
+        try:
+            marker = tmp_path / f"posts.db.crawler.{lane}.lock"
+            with database_write_lock(
+                db_path,
+                timeout=1,
+                lock_path=marker,
+                lease_seconds=0.5,
+                heartbeat_interval=0.05,
+            ):
+                entered[lane].set()
+                release.wait(0.5)
+        except BaseException as exc:  # pragma: no cover - assertion below
+            errors.append(exc)
+
+    first = threading.Thread(target=worker, args=("new",))
+    second = threading.Thread(target=worker, args=("old",))
+    first.start()
+    second.start()
+    assert entered["new"].wait(0.5)
+    assert entered["old"].wait(0.5)
+    release.set()
+    first.join()
+    second.join()
+    assert errors == []

@@ -228,10 +228,11 @@ def database_write_lock(
     db_path: str | Path,
     timeout: int = DEFAULT_LOCK_TIMEOUT,
     *,
+    lock_path: str | Path | None = None,
     lease_seconds: float = LOCK_LEASE_SECONDS,
     heartbeat_interval: float = LOCK_HEARTBEAT_SECONDS,
 ):
-    lock_path = Path(str(db_path) + ".crawler.lock")
+    lock_path = Path(lock_path) if lock_path else Path(str(db_path) + ".crawler.lock")
     deadline = time.time() + timeout
     lease_seconds = max(0.01, float(lease_seconds))
     heartbeat_interval = max(

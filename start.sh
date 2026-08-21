@@ -39,6 +39,19 @@ if [ "${CRAWLER_ENABLED:-0}" = "1" ]; then
       sleep 30
     done
   ) &
+  if [ "${CRAWLER_PARALLEL_LANES:-0}" = "1" ]; then
+    echo "[boot] Starting old-cookie lane worker"
+    (
+      set +e
+      export CRAWLER_LANE_WORKER_MODE=old
+      while true; do
+        python -u -m jobs.lane_worker
+        code=$?
+        echo "[boot] Old-cookie lane worker exited code=$code; restarting in 30s"
+        sleep 30
+      done
+    ) &
+  fi
 else
   echo "[boot] Crawler scheduler disabled"
 fi
