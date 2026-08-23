@@ -8,18 +8,16 @@
       "daily_budgets": {
         "new_list": 0,
         "active_list": 0,
-        "detail": 500,
-        "probe": 0
+        "detail": 500
       }
     },
     {
       "id": "old",
       "config": "config.txt",
       "enabled": true,
-      "task_types": ["history_detail", "history_probe"],
+      "task_types": ["history_detail"],
       "daily_budgets": {
-        "detail": 500,
-        "probe": 0
+        "detail": 500
       }
     }
   ]

@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from crawler.id_ledger import ledger_state, set_ledger_state
 from crawler.task_routing import TASK_HISTORY_DETAIL, TASK_ID_FOLLOWUP
+from jobs import scheduler
 from jobs.scheduler import (
     enable_monitor_jobs,
     enable_remaining_monitor_jobs,
@@ -186,11 +187,19 @@ class MonitorCutoverTest(unittest.TestCase):
                 "discover_active",
             },
         )
+        self.assertEqual(
+            next_run["discover_active"] - next_run["discover_new"],
+            scheduler.ACTIVE_DISCOVER_OFFSET,
+        )
 
         restarted = {}
         restarted_intervals = {}
         enable_remaining_monitor_jobs(restarted, restarted_intervals, 300.0)
         self.assertEqual(set(restarted), set(next_run))
+        self.assertEqual(
+            restarted["discover_active"] - restarted["discover_new"],
+            scheduler.ACTIVE_DISCOVER_OFFSET,
+        )
 
 
 if __name__ == "__main__":

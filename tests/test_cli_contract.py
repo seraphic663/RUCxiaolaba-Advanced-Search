@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from crawler.cli import build_parser
 from jobs.scheduler import (
@@ -18,7 +18,6 @@ from jobs.scheduler import (
     quota_release_fraction,
     quota_source_calls,
     record_failed_crawler_run,
-    run_job,
     remaining_budget,
     select_next_job,
 )
@@ -72,26 +71,6 @@ class CLIContractTest(unittest.TestCase):
         )
         self.assertEqual(classify_error("[crawler] error: not_found"), "")
 
-    def test_scheduler_records_failed_child_process(self):
-        child = Mock(returncode=1, stderr="[crawler] error: cookie_expired\n")
-        with (
-            patch(
-                "jobs.scheduler.prepare_job",
-                return_value=(["plan-gaps"], ""),
-            ),
-            patch("jobs.scheduler.subprocess.run", return_value=child),
-            patch("jobs.scheduler.record_failed_crawler_run") as record,
-        ):
-            result = run_job("plan_gaps")
-        self.assertFalse(result.succeeded)
-        self.assertEqual(result.error_kind, "cookie_expired")
-        self.assertEqual(result.returncode, 1)
-        record.assert_called_once()
-        call = record.call_args.kwargs
-        self.assertEqual(call["name"], "plan_gaps")
-        self.assertEqual(call["source_calls"], 0)
-        self.assertEqual(call["error_kind"], "cookie_expired")
-
     def test_failed_child_history_is_durable(self):
         with tempfile.TemporaryDirectory() as temporary:
             db_path = Path(temporary) / "posts.db"
@@ -126,14 +105,11 @@ class CLIContractTest(unittest.TestCase):
     def test_scheduler_budgets_source_call_types(self):
         self.assertEqual(job_budget_kind("discover_new"), "new_list")
         self.assertEqual(job_budget_kind("discover_active"), "active_list")
-        self.assertEqual(job_budget_kind("plan_gaps"), "")
         self.assertEqual(job_budget_kind("trickle_fill"), "detail")
-        self.assertEqual(job_budget_kind("probe_gaps"), "probe")
         self.assertEqual(
             planned_job_calls("discover_new", ["discover-latest", "--max-pages", "7"]),
             7,
         )
-        self.assertEqual(planned_job_calls("plan_gaps", ["plan-gaps"]), 0)
         trickle_args = job_args("trickle_fill")
         self.assertLessEqual(int(trickle_args[trickle_args.index("--limit") + 1]), 12)
         self.assertLessEqual(
@@ -230,12 +206,11 @@ class CLIContractTest(unittest.TestCase):
                     "new_list_calls": 1,
                     "active_list_calls": 2,
                     "detail_calls": 3,
-                    "probe_calls": 4,
                     "admin_preview_calls": 5,
                     "admin_detail_calls": 6,
                 }
             ),
-            21,
+            17,
         )
 
 

@@ -57,6 +57,8 @@ data/posts.db             主数据库
 data/bigram_index.db      Bigram 旁路索引；存在时本地自动启用
 data/symbol_index.db      Symbol 旁路索引；存在时本地自动启用
 data/config.txt           小程序 cookie，爬虫需要
+data/config_small.txt     可选的另一个固定会话配置，不提交仓库
+data/cookie_pool.json     可选的 lane 路由和配额配置，不含 cookie 值
 Railway ADMIN_PASSWORD    admin 固定密码环境变量
 ```
 

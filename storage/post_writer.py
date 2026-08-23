@@ -19,7 +19,6 @@ from app.domain.search import bigram_tokens, symbol_tokens
 from crawler.id_ledger import ensure_ledger_schema
 from crawler.task_routing import (
     TASK_HISTORY_DETAIL,
-    TASK_HISTORY_PROBE,
     TASK_ID_FOLLOWUP,
     normalize_task_type,
 )
@@ -316,32 +315,6 @@ class SQLitePostStore:
                 updated_at text not null
             );
 
-            create table if not exists crawler_gap_ranges (
-                range_id text primary key,
-                start_id integer not null,
-                end_id integer not null,
-                reason text not null,
-                status text not null,
-                estimated_density real not null,
-                sampled integer not null,
-                found integer not null,
-                missing integer not null,
-                errors integer not null,
-                created_at text not null,
-                updated_at text not null
-            );
-
-            create table if not exists crawler_id_probe (
-                post_id text primary key,
-                range_id text not null,
-                status text not null,
-                create_time text not null,
-                comment_count integer not null,
-                last_error text not null,
-                attempts integer not null,
-                probed_at text not null
-            );
-
             create table if not exists crawler_run_history (
                 run_id integer primary key autoincrement,
                 command text not null,
@@ -389,10 +362,6 @@ class SQLitePostStore:
             create index if not exists idx_comments_reply_user_name_lower on comments(lower(reply_show_user_name));
             create index if not exists idx_crawler_queue_status_priority on crawler_queue(status, priority, updated_at);
             create index if not exists idx_crawler_queue_due on crawler_queue(status, next_attempt_at, priority);
-            create index if not exists idx_crawler_gap_status on crawler_gap_ranges(status, start_id);
-            create index if not exists idx_crawler_gap_sampling
-                on crawler_gap_ranges(status, sampled, start_id);
-            create index if not exists idx_crawler_probe_range on crawler_id_probe(range_id, status);
             create index if not exists idx_crawler_run_finished
                 on crawler_run_history(finished_at, command);
             """
@@ -454,7 +423,6 @@ class SQLitePostStore:
         history_duplicate_migration = (
             self.migrate_history_duplicates_to_id_followup(commit=False)
         )
-        self.ensure_gap_tables(commit=False)
         self.ensure_crawler_run_history(commit=False)
         self.ensure_crawler_quarantine(commit=False)
         deleted_post_migration = self.migrate_crawler_not_found_posts(commit=False)
@@ -1492,44 +1460,6 @@ class SQLitePostStore:
         if commit:
             self.conn.commit()
 
-    def ensure_gap_tables(self, commit: bool = True) -> None:
-        self.conn.executescript(
-            """
-            create table if not exists crawler_gap_ranges (
-                range_id text primary key,
-                start_id integer not null,
-                end_id integer not null,
-                reason text not null,
-                status text not null,
-                estimated_density real not null,
-                sampled integer not null,
-                found integer not null,
-                missing integer not null,
-                errors integer not null,
-                created_at text not null,
-                updated_at text not null
-            );
-
-            create table if not exists crawler_id_probe (
-                post_id text primary key,
-                range_id text not null,
-                status text not null,
-                create_time text not null,
-                comment_count integer not null,
-                last_error text not null,
-                attempts integer not null,
-                probed_at text not null
-            );
-
-            create index if not exists idx_crawler_gap_status on crawler_gap_ranges(status, start_id);
-            create index if not exists idx_crawler_gap_sampling
-                on crawler_gap_ranges(status, sampled, start_id);
-            create index if not exists idx_crawler_probe_range on crawler_id_probe(range_id, status);
-            """
-        )
-        if commit:
-            self.conn.commit()
-
     def upsert_post(
         self, post: dict, comments: list[dict] | None = None, commit: bool = True
     ) -> None:
@@ -2526,7 +2456,7 @@ class SQLitePostStore:
             ("crawler_pipeline_phase",),
         ).fetchone()
         phase = str(phase_row[0] if phase_row else "")
-        if normalized_task in {TASK_HISTORY_DETAIL, TASK_HISTORY_PROBE}:
+        if normalized_task == TASK_HISTORY_DETAIL:
             # Historical work must never reclaim a post that the ID ledger
             # already owns.  The enqueue/migration path routes normal active
             # rows to id_followup; this predicate also protects legacy rows

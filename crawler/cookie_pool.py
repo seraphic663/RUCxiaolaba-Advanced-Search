@@ -16,7 +16,7 @@ from typing import Callable
 from crawler.task_routing import TASK_LIST_NEW, normalize_task_type
 
 
-COOKIE_KINDS = ("new_list", "active_list", "detail", "probe")
+COOKIE_KINDS = ("new_list", "active_list", "detail")
 _KIND_ALIASES = {
     "new_list": ("new_list", "new_list_calls", "daily_new_list_budget"),
     "active_list": (
@@ -25,7 +25,6 @@ _KIND_ALIASES = {
         "daily_active_list_budget",
     ),
     "detail": ("detail", "detail_calls", "daily_detail_budget"),
-    "probe": ("probe", "probe_calls", "daily_probe_budget"),
 }
 
 

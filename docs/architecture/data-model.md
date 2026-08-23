@@ -44,7 +44,13 @@ trace_count     蹲蹲数
 updated_at      本库最后更新时间
 crawl_status    `list_only` 表示只有列表快照，`full` 表示详情已补全
 list_update_time 最近一次列表更新时间
+source_state    `available` 或 `deleted_or_unavailable`，与详情完整度分离
+source_state_changed_at 最近一次源端可用状态变化时间
+source_state_reason 状态证据，例如 `not_found`
+source_observed_at 最近一次列表或详情观测时间
 ```
+
+`comment_count` 保存最近一次源端报告值；`count(*) from comments` 是本站实际保存的评论/回复记录行数，两者允许不同。删帖后冻结最后一次观察值，Admin 同时展示源端值和本地保存行数。`crawl_status` 只描述本站是否抓到详情，不能替代 `source_state`。
 
 ## 表：comments
 
@@ -96,9 +102,9 @@ body     正文或评论文本
 
 | 表 | 用途 |
 |---|---|
-| `crawler_queue` | 保存待补详情帖子、priority、reason、状态、列表/数据库评论数和重试信息 |
-| `crawler_gap_ranges` | 保存按 ID 密度规划的缺口区间和处理状态 |
-| `crawler_id_probe` | 保存缺口抽样结果，避免重复探测相同 ID |
+| `crawler_queue` | 保存待补详情帖子、`task_type` 路由、priority、reason、状态、列表/数据库评论数、重试信息和原子认领租约/lane |
+| `post_id_ledger` | 保存 ID 首次/最近由 list1 或 list2 观察的来源、事件键、详情状态、详情时间线和帖子存在性 |
+| `list2_observation_log` | 保存 list2 事件键，避免同一活跃观察重复触发详情 |
 
 它们是 crawler 的持久运行状态，不等于帖子内容覆盖率。完整度需要同时查看 `posts.crawl_status`、`comments`、queue 状态和各命令统计。
 
