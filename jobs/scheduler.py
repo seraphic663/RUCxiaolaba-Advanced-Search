@@ -105,7 +105,7 @@ TRICKLE_ENABLED = os.environ.get("CRAWLER_TRICKLE_ENABLED", "0") == "1"
 PARALLEL_LANES_ENABLED = os.environ.get("CRAWLER_PARALLEL_LANES", "0") == "1"
 LANE_WORKER_MODE = os.environ.get("CRAWLER_LANE_WORKER_MODE", "").strip().lower()
 TRICKLE_SINCE = os.environ.get("CRAWLER_TRICKLE_SINCE", "2026-06-25 00:00:00")
-DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 30 * 60)
+DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 60 * 60)
 NEW_DISCOVER_INTERVAL = env_int(
     "CRAWLER_NEW_DISCOVER_INTERVAL",
     60 * 60,
@@ -113,6 +113,10 @@ NEW_DISCOVER_INTERVAL = env_int(
 ACTIVE_DISCOVER_INTERVAL = env_int(
     "CRAWLER_ACTIVE_DISCOVER_INTERVAL",
     DISCOVER_INTERVAL,
+)
+ACTIVE_DISCOVER_OFFSET = env_int(
+    "CRAWLER_ACTIVE_DISCOVER_OFFSET",
+    30 * 60,
 )
 BOOTSTRAP_PAGES = env_int("CRAWLER_BOOTSTRAP_PAGES", 20)
 BOOTSTRAP_SINCE = os.environ.get(
@@ -1687,23 +1691,9 @@ def enable_remaining_monitor_jobs(
         next_run["trickle_fill_history"] = now + 3 * 60
         intervals["trickle_fill_history"] = HISTORY_TRICKLE_INTERVAL
     if "discover_active" not in next_run:
-        next_run["discover_active"] = now + 8 * 60
+        list1_start = next_run.get("discover_new", now + 3 * 60)
+        next_run["discover_active"] = list1_start + ACTIVE_DISCOVER_OFFSET
         intervals["discover_active"] = ACTIVE_DISCOVER_INTERVAL
-    if GAP_ENABLED:
-        next_run.update(
-            {
-                "plan_gaps": now + 10 * 60,
-                "probe_gaps": now + 20 * 60,
-            }
-        )
-        intervals.update(
-            {
-                "plan_gaps": GAP_PLAN_INTERVAL,
-                "probe_gaps": GAP_PROBE_INTERVAL,
-            }
-        )
-
-
 def sync_pipeline_jobs(
     phase: str,
     next_run: dict[str, float],
