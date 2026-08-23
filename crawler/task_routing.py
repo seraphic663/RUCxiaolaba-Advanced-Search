@@ -12,14 +12,12 @@ TASK_LIST_NEW = "list_new"
 TASK_LIST_ACTIVE = "list_active"
 TASK_ID_FOLLOWUP = "id_followup"
 TASK_HISTORY_DETAIL = "history_detail"
-TASK_HISTORY_PROBE = "history_probe"
 
 TASK_TYPES = (
     TASK_LIST_NEW,
     TASK_LIST_ACTIVE,
     TASK_ID_FOLLOWUP,
     TASK_HISTORY_DETAIL,
-    TASK_HISTORY_PROBE,
 )
 
 TASK_ALIASES = {
@@ -33,8 +31,6 @@ TASK_ALIASES = {
     "history": TASK_HISTORY_DETAIL,
     "history_detail": TASK_HISTORY_DETAIL,
     "old_detail": TASK_HISTORY_DETAIL,
-    "probe": TASK_HISTORY_PROBE,
-    "history_probe": TASK_HISTORY_PROBE,
 }
 
 
@@ -61,8 +57,6 @@ def task_kind(task_type: str) -> str:
         return "new_list"
     if task == TASK_LIST_ACTIVE:
         return "active_list"
-    if task == TASK_HISTORY_PROBE:
-        return "probe"
     return "detail"
 
 
@@ -79,7 +73,4 @@ def is_current_task(task_type: str) -> bool:
 
 
 def is_history_task(task_type: str) -> bool:
-    return normalize_task_type(task_type) in {
-        TASK_HISTORY_DETAIL,
-        TASK_HISTORY_PROBE,
-    }
+    return normalize_task_type(task_type) == TASK_HISTORY_DETAIL

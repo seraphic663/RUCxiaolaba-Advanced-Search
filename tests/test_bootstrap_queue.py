@@ -95,6 +95,7 @@ class BootstrapQueueTest(unittest.TestCase):
                     "select value from ledger_state where key='lists_bootstrap_complete'"
                 ).fetchone()
                 self.assertEqual(state[0], "1")
+            conn.close()
 
             service.client = lambda: BootstrapClient({1: [article(21)], 2: []})
             follow_up = service.discover_queue(
@@ -116,6 +117,7 @@ class BootstrapQueueTest(unittest.TestCase):
                     "select queue_order from crawler_queue where post_id='21'"
                 ).fetchone()[0]
                 self.assertEqual(order, 21)
+            conn.close()
 
     def test_bootstrap_resumes_after_quota_without_repeating_completed_pages(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -160,6 +162,7 @@ class BootstrapQueueTest(unittest.TestCase):
                         "select value from ledger_state where key='lists_bootstrap_complete'"
                     ).fetchone()
                 )
+            conn.close()
 
             second_client = BootstrapClient(pages)
             second_service = CrawlerService(
@@ -197,6 +200,7 @@ class BootstrapQueueTest(unittest.TestCase):
                     ).fetchone()[0],
                     "1",
                 )
+            conn.close()
 
 
 if __name__ == "__main__":

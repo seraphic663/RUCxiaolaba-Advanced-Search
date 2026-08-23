@@ -24,8 +24,6 @@ lists
 - 列表请求仍写入 `new_list_calls`/`active_list_calls` 供审计，但不再占用详情额度、详情释放曲线或旧的总 pacing；详情请求只受 `detail` lane 的内部预算控制。
 - `trickle-fill` 按优先级小批量补详情，一次详情请求返回正文和完整评论/回复结构。
 - 每次 list page 还会写入 `post_id_ledger`；`lists2` 的事件键写入 `list2_observation_log`，首次基线不批量触发详情，后续新事件才进入同一个 `crawler_queue`。
-- `plan-gaps` 只规划低密度 ID 区间；未指定结束 ID 时会用一次 `lists?page=1` 探测最新 ID。
-- `probe-gaps` 用详情接口低频抽样缺口，命中真实帖子后只记录并入队；默认每日预算为 0。
 
 旧 `sync-latest`、`sync-active`、`scan-history`、`scan-id-range` 仍由 CLI 保留，用于兼容和明确的人工修复，不是 Railway quota-friendly 模式的日常主线。
 
@@ -46,7 +44,9 @@ Copy-Item data\cookie_pool.example.json data\cookie_pool.json
 python crawler_db.py trickle-fill --cookie-pool data\cookie_pool.json --limit 5 --min-delay 8 --max-delay 14
 ```
 
-`daily_budgets` 的键是 `new_list`、`active_list`、`detail`、`probe`。`task_types` 决定语义路由：示例中的新 cookie lane 负责 `list_new`、`list_active`、`id_followup`，旧 cookie lane 负责 `history_detail`、`history_probe`。`enabled: false` 可以临时保留一个 lane 但禁止它领取任何任务。详情任务会在一个共享去重队列中按任务类型路由；不是启动两个 crawler，也不是并发请求。三阶段主线中 list1/list2 的两个计数只作审计，不再用 lane 的列表预算挡住列表观察；详情 lane 的显式上限仍然有效。quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。真实 `rate_limited:*` 或 `cookie_expired` 会只暂停产生错误的 lane；池模式下旧的单 cookie 全局暂停记录不会阻塞其他健康 lane。系统不会用另一个 cookie 隐藏或重试同一个已被上游拒绝的请求。
+`daily_budgets` 的键是 `new_list`、`active_list`、`detail`。`task_types` 决定语义路由：示例中的新 cookie lane 负责 `list_new`、`list_active`、`id_followup`，旧 cookie lane 负责 `history_detail`。`enabled: false` 可以临时保留一个 lane 但禁止它领取任何任务。详情任务会在一个共享去重队列中按任务类型路由；启用 `CRAWLER_PARALLEL_LANES=1` 时由两个 lane worker 分别执行，仍依靠原子 claim 防止重复。三阶段主线中 list1/list2 的两个计数只作审计，不再用 lane 的列表预算挡住列表观察；详情 lane 的显式上限仍然有效。quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。真实 `rate_limited:*` 或 `cookie_expired` 会只暂停产生错误的 lane；池模式下旧的单 cookie 全局暂停记录不会阻塞其他健康 lane。系统不会用另一个 cookie 隐藏或重试同一个已被上游拒绝的请求。
+
+并行 lane 的默认生产节奏是：list1 每小时、list2 每小时且与 list1 错开 30 分钟；新 cookie 的 `id_followup` 白天每小时、默认 04:00–06:00 每 10 分钟；旧 cookie 只处理不在 ID 台账中的 `history_detail` 历史任务，每 30 分钟运行。
 
 池模式也会把兼容的 `scan-id-range` 强制为单 worker；如果需要日常自动调度，应使用上面的 `trickle` 主线，避免旧的并发扫描路径绕开这套逐请求配额。
 
@@ -59,8 +59,6 @@ python crawler_db.py trickle-fill --cookie-pool data\cookie_pool.json --limit 5 
 | 新帖列表 | `/article/article/lists?page=N` | 发现新帖 ID、时间和评论数 | 每页 1 次 new-list；只记账，不扣 detail |
 | 活跃列表 | `/article/article/lists2?page=N` | 发现评论增量和活跃帖子 | 每页 1 次 active-list；只记账，不扣 detail |
 | 详情 | `/article/article/info?id=ID` | 正文、评论和回复 | 每帖 1 次 detail；唯一自动详情预算 |
-| 最新 ID 探测 | `lists?page=1` | `plan-gaps` 确定规划上界 | 1 次 new-list |
-| 缺口抽样 | `info?id=ID` | `probe-gaps` 验证某 ID | 每个样本 1 次 probe |
 | Admin 候选预览 | `search/lists/lists2` | 先展示上游候选供管理员勾选 | 每页 1 次 admin-preview 独立额度 |
 | Admin 人工现爬 | `info?id=ID` | 勾选后立即补全并保存正文、评论和回复 | 每帖 1 次 admin-detail 独立额度 |
 
@@ -86,8 +84,6 @@ python crawler_db.py trickle-fill --db-path data\posts.db --limit 5 --min-delay 
 - 新发现帖子先以 `posts.crawl_status='list_only'` 写入，正文来自列表快照，评论尚未补全。
 - 详情成功后帖子更新为 `crawl_status='full'`，同时刷新 `comments`、SQLite FTS 和旁路索引。
 - `crawler_queue` 保存详情候选、优先级、原因、状态、尝试次数、最后错误以及 `in_progress` 认领的 owner/lane/租约；租约过期会在下一轮恢复为 pending。
-- `crawler_gap_ranges` 保存低密度 ID 区间。
-- `crawler_id_probe` 保存缺口抽样结果，避免重复探测相同 ID。
 - `crawl_state` 保存各命令最近一次统计。
 
 旧数据库首次运行新命令时，`SQLitePostStore.ensure_runtime_schema()` 会补齐这些运行字段和表。
@@ -123,6 +119,18 @@ priority 大于 0 的 coverage 任务还按 `crawler_queue.queue_order` 升序�
 
 停止逻辑同时依赖最小页数、连续无收益页、重复页签名、时间边界和硬预算；单条重复不能作为停止条件。
 
+## 实测经验：2026-08-14 的 list1/list2 覆盖边界
+
+2026-08-14 使用旧 cookie 做了一次只读深度测量，分别请求 `lists`（list1）和 `lists2`（list2）的第 1–91 页；每页间隔约 1.2–2.0 秒，没有把结果写入生产数据库或 ID 台账。两类列表共 182 次请求，另抽取 6 个 list2 帖子调用详情核对边界，因此本次共消耗 188 次源 API 请求。
+
+本次 list1 共返回 1790 条记录，1790 个唯一帖子 ID；91 页全部有数据，没有页级重复，也没有跨页重复。按列表中的帖子创建时间，覆盖 `2026-08-05 12:56:03` 到 `2026-08-14 00:29:51`，折算约 8.5 天，得到约 210 个新发帖子/24 小时。这个数字是本次窗口的实测密度，不是平台永久承诺；估算新发量时应使用“唯一 ID 数 ÷ 创建时间覆盖天数”，不能只用页数乘以 20。
+
+本次 list2 共返回 1794 条记录，1794 个唯一帖子 ID；91 页全部有数据，没有页级重复，也没有跨页重复。按列表的帖子级 `update_time`，最早边界约为 `2026-08-07 21:39:36`，最新约为 `2026-08-14 00:32:39`，覆盖约 6.1 天，粗略相当于约 290 条活跃/更新帖子观察记录/24 小时。它不是“新增评论数”，也不是严格的评论条数；同一帖子可能因评论变化、评论删除或源端字段变化再次成为活动对象。
+
+list2 的 `update_time` 不能当作严格递减游标：本次扫描中页内和相邻页之间出现过时间回跳，后页仍可能出现比前页更新的记录。因此不能因为遇到一个旧时间、一个旧 ID 或一条详情没有变化就停止。停止时至少要同时使用最小页数、页级签名、连续无新 ID/无新事件页数和最大页数；在最后边界抽查少量详情。6 个抽样详情的帖子级 `update_time` 与 list2 对应值一致；末页样本还显示评论对象自己的 `update_time` 可能比帖子级时间晚几十秒，所以台账应分别保存列表活动时间、详情顶层更新时间和评论对象时间，不能混成一个字段。
+
+本次测量最重要的操作教训是：列表请求如果只把结果保存在临时脚本内存中，结束后就无法恢复这些 ID，188 次请求也不能转化为台账收益。以后凡是希望“测量同时更新 ID 表”的任务，都必须逐页、逐条持久化 `post_id_ledger` 和 `list2_observation_log`，至少写入 `run_id`、接口来源、页码、观察时间、帖子 ID、`create_time`、`update_time`、评论数和互动数；详情抽查应写入独立的核验记录。若必须完全不触碰生产台账，则应写入 shadow 测量文件或临时表，并在报告中明确这些请求不产生生产覆盖。
+
 ## Railway quota-friendly 调度
 
 `CRAWLER_ENABLED=1` 时 `start.sh` 启动 `jobs.scheduler`。当前推荐线上模式还需要：
@@ -138,7 +146,6 @@ CRAWLER_TRICKLE_SINCE=<需要持续覆盖的起始时间>
 CRAWLER_DAILY_NEW_LIST_BUDGET=80
 CRAWLER_DAILY_ACTIVE_LIST_BUDGET=160
 CRAWLER_DAILY_DETAIL_BUDGET=1000
-CRAWLER_DAILY_PROBE_BUDGET=0
 CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET=20
 CRAWLER_DAILY_ADMIN_DETAIL_BUDGET=10
 CRAWLER_TRICKLE_LIMIT_CAP=12
@@ -197,17 +204,15 @@ scheduler 只用剩余额度裁剪子任务的 `max-pages` 或 `limit`，不再�
 
 ```text
 CRAWLER_NEW_DISCOVER_INTERVAL=3600
-CRAWLER_ACTIVE_DISCOVER_INTERVAL=1800
+CRAWLER_ACTIVE_DISCOVER_INTERVAL=3600
+CRAWLER_ACTIVE_DISCOVER_OFFSET=1800
 CRAWLER_DISCOVER_LATEST_PAGES=5
 CRAWLER_DISCOVER_ACTIVE_PAGES=5
 CRAWLER_TRICKLE_INTERVAL=600
-CRAWLER_GAP_PLAN_INTERVAL=21600
-CRAWLER_GAP_PROBE_INTERVAL=7200
 ```
 
-首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；`history_detail` 旧任务在各阶段独立低速排队，不会改变这个门槛。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每半小时一次；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，新的两个变量优先级更高。
+首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；`history_detail` 旧任务在各阶段独立低速排队，不会改变这个门槛。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每小时一次并固定错开 30 分钟；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
 
-`probe-gaps` 即使被调度，也会在每日 probe budget 为 0 时跳过。不要通过手动 SSH 大跑绕过这一保护。
 
 ## 限流、Cookie 失效与暂停
 

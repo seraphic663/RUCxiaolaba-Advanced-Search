@@ -1,8 +1,10 @@
 # ID 台账与列表刷新方案
 
-状态：已接入现有 crawler/scheduler；`crawler/ledger_monitor.py` 仍是本地一次性建表工具，Railway 使用单一 scheduler 和持久三阶段状态，不启动第二个独立爬虫。旧 coverage 门槛和列表内部配额门槛已从主流程中暂停；详情仍保留独立详情预算和真实上游限流熔断。
+状态：已接入现有 crawler/scheduler；`crawler/ledger_monitor.py` 仍是本地一次性建表工具，Railway 使用主 scheduler、可选旧 lane worker 和持久三阶段状态。两个 worker 共用同一个去重队列与 quota 文件，不创建第二个数据库或独立队列。旧 coverage 门槛和列表内部配额门槛已从主流程中暂停；详情仍保留独立详情预算和真实上游限流熔断。
 
 本地 2026-08-12 的初始 list1 建表记录了 397 个唯一 ID，源端 `create_time` 覆盖 `2026-08-10 19:14:57` 到 `2026-08-12 07:02:25`（北京时间，约 35 小时 47 分钟）。这说明初始 20 页是一个按帖子创建时间排序的约 36 小时内容窗口；线上重新建表时应以 `post_id_ledger` / `crawler_run_history` 实际记录的边界为准，不能把这个时间段硬编码成永久结论。
+
+最新的 2026-08-14 旧 cookie 深度测量提供了更大的窗口样本：list1 第 1–91 页返回 1790 个唯一 ID，创建时间覆盖约 8.5 天，折算约 210 个新发帖子/24 小时；list2 同样 91 页返回 1794 个唯一活动 ID，帖子级 `update_time` 覆盖约 6.1 天，粗略折算约 290 条活跃/更新帖子观察记录/24 小时。list2 页面不是严格按更新时间单调排序，且本次 188 次测量请求没有写入生产台账；这些数字只能作为带日期的容量估计，不能替代逐页持久化的 ID 台账证据。旧的 2026-08-12 跳页估算仍保留作历史样本，不应与本次测量简单平均。
 
 ## 1. 一句话方案
 
@@ -52,7 +54,7 @@
 
 两个 lane 必须分别计数 `lists`、`lists2`、`info` 和错误类型；不得把一个 lane 的剩余额度假定为另一个 lane 的剩余额度，也不得在一个 lane 返回 `rate_limited` 后自动切换另一个 lane 来规避限制。
 
-真实 cookie 仍只由现有 client/config 读取；台账模块本身不保存 cookie，也不发请求。正式调度继续由一个 scheduler 进程、一个去重队列和统一 quota 计数负责，不把两个 lane 变成两个并发 worker。
+真实 cookie 仍只由现有 client/config 读取；台账模块本身不保存 cookie，也不发请求。默认调度是一个 scheduler 进程；启用并行 lane 后，主 scheduler 负责新 cookie、`jobs.lane_worker` 负责旧 cookie，二者共用一个去重队列和统一 quota 计数。SQLite 使用 WAL、busy timeout、lane 级租约和短写事务；任务领取仍以 `post_id` 原子 claim 为准。
 
 ## 5. ID 台账设计
 
@@ -198,7 +200,7 @@
 1. `storage/post_writer.py` 在 runtime schema 阶段创建/迁移 `post_id_ledger`、`list2_observation_log` 和 `ledger_state`。
 2. `crawler/service.py` 在每次 list page 后记录首次来源、页码、rank、发现顺序、源端时间和事件键；bootstrap list1 只建立台账和详情队列，list2 首次扫描建立基线，后续新事件才进入同一个 `crawler_queue`。
 3. `trickle-fill` 在详情开始、成功、部分响应、not_found、失败或 quota 阻断时回写详情时间线；队列的 `post_id` 主键继续保证两个 lane 不会同时领取同一帖子。
-4. `jobs/scheduler.py` 持久化 `crawler_pipeline_phase`，严格执行 `list1_seed -> detail_backfill -> monitoring`；列表 lane 只记账不占详情预算，详情 lane 仍逐请求领取独立 detail quota。监视阶段为 list1=3600 秒、list2=1800 秒，每轮默认最少两页、最多五页，并继续使用随机低速间隔和真实 rate-limit 次日暂停。
+4. `jobs/scheduler.py` 持久化 `crawler_pipeline_phase`，严格执行 `list1_seed -> detail_backfill -> monitoring`；列表 lane 只记账不占详情预算，详情 lane 仍逐请求领取独立 detail quota。监视阶段为 list1=3600 秒、list2=3600 秒且错开 1800 秒，每轮默认最少两页、最多五页，并继续使用随机低速间隔和真实 rate-limit 次日暂停。
 5. `crawler_queue.queue_order` 保证初始和后续 coverage 任务按首次发现顺序追加；list2 更新任务进入 priority 0 车道并受 refresh limit 约束。
 6. `tests/test_id_ledger.py` 和 `tests/test_bootstrap_queue.py` 覆盖首次来源/发现顺序、稳定重放、20 页 bootstrap、list2 基线和新事件；既有 crawler、scheduler、quota 回归测试继续运行。
 

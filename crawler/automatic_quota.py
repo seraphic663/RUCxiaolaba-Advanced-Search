@@ -18,7 +18,7 @@ class AutomaticQuotaError(RuntimeError):
 class AutomaticQuota:
     """Atomically consume automatic quota immediately before a source request."""
 
-    VALID_KINDS = {"new_list", "active_list", "detail", "probe"}
+    VALID_KINDS = {"new_list", "active_list", "detail"}
 
     def __init__(self, kind: str, lane_id: str = ""):
         if kind not in self.VALID_KINDS:

@@ -22,7 +22,6 @@ from crawler.manual_quota import exclusive_control_lock
 from storage.post_writer import SQLitePostStore
 from crawler.task_routing import (
     TASK_HISTORY_DETAIL,
-    TASK_HISTORY_PROBE,
     TASK_ID_FOLLOWUP,
     TASK_LIST_ACTIVE,
     TASK_LIST_NEW,
@@ -176,15 +175,6 @@ TRICKLE_MAX_DELAY = max(
 )
 DISCOVER_LATEST_PAGES = env_int("CRAWLER_DISCOVER_LATEST_PAGES", 5)
 DISCOVER_ACTIVE_PAGES = env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", 5)
-GAP_ENABLED = os.environ.get("CRAWLER_GAP_ENABLED", "1" if TRICKLE_ENABLED else "0") == "1"
-GAP_SINCE = os.environ.get("CRAWLER_GAP_SINCE", TRICKLE_SINCE)
-GAP_PLAN_INTERVAL = env_int("CRAWLER_GAP_PLAN_INTERVAL", 6 * 60 * 60)
-GAP_PROBE_INTERVAL = env_int("CRAWLER_GAP_PROBE_INTERVAL", 2 * 60 * 60)
-GAP_RANGE_LIMIT = env_int("CRAWLER_GAP_RANGE_LIMIT", 12)
-GAP_SAMPLES = env_int("CRAWLER_GAP_SAMPLES", 1)
-NIGHT_PROBE_SAMPLES = env_int("CRAWLER_NIGHT_PROBE_SAMPLES", 25)
-GAP_CHUNK_SIZE = env_int("CRAWLER_GAP_CHUNK_SIZE", 1000)
-GAP_DENSITY_THRESHOLD = env_float("CRAWLER_GAP_DENSITY_THRESHOLD", 0.35)
 COOKIE_ERROR_COOLDOWN = env_int("CRAWLER_COOKIE_ERROR_COOLDOWN", 6 * 60 * 60)
 DAILY_LIST_BUDGET = env_int("CRAWLER_DAILY_LIST_BUDGET", 240)
 DAILY_NEW_LIST_BUDGET = env_int(
@@ -196,7 +186,6 @@ DAILY_ACTIVE_LIST_BUDGET = env_int(
     max(1, DAILY_LIST_BUDGET - DAILY_NEW_LIST_BUDGET),
 )
 DAILY_DETAIL_BUDGET = env_int("CRAWLER_DAILY_DETAIL_BUDGET", 1000)
-DAILY_PROBE_BUDGET = env_nonnegative_int("CRAWLER_DAILY_PROBE_BUDGET", 0)
 DAILY_ADMIN_PREVIEW_BUDGET = env_nonnegative_int("CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET", 20)
 DAILY_ADMIN_DETAIL_BUDGET = env_nonnegative_int("CRAWLER_DAILY_ADMIN_DETAIL_BUDGET", 10)
 QUOTA_FIRST_RELEASE_HOUR = env_nonnegative_int("CRAWLER_QUOTA_FIRST_RELEASE_HOUR", 11)
@@ -212,10 +201,6 @@ DETAIL_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
 NEW_DETAIL_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
     "CRAWLER_NEW_DETAIL_QUOTA_RELEASE_STEPS",
     "0=0.05,04:00=0.75,06:00=1.00",
-)
-OLD_PROBE_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
-    "CRAWLER_OLD_PROBE_QUOTA_RELEASE_STEPS",
-    "23:00=1.00",
 )
 QUOTA_ADAPTIVE_ENABLED = os.environ.get("CRAWLER_QUOTA_ADAPTIVE_ENABLED", "1") == "1"
 QUOTA_ADAPTIVE_LOOKBACK_DAYS = env_int("CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14)
@@ -280,7 +265,6 @@ def job_task_type(name: str) -> str:
         "discover_active": TASK_LIST_ACTIVE,
         "trickle_fill": TASK_ID_FOLLOWUP,
         "trickle_fill_history": TASK_HISTORY_DETAIL,
-        "probe_gaps": TASK_HISTORY_PROBE,
         "phase1": TASK_HISTORY_DETAIL,
         "backfill": TASK_HISTORY_DETAIL,
     }.get(name, "")
@@ -481,32 +465,6 @@ TRICKLE_JOBS = {
     ],
 }
 
-if GAP_ENABLED:
-    TRICKLE_JOBS.update(
-        {
-            "plan_gaps": [
-                "plan-gaps",
-                "--since",
-                GAP_SINCE,
-                "--chunk-size",
-                str(GAP_CHUNK_SIZE),
-                "--density-threshold",
-                str(GAP_DENSITY_THRESHOLD),
-            ],
-            "probe_gaps": [
-                "probe-gaps",
-                "--range-limit",
-                str(GAP_RANGE_LIMIT),
-                "--samples-per-range",
-                str(NIGHT_PROBE_SAMPLES),
-                "--min-delay",
-                "8",
-                "--max-delay",
-                "15",
-            ],
-        }
-    )
-
 
 @dataclass(frozen=True)
 class JobResult:
@@ -525,8 +483,6 @@ OVERDUE_JOB_PRIORITY = {
     "trickle_fill_history": 3,
     "discover_active": 1,
     "discover_new": 2,
-    "plan_gaps": 3,
-    "probe_gaps": 4,
 }
 
 MONITOR_LIST1_SEED_KEY = "monitor_list1_seed_complete"
@@ -651,14 +607,6 @@ def detail_quota_release_fraction(
     return release_fraction_for_steps(detail_quota_release_steps(lane_id), at)
 
 
-def old_probe_quota_release_steps() -> list[tuple[int, float]]:
-    return parse_release_steps(OLD_PROBE_QUOTA_RELEASE_STEPS_TEXT) or quota_release_steps()
-
-
-def old_probe_quota_release_fraction(at: datetime | None = None) -> float:
-    return release_fraction_for_steps(old_probe_quota_release_steps(), at)
-
-
 def next_detail_quota_release(
     at: datetime | None = None,
     lane_id: str = "",
@@ -693,13 +641,7 @@ def quota_release_fraction_for_kind(
     at: datetime | None = None,
     lane_id: str = "",
 ) -> float:
-    return (
-        detail_quota_release_fraction(at, lane_id=lane_id)
-        if kind == "detail"
-        else old_probe_quota_release_fraction(at)
-        if kind == "probe" and str(lane_id or "") == "old"
-        else quota_release_fraction(at)
-    )
+    return detail_quota_release_fraction(at, lane_id=lane_id) if kind == "detail" else quota_release_fraction(at)
 
 
 def next_quota_release_for_kind(
@@ -707,13 +649,7 @@ def next_quota_release_for_kind(
     at: datetime | None = None,
     lane_id: str = "",
 ) -> datetime:
-    return (
-        next_detail_quota_release(at, lane_id=lane_id)
-        if kind == "detail"
-        else next_quota_release_from_steps(old_probe_quota_release_steps(), at)
-        if kind == "probe" and str(lane_id or "") == "old"
-        else next_quota_release(at)
-    )
+    return next_detail_quota_release(at, lane_id=lane_id) if kind == "detail" else next_quota_release(at)
 
 
 def quota_record_release_steps(quota: dict) -> list[tuple[int, float]]:
@@ -785,7 +721,6 @@ def quota_source_calls(quota: dict) -> int:
             "new_list_calls",
             "active_list_calls",
             "detail_calls",
-            "probe_calls",
             "admin_preview_calls",
             "admin_detail_calls",
         )
@@ -813,7 +748,7 @@ def configured_source_budget() -> int:
     if cookie_pool_specs():
         return pool_total
     return (
-        DAILY_NEW_LIST_BUDGET + DAILY_ACTIVE_LIST_BUDGET + DAILY_DETAIL_BUDGET + DAILY_PROBE_BUDGET
+        DAILY_NEW_LIST_BUDGET + DAILY_ACTIVE_LIST_BUDGET + DAILY_DETAIL_BUDGET
     )
 
 
@@ -894,7 +829,6 @@ def append_quota_history(
         "new_list_calls": int(quota.get("new_list_calls", 0) or 0),
         "active_list_calls": int(quota.get("active_list_calls", 0) or 0),
         "detail_calls": int(quota.get("detail_calls", 0) or 0),
-        "probe_calls": int(quota.get("probe_calls", 0) or 0),
         "admin_preview_calls": int(quota.get("admin_preview_calls", 0) or 0),
         "admin_detail_calls": int(quota.get("admin_detail_calls", 0) or 0),
         "rate_limited": int(quota.get("rate_limited", 0) or 0),
@@ -1020,7 +954,6 @@ def daily_budget(
             "new_list": DAILY_NEW_LIST_BUDGET,
             "active_list": DAILY_ACTIVE_LIST_BUDGET,
             "detail": detail_budget_target(quota),
-            "probe": DAILY_PROBE_BUDGET,
         }[kind]
     if base <= 0:
         return 0
@@ -1030,7 +963,7 @@ def daily_budget(
 def current_source_budget(quota: dict | None = None, lane_id: str = "") -> int:
     return sum(
         daily_budget(kind, quota, lane_id=lane_id)
-        for kind in ("new_list", "active_list", "detail", "probe")
+        for kind in ("new_list", "active_list", "detail")
     )
 
 
@@ -1319,7 +1252,6 @@ def load_quota() -> dict:
             "new_list_calls": 0,
             "active_list_calls": 0,
             "detail_calls": 0,
-            "probe_calls": 0,
             "rate_limited": 0,
             "admin_preview_calls": 0,
             "admin_detail_calls": 0,
@@ -1371,7 +1303,7 @@ def save_quota(quota: dict) -> None:
     quota["effective_detail_budget"] = daily_budget("detail", quota)
     quota["effective_source_budget"] = sum(
         daily_budget(kind, quota)
-        for kind in ("new_list", "active_list", "detail", "probe")
+        for kind in ("new_list", "active_list", "detail")
     )
     quota.setdefault("rate_limit_pacing_anchor", rate_limit_pacing_anchor())
     quota["source_pacing_allowance"] = source_pacing_allowance(quota)
@@ -1716,10 +1648,6 @@ def sync_pipeline_jobs(
         }
         if not PARALLEL_LANES_ENABLED:
             desired.add("trickle_fill_history")
-        if GAP_ENABLED:
-            desired.add("plan_gaps")
-            if not PARALLEL_LANES_ENABLED:
-                desired.add("probe_gaps")
         prepare_monitor_cutover()
     else:
         raise ValueError(f"unsupported pipeline phase: {phase}")
@@ -1729,7 +1657,6 @@ def sync_pipeline_jobs(
         # Keeping it here would let the main scheduler and the lane worker
         # compete for the same queue route.
         desired.discard("trickle_fill_history")
-        desired.discard("probe_gaps")
 
     for name in list(next_run):
         if name not in desired:
@@ -1739,16 +1666,25 @@ def sync_pipeline_jobs(
     starts = {
         "bootstrap_new": (60.0, BOOTSTRAP_RETRY_INTERVAL),
         "discover_new": (60.0 if phase == PIPELINE_PHASE_LIST1_SEED else 3 * 60, NEW_DISCOVER_INTERVAL),
-        "discover_active": (8 * 60, ACTIVE_DISCOVER_INTERVAL),
+        "discover_active": (
+            (
+                60.0
+                if phase == PIPELINE_PHASE_LIST1_SEED
+                else 3 * 60
+            )
+            + ACTIVE_DISCOVER_OFFSET,
+            ACTIVE_DISCOVER_INTERVAL,
+        ),
         "trickle_fill": (90.0, detail_trickle_interval()),
         "trickle_fill_history": (3 * 60, HISTORY_TRICKLE_INTERVAL),
-        "plan_gaps": (10 * 60, GAP_PLAN_INTERVAL),
-        "probe_gaps": (20 * 60, GAP_PROBE_INTERVAL),
     }
     for name in desired:
         if name not in next_run:
             delay, interval = starts[name]
-            next_run[name] = now + delay
+            if name == "discover_active" and "discover_new" in next_run:
+                next_run[name] = next_run["discover_new"] + ACTIVE_DISCOVER_OFFSET
+            else:
+                next_run[name] = now + delay
             intervals[name] = interval
 
 
@@ -1869,8 +1805,6 @@ def job_budget_kind(name: str) -> str:
         return "active_list"
     if name in {"trickle_fill", "trickle_fill_history", "phase1"}:
         return "detail"
-    if name == "probe_gaps":
-        return "probe"
     return ""
 
 
@@ -1879,10 +1813,6 @@ def planned_job_calls(name: str, args: list[str]) -> int:
         return int(args[args.index("--max-pages") + 1])
     if name in {"trickle_fill", "trickle_fill_history"}:
         return int(args[args.index("--limit") + 1])
-    if name == "probe_gaps":
-        ranges = int(args[args.index("--range-limit") + 1])
-        samples = int(args[args.index("--samples-per-range") + 1])
-        return ranges * samples
     if name == "phase1":
         return 0
     return 0
@@ -1932,7 +1862,6 @@ def quota_key(kind: str) -> str:
         "new_list": "new_list_calls",
         "active_list": "active_list_calls",
         "detail": "detail_calls",
-        "probe": "probe_calls",
     }[kind]
 
 
@@ -1967,8 +1896,6 @@ def record_failed_crawler_run(
         "trickle_fill": "trickle-fill",
         "trickle_fill_history": "trickle-fill:history_detail",
         "phase1": "scan-id-range:history_detail",
-        "plan_gaps": "plan-gaps",
-        "probe_gaps": "probe-gaps",
     }.get(name, name.replace("_", "-"))
     stats = {
         "source_calls": max(0, int(source_calls)),
@@ -2036,22 +1963,6 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
                 "--limit",
                 max(1, min(int(args[args.index("--limit") + 1]), remaining)),
             )
-        elif name == "probe_gaps":
-            if daily_budget("probe", quota) <= 0:
-                return None, "probe_budget_disabled"
-            range_limit = max(
-                1,
-                min(int(args[args.index("--range-limit") + 1]), remaining),
-            )
-            samples = max(
-                1,
-                min(
-                    int(args[args.index("--samples-per-range") + 1]),
-                    max(1, remaining // range_limit),
-                ),
-            )
-            args = replace_arg(args, "--range-limit", range_limit)
-            args = replace_arg(args, "--samples-per-range", samples)
         planned = planned_job_calls(name, args)
         lane_note = f" lane={lane_id}" if lane_id else ""
         return args, (
@@ -2248,8 +2159,7 @@ def main() -> int:
             f"night_window={DETAIL_NIGHT_START}-{DETAIL_NIGHT_END} "
             f"limit={TRICKLE_LIMIT} parallel_lanes={PARALLEL_LANES_ENABLED} "
             f"refresh_limit={TRICKLE_REFRESH_LIMIT} "
-            f"fresh_hours={TRICKLE_FRESH_COVERAGE_HOURS} "
-            f"gap={GAP_ENABLED} gap_since={GAP_SINCE!r}",
+            f"fresh_hours={TRICKLE_FRESH_COVERAGE_HOURS} ",
             flush=True,
         )
     else:

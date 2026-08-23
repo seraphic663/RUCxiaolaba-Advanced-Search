@@ -38,9 +38,10 @@ class SchedulerPolicyTest(unittest.TestCase):
                 2,
             )
 
-    def test_list1_and_list2_have_separate_default_cadence(self):
+    def test_list1_and_list2_share_hourly_cadence(self):
         self.assertEqual(scheduler.NEW_DISCOVER_INTERVAL, 3600)
-        self.assertEqual(scheduler.ACTIVE_DISCOVER_INTERVAL, 1800)
+        self.assertEqual(scheduler.ACTIVE_DISCOVER_INTERVAL, 3600)
+        self.assertEqual(scheduler.ACTIVE_DISCOVER_OFFSET, 1800)
 
     def test_new_detail_has_day_and_night_cadence(self):
         tz = timezone(timedelta(hours=8))
@@ -53,10 +54,9 @@ class SchedulerPolicyTest(unittest.TestCase):
             scheduler.DAY_TRICKLE_INTERVAL,
         )
 
-    def test_new_detail_and_old_probe_use_independent_release_profiles(self):
+    def test_new_and_old_detail_use_independent_release_profiles(self):
         tz = timezone(timedelta(hours=8))
         night = datetime(2026, 8, 21, 4, 30, tzinfo=tz)
-        probe_start = datetime(2026, 8, 21, 23, 0, tzinfo=tz)
         self.assertEqual(
             scheduler.detail_quota_release_fraction(night, lane_id="new"),
             0.75,
@@ -64,14 +64,6 @@ class SchedulerPolicyTest(unittest.TestCase):
         self.assertEqual(
             scheduler.detail_quota_release_fraction(night, lane_id="old"),
             0.05,
-        )
-        self.assertEqual(
-            scheduler.quota_release_fraction_for_kind(
-                "probe",
-                probe_start,
-                lane_id="old",
-            ),
-            1.0,
         )
 
 

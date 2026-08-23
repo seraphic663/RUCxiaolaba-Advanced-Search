@@ -11,6 +11,7 @@ CLAUDE.md
 # Runtime crawl/search data
 data/*
 !data/config.example.txt
+!data/cookie_pool.example.json
 *.csv
 *.jsonl
 *.ndjson

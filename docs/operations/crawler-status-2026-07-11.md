@@ -39,8 +39,6 @@
 | `discover-latest` | `lists?page=N` | 发现新帖、写 `list_only`、入队 | 否 | 每 30 分钟调度；当天正常运行 |
 | `discover-active` | `lists2?page=N` | 发现新回复、评论数变化和活跃缺失帖 | 否 | 每 30 分钟调度；评论增加为 priority 0 |
 | `trickle-fill` | `info?id=ID` | 从队列补正文、评论和回复 | 是 | 每 10 分钟尝试，每轮最多 12 个 |
-| `plan-gaps` | 通常本地统计；缺结束 ID 时调用一次 `lists?page=1` | 把低 ID 密度区间登记为待抽样范围 | 否 | 每 6 小时调度，不等于逐 ID 扫描 |
-| `probe-gaps` | `info?id=ID` | 小样本验证缺口内某 ID 是否真实存在，命中后入队 | 否 | 每日预算为 0，当前实际上不打源请求 |
 
 日常数据流是：
 
@@ -168,7 +166,7 @@ API 文档还记录了 `lists3`（个人发帖）、`lists4`、`lists5`、各类
 
 ### 当天观测
 
-20:47 快照的保守预留计数为：new-list 56、active-list 112、detail 268、probe 0；人工预览 4、人工详情 0；主额度自适应比例为 1.0，全局无暂停。
+20:47 快照的保守预留计数为：new-list 56、active-list 112、detail 268；人工预览 4、人工详情 0；主额度自适应比例为 1.0，全局无暂停。
 
 scheduler 会在子进程开始前按最大页数或 `limit` 预留，计数可能略高于实际完成请求。它这样做是为避免并发/崩溃时超额，不能把 quota 文件直接当“成功请求数”。
 
@@ -208,7 +206,7 @@ scheduler 会在子进程开始前按最大页数或 `limit` 预留，计数可�
 只能分两层说：
 
 1. **对已经发现并写入主库的帖子**：98.73% 已有详情，1.27% 仅列表；“主要剩详情补全”成立。
-2. **对上游历史全集**：不能证明全了。`lists` / `lists2` 存在窗口、重复页和深度限制；`probe-gaps` 当前预算为 0；历史逐 ID 扫描没有作为日常任务持续跑。删除帖、窗口外帖子和未抽样 ID 缺口都可能无法由现有总数证明。
+2. **对上游历史全集**：不能证明全了。`lists` / `lists2` 存在窗口、重复页和深度限制；历史逐 ID 扫描没有作为日常任务持续跑。删除帖和窗口外帖子可能无法由现有总数证明。
 
 因此网站适合表述为“已覆盖绝大多数已发现记录，最新列表通常在一个发现周期内追上，详情和历史缺口仍在补”，不应宣称“全量无遗漏”。
 
@@ -227,7 +225,7 @@ scheduler 会在子进程开始前按最大页数或 `limit` 预留，计数可�
 ### 代码与文档
 
 - `crawler/client.py`：上游错误映射、`lists/lists2/info/search` 请求参数。
-- `crawler/service.py`：discover、trickle-fill、gap plan/probe、兼容扫描流程和统计口径。
+- `crawler/service.py`：discover、trickle-fill、兼容扫描流程和统计口径。
 - `crawler/manual_quota.py`：Admin 独立额度、全局 pause 和 quota history。
 - `storage/post_writer.py`：list-only 写入、详情/评论展开、队列优先级和索引更新。
 - `jobs/scheduler.py`：日预算、阶梯释放、自适应缩放、预留和串行调度。

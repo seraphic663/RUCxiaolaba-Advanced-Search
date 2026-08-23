@@ -102,7 +102,6 @@ class ManualQuota:
                 "new_list_calls": 0,
                 "active_list_calls": 0,
                 "detail_calls": 0,
-                "probe_calls": 0,
                 "rate_limited": 0,
             }
         return quota
