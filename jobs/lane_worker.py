@@ -1,10 +1,8 @@
 """Dedicated worker for the old cookie lane.
 
 The main scheduler owns the new-cookie monitoring lane.  When parallel lane
-mode is enabled, this process owns historical details and the nightly gap
-probe so the two sessions can make source requests at the same time.  Queue
-claims remain in the shared SQLite database; this worker never creates a
-second queue.
+mode is enabled, this process owns historical details. Queue claims remain in
+the shared SQLite database; this worker never creates a second queue.
 """
 
 from __future__ import annotations
@@ -12,51 +10,16 @@ from __future__ import annotations
 import os
 import time
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
 from crawler.lock import database_write_lock
 from jobs import scheduler
-from storage.post_writer import SQLitePostStore
 
 
 LANE_ID = os.environ.get("CRAWLER_LANE_WORKER_MODE", "").strip().lower()
 WORKER_LOCK_TIMEOUT = scheduler.env_int("CRAWLER_LANE_WORKER_LOCK_TIMEOUT", 3600)
-PROBE_START = os.environ.get("CRAWLER_PROBE_START", "23:00")
-PROBE_CHECK_INTERVAL = scheduler.env_int("CRAWLER_PROBE_CHECK_INTERVAL", 60)
+WORKER_CHECK_INTERVAL = scheduler.env_int("CRAWLER_LANE_WORKER_CHECK_INTERVAL", 30)
 STARTUP_GRACE_SECONDS = scheduler.env_int("CRAWLER_LANE_STARTUP_GRACE", 90)
-PROBE_STATE_KEY = "crawler_probe_last_run_date"
-
-
-def _probe_start(now: datetime) -> datetime:
-    minute = scheduler._clock_minute(PROBE_START, 23 * 60)
-    return datetime.combine(now.date(), datetime.min.time(), tzinfo=scheduler.CHINA_TZ).replace(
-        hour=minute // 60,
-        minute=minute % 60,
-    )
-
-
-def _state_value(key: str) -> str:
-    with database_write_lock(scheduler.DB_PATH, 60):
-        with SQLitePostStore(scheduler.DB_PATH) as store:
-            store.ensure_runtime_schema()
-            row = store.conn.execute(
-                "select value from crawl_state where key=?",
-                (str(key),),
-            ).fetchone()
-            return str(row[0] or "") if row else ""
-
-
-def _set_state(key: str, value: str) -> None:
-    with database_write_lock(scheduler.DB_PATH, 60):
-        with SQLitePostStore(scheduler.DB_PATH) as store:
-            store.ensure_runtime_schema()
-            store.set_state(str(key), str(value), commit=True)
-
-
-def _probe_due(now: datetime) -> bool:
-    last = _state_value(PROBE_STATE_KEY)
-    return now >= _probe_start(now) and last != now.date().isoformat()
 
 
 @contextmanager
@@ -105,8 +68,7 @@ def main() -> int:
 
     print(
         f"[lane-worker] started lane={LANE_ID} "
-        f"history_interval={scheduler.HISTORY_TRICKLE_INTERVAL}s "
-        f"probe_start={PROBE_START} probe_samples={scheduler.NIGHT_PROBE_SAMPLES}",
+        f"history_interval={scheduler.HISTORY_TRICKLE_INTERVAL}s",
         flush=True,
     )
     with _single_worker_lock():
@@ -114,7 +76,6 @@ def main() -> int:
         next_history = started_at + 3 * 60
         while True:
             now_mono = time.monotonic()
-            now_wall = scheduler.beijing_now()
             if now_mono - started_at >= STARTUP_GRACE_SECONDS and _monitoring_ready():
                 if now_mono >= next_history:
                     started = now_mono
@@ -132,12 +93,7 @@ def main() -> int:
                             finished,
                             scheduler.HISTORY_TRICKLE_INTERVAL,
                         )
-                if _probe_due(now_wall):
-                    result = scheduler.run_job("probe_gaps")
-                    _handle_result("probe_gaps", result)
-                    if result.succeeded or result.error_kind in {"rate_limited", "cookie_expired"}:
-                        _set_state(PROBE_STATE_KEY, now_wall.date().isoformat())
-            time.sleep(max(1, min(30, PROBE_CHECK_INTERVAL)))
+            time.sleep(max(1, min(30, WORKER_CHECK_INTERVAL)))
 
 
 if __name__ == "__main__":
