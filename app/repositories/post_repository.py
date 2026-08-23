@@ -21,12 +21,19 @@ class PostRepository:
                 "crawl_time": "?",
             }
         with connect_readonly(self.posts_db) as conn:
+            columns = {row["name"] for row in conn.execute("pragma table_info(posts)")}
+            state_filter = (
+                "where source_state='available'"
+                if "source_state" in columns
+                else ""
+            )
             row = conn.execute(
-                """
+                f"""
                 select count(*) as total,
                        min(nullif(create_time, '')) as earliest,
                        max(nullif(create_time, '')) as latest
                 from posts
+                {state_filter}
                 """
             ).fetchone()
         return {

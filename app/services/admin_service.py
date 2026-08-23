@@ -105,11 +105,13 @@ class AdminService:
                     dict(row)
                     for row in conn.execute(
                         f"select q.status,count(*) n,"
-                        "sum(q.list_comment_count-p.comment_count) comment_delta "
+                        "sum(q.list_comment_count-"
+                        "coalesce(q.db_comment_count,p.comment_count)) comment_delta "
                         "from crawler_queue q join posts p on p.id=q.post_id "
                         "where q.status!='pending' "
                         f"and ({queue_status_sql})='full' "
-                        "and q.list_comment_count>p.comment_count "
+                        "and q.list_comment_count>"
+                        "coalesce(q.db_comment_count,p.comment_count) "
                         "group by q.status order by n desc"
                     )
                 ]

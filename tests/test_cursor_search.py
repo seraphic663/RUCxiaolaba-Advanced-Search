@@ -138,6 +138,63 @@ class CursorSearchTest(unittest.TestCase):
         )
         self.assertEqual([row["id"] for row in second["results"]], ["3", "2"])
 
+    def test_admin_single_character_page_does_not_expose_empty_scan_window(self) -> None:
+        conn = sqlite3.connect(self.db)
+        rows = []
+        for index in range(30_001):
+            rows.append(
+                (
+                    f"bulk-{index:05d}",
+                    "稀" if index in {0, 10_000, 20_000} else "普通内容",
+                    "A",
+                    "批量",
+                    "",
+                    "0",
+                    f"2026-02-{30_000 - index:05d}",
+                    0,
+                    0,
+                    0,
+                    "{}",
+                )
+            )
+        conn.executemany(
+            "insert into posts values (?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+        conn.commit()
+        conn.close()
+
+        request = SearchQuery(
+            text="稀",
+            sort_by="time",
+            limit=2,
+            scope="content",
+            admin=True,
+            admin_fields=frozenset({"body"}),
+        )
+        result = self.repository.search_cursor(request)
+
+        self.assertEqual([row["id"] for row in result["results"]], ["bulk-00000", "bulk-10000"])
+        self.assertEqual(result["pagination_mode"], "numbered")
+        self.assertEqual(result["search_backend"], "like")
+        self.assertEqual(result["total"], 3)
+        self.assertEqual(result["total_pages"], 2)
+        self.assertTrue(result["has_more"])
+
+        second = self.repository.search_cursor(
+            SearchQuery(
+                text="稀",
+                sort_by="time",
+                page=2,
+                limit=2,
+                scope="content",
+                admin=True,
+                admin_fields=frozenset({"body"}),
+            )
+        )
+        self.assertEqual([row["id"] for row in second["results"]], ["bulk-20000"])
+        self.assertFalse(second["has_more"])
+
 
 if __name__ == "__main__":
     unittest.main()

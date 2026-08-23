@@ -86,7 +86,7 @@ class HTTPContractTest(unittest.TestCase):
                 "日常",
                 "某同学",
                 "u1",
-                "0",
+                "123",
                 "2026-06-11 10:00:00",
                 2,
                 2,
@@ -125,6 +125,23 @@ class HTTPContractTest(unittest.TestCase):
                 "",
                 1,
                 "2026-06-11 10:02:00",
+            ),
+        )
+        conn.execute(
+            "insert into comments values (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "100:c3",
+                "c3",
+                "100",
+                "",
+                "实名评论",
+                "某同学3",
+                "u5",
+                "456",
+                "",
+                "",
+                2,
+                "2026-06-11 10:04:00",
             ),
         )
         conn.commit()
@@ -171,6 +188,7 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["results"][0]["id"], "100")
+        self.assertEqual(payload["results"][0]["identity_status"], "real")
         self.assertNotIn("show_user_id", payload["results"][0])
 
         status, cursor = self.get_json(
@@ -187,8 +205,14 @@ class HTTPContractTest(unittest.TestCase):
         _, comments = self.get_json("/api/comments?id=100")
         self.assertEqual(comments["post_id"], "100")
         self.assertEqual(comments["comment_list"][0]["detail"], "十一点关门")
+        self.assertEqual(comments["comment_list"][0]["identity_status"], "anonymous")
         self.assertNotIn("real_user_id", comments["comment_list"][0])
         self.assertEqual(comments["comment_list"][1]["show_user_name"], "某同学")
+
+        _, real_post = self.get_json(f"/api/search?q={quote('食堂')}&limit=10")
+        self.assertEqual(real_post["results"][0]["identity_status"], "real")
+        _, real_comments = self.get_json("/api/comments?id=100")
+        self.assertEqual(real_comments["comment_list"][2]["identity_status"], "real")
 
     def test_admin_required_api_returns_401_without_session(self):
         status, payload = self.get_json(

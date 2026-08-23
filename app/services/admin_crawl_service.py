@@ -302,6 +302,25 @@ class AdminCrawlService:
             if error == "cookie_expired":
                 self.quota.pause_for_cookie(error)
                 raise AdminCrawlError("cookie_expired", str(error), 502)
+            if error == "not_found":
+                marked = False
+                with database_write_lock(self.posts_db, timeout=30):
+                    with SQLitePostStore(
+                        self.posts_db,
+                        self.bigram_db,
+                        self.symbol_db,
+                    ) as store:
+                        store.ensure_runtime_schema()
+                        marked = store.mark_post_source_unavailable(post_id, error)
+                raise AdminCrawlError(
+                    "not_found",
+                    (
+                        "源端已删除或不可访问，已保留并标记本地归档"
+                        if marked
+                        else "源端已删除或不可访问，本地此前没有可标记的归档"
+                    ),
+                    404,
+                )
             raise AdminCrawlError("upstream_error", str(error), 502)
         parsed = normalize_detail(post_id, data or {})
         if parsed is None:
