@@ -74,6 +74,8 @@ html.hide-stats .post-stats-inline { display: none; }
 .identity-pill.anonymous { color: #777; background: #f2f2f2; }
 .identity-pill.real { color: #2e7d32; background: #eaf6ed; }
 .identity-pill.unknown { color: #8a6d3b; background: #fff7df; }
+.source-state-pill { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 4px; font-size: 0.82em; font-weight: 700; color: #fff; background: #a32626; }
+.deleted-note { margin: 7px 0; padding: 7px 9px; border-left: 3px solid #a32626; background: #fff3f3; color: #7d2020; font-size: 0.82em; }
 .comments-panel { display: none; border-left: 2px solid #eee; margin: 10px 0 0 0; padding-left: 12px; cursor: default; }
 .comments-panel.open { display: block; }
 .cmt { --indent: 0px; position: relative; margin-left: var(--indent); padding: 6px 0 6px 10px; border-bottom: 1px solid #f5f5f5; border-left: 2px solid #eee; font-size: 0.86em; }
@@ -160,6 +162,7 @@ html[data-theme="dark"] .cmt .nested { border-color: #3b4249; }
 html[data-theme="dark"] .identity-pill.anonymous { background: #2a2e33; color: #b5bbc1; }
 html[data-theme="dark"] .identity-pill.real { background: #173823; color: #8ed1a1; }
 html[data-theme="dark"] .identity-pill.unknown { background: #40351b; color: #e4c77d; }
+html[data-theme="dark"] .deleted-note { background: #3a2020; color: #f0aaaa; }
 html[data-theme="dark"] mark { background: #6d5413; color: #fff2bd; }
 
 html[data-theme="light"] {
@@ -339,6 +342,7 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
       <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="comments">按评论</option><option value="score">综合</option></select>
       <select id="date"><option value="">全部时间</option><option value="1d">今天</option><option value="3d">3天</option><option value="7d">7天</option><option value="30d">30天</option></select>
       <select id="identity"><option value="">匿名/实名</option><option value="anonymous">仅看匿名帖</option><option value="real">仅看实名帖</option></select>
+      <select id="source-state"><option value="all">正常及已删除</option><option value="available">仅正常</option><option value="deleted">仅已删除</option></select>
       <input type="text" id="category" list="category-options" placeholder="全部分类 / 输入tag" aria-label="分类">
       <datalist id="category-options"></datalist>
     </div>
@@ -547,6 +551,7 @@ function doSearch() {
   var sort = document.getElementById('sort').value;
   var date = document.getElementById('date').value;
   var identity = document.getElementById('identity').value;
+  var sourceState = document.getElementById('source-state').value;
   var category = document.getElementById('category').value;
 
   var cursor = cursorPages[currentPage - 1] || {offset: 0, matchedBefore: 0};
@@ -559,6 +564,7 @@ function doSearch() {
   ];
   if (date) params.push('date=' + date);
   if (identity) params.push('identity=' + identity);
+  if (sourceState && sourceState !== 'all') params.push('source_state=' + sourceState);
   if (category) params.push('category=' + encodeURIComponent(category));
 
   // body/cmt select the data location. When uid/name/post is selected they do
@@ -637,6 +643,8 @@ function renderResults(data) {
       : ((ruid === '0' || !ruid)
         ? '<span class="identity-pill anonymous">匿名</span>'
         : '<span class="identity-pill real">实名</span>');
+    var isDeleted = p.source_state === 'deleted_or_unavailable';
+    var sourceTag = isDeleted ? '<span class="source-state-pill">已删除/不可访问</span>' : '';
     if (ruid !== null && ruid !== '0' && ruid !== uid) idTag += ' <span style="color:#8b0012">real:' + ruid + '</span>';
     var fullContent = p.content || '';
     var textState = truncateContent(fullContent);
@@ -647,12 +655,24 @@ function renderResults(data) {
       ? '<div class="text-expand-bar"><span class="text-expand-btn" id="text-btn-' + idx + '" onclick="event.stopPropagation(); toggleContent(' + idx + ')">▶ 展开全文 (' + fullContent.length + '字)</span></div>'
       : '';
     html += '<div class="result-row">';
-    html += '<div class="top"><span class="uid">ID:' + idTag + postIdentity + '</span><span class="uname" style="color:#777">' + (p.user||'?') + '</span><span class="meta">' + (p.category||'?') + ' &middot; #' + p.id + ' &middot; ' + (p.time||'?').slice(0,16) + '</span></div>';
+    html += '<div class="top"><span class="uid">ID:' + idTag + postIdentity + sourceTag + '</span><span class="uname" style="color:#777">' + (p.user||'?') + '</span><span class="meta">' + (p.category||'?') + ' &middot; #' + p.id + ' &middot; ' + (p.time||'?').slice(0,16) + '</span></div>';
+    if (isDeleted) {
+      var savedRows = p.archived_comment_rows || 0;
+      var savedText = savedRows > 0
+        ? '本站保存 ' + savedRows + ' 条评论/回复记录。'
+        : '本站未能保存评论内容。';
+      var detailText = p.crawl_status === 'list_only' && !fullContent
+        ? '本站仅保存了列表记录，正文详情未抓取。'
+        : '';
+      html += '<div class="deleted-note">源端已删除或不可访问；删除前最后观察到 ' + (p.comments||0) + ' 条评论。' + savedText + detailText + '</div>';
+    }
     html += '<div class="' + textClass + '" id="text-' + idx + '"' + textClick + '>' + highlight(textShown) + '</div>';
     html += expandText;
-    var cmtToggle = (p.comments > 0) ? '<span class="toggle-cmts" id="cmt-btn-' + idx + '" onclick="event.stopPropagation(); toggleCmts(' + idx + ')">▶ 展开 ' + p.comments + ' 条评论</span>' : '<span></span>';
-    var statsClick = p.comments > 0 ? ' onclick="toggleCmts(' + idx + ')"' : '';
-    html += '<div class="stats-row' + (p.comments > 0 ? ' has-comments' : '') + '"' + statsClick + '>' + cmtToggle + '<span class="post-stats-inline"><span>❤ ' + (p.stars||0) + '</span><span>💬 ' + (p.comments||0) + '</span></span></div>';
+    var expandableComments = isDeleted ? (p.archived_comment_rows > 0) : (p.comments > 0);
+    var cmtLabel = isDeleted ? (p.archived_comment_rows || 0) + ' 条本地评论/回复' : p.comments + ' 条评论';
+    var cmtToggle = expandableComments ? '<span class="toggle-cmts" id="cmt-btn-' + idx + '" onclick="event.stopPropagation(); toggleCmts(' + idx + ')">▶ 展开 ' + cmtLabel + '</span>' : '<span></span>';
+    var statsClick = expandableComments ? ' onclick="toggleCmts(' + idx + ')"' : '';
+    html += '<div class="stats-row' + (expandableComments ? ' has-comments' : '') + '"' + statsClick + '>' + cmtToggle + '<span class="post-stats-inline"><span>❤ ' + (p.stars||0) + '</span><span>💬 ' + (p.comments||0) + '</span></span></div>';
     html += '<div class="comments-panel" id="cmts-' + idx + '" onclick="event.stopPropagation()"></div>';
     html += '</div>';
   });
@@ -728,11 +748,18 @@ function toggleCmts(idx) {
   var btn = document.getElementById('cmt-btn-' + idx);
   var row = panel ? panel.closest('.result-row') : null;
   var data = document.getElementById('results')._data;
-  if (!data || !data.results || !data.results[idx] || !(data.results[idx].comments > 0)) return;
+  if (!data || !data.results || !data.results[idx]) return;
+  var target = data.results[idx];
+  var canExpand = target.source_state === 'deleted_or_unavailable'
+    ? target.archived_comment_rows > 0
+    : target.comments > 0;
+  if (!canExpand) return;
   if (panel.classList.contains('open')) {
     panel.classList.remove('open');
     if (row) row.classList.remove('expanded');
-    if (btn) btn.textContent = '▶ 展开 ' + data.results[idx].comments + ' 条评论';
+    if (btn) btn.textContent = target.source_state === 'deleted_or_unavailable'
+      ? '▶ 展开 ' + (target.archived_comment_rows || 0) + ' 条本地评论/回复'
+      : '▶ 展开 ' + target.comments + ' 条评论';
     return;
   }
   var p = data.results[idx];

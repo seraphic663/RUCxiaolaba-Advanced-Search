@@ -15,8 +15,9 @@ class SearchService:
         posts_db: str | Path,
         bigram_db: str | Path | None = None,
         symbol_db: str | Path | None = None,
+        gender_db: str | Path | None = None,
     ):
-        self.repository = SearchRepository(posts_db, bigram_db, symbol_db)
+        self.repository = SearchRepository(posts_db, bigram_db, symbol_db, gender_db)
 
     def search(
         self,
@@ -26,6 +27,7 @@ class SearchService:
         limit: int,
         *,
         category: str | None = None,
+        l2: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         scope: str = "content",
@@ -33,9 +35,11 @@ class SearchService:
         uname: str | None = None,
         admin: bool = False,
         identity: str | None = None,
+        source_state: str = "all",
         admin_fields: set[str] | None = None,
         id_match: str = "exact",
         name_match: str = "exact",
+        gender_method: str = "combined",
     ) -> dict:
         request = SearchQuery(
             text=query,
@@ -43,6 +47,7 @@ class SearchService:
             page=page,
             limit=limit,
             category=category,
+            l2=l2,
             date_from=date_from,
             date_to=date_to,
             scope=scope,
@@ -50,6 +55,8 @@ class SearchService:
             user_name=uname,
             admin=admin,
             identity=identity,
+            source_state=source_state,
+            gender_method=gender_method,
             admin_fields=frozenset(
                 admin_fields or {"body", "cmt", "uid", "name"}
             ),
@@ -71,6 +78,7 @@ class SearchService:
         scan_offset: int = 0,
         matched_before: int = 0,
         category: str | None = None,
+        l2: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         scope: str = "content",
@@ -78,9 +86,11 @@ class SearchService:
         uname: str | None = None,
         admin: bool = False,
         identity: str | None = None,
+        source_state: str = "all",
         admin_fields: set[str] | None = None,
         id_match: str = "exact",
         name_match: str = "exact",
+        gender_method: str = "combined",
     ) -> dict:
         request = SearchQuery(
             text=query,
@@ -88,6 +98,7 @@ class SearchService:
             page=page,
             limit=limit,
             category=category,
+            l2=l2,
             date_from=date_from,
             date_to=date_to,
             scope=scope,
@@ -95,6 +106,8 @@ class SearchService:
             user_name=uname,
             admin=admin,
             identity=identity,
+            source_state=source_state,
+            gender_method=gender_method,
             admin_fields=frozenset(
                 admin_fields or {"body", "cmt", "uid", "name"}
             ),
@@ -107,5 +120,17 @@ class SearchService:
             matched_before=matched_before,
         )
 
-    def comments(self, post_id: str, *, admin: bool = False) -> dict | None:
-        return self.repository.comments(post_id, admin=admin)
+    def comments(
+        self,
+        post_id: str,
+        *,
+        admin: bool = False,
+        gender_sort: str = "time",
+        gender_method: str = "combined",
+    ) -> dict | None:
+        return self.repository.comments(
+            post_id,
+            admin=admin,
+            gender_sort=gender_sort,
+            gender_method=gender_method,
+        )

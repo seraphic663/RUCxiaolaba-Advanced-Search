@@ -20,6 +20,7 @@ def connect_readonly(
     posts_db: str | Path,
     bigram_db: str | Path | None = None,
     symbol_db: str | Path | None = None,
+    gender_db: str | Path | None = None,
 ) -> sqlite3.Connection:
     conn = sqlite3.connect(str(posts_db), factory=ClosingSQLiteConnection)
     conn.row_factory = sqlite3.Row
@@ -31,4 +32,6 @@ def connect_readonly(
         conn.execute("attach database ? as bigram", (str(Path(bigram_db).resolve()),))
     if symbol_db:
         conn.execute("attach database ? as symbol", (str(Path(symbol_db).resolve()),))
+    if gender_db:
+        conn.execute("attach database ? as gender", (str(Path(gender_db).resolve()),))
     return conn

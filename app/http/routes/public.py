@@ -21,8 +21,15 @@ def search(handler):
     params, _ = handler.parse_query()
     query = params.get("q", [""])[0].strip()
     sort_by = params.get("sort", ["time"])[0]
-    if sort_by not in ("time", "stars", "comments", "score"):
+    if sort_by not in (
+        "time", "stars", "comments", "score", "female_desc", "female_asc"
+    ):
         sort_by = "time"
+    gender_method = params.get("gender_method", ["combined"])[0]
+    if gender_method not in {
+        "combined", "rule", "context", "anchor", "pu", "thread_prior", "llm"
+    }:
+        gender_method = "combined"
     try:
         page = max(1, int(params.get("page", ["1"])[0]))
         limit = max(1, min(int(params.get("limit", ["50"])[0]), 200))
@@ -32,6 +39,12 @@ def search(handler):
         page, limit, scan_offset, matched_before = 1, 50, 0, 0
     cursor_mode = params.get("cursor", ["0"])[0] == "1"
     category = params.get("category", [""])[0].strip() or None
+    l2 = params.get("l2", [""])[0].strip() or None
+    if l2 not in {
+        "fwb", "sex_behavior", "sex_kink", "harassment",
+        "gender_view", "romance", "dating", "noise",
+    }:
+        l2 = None
     uid = params.get("uid", [""])[0].strip() or None
     uname = params.get("uname", [""])[0].strip() or None
     scope = params.get("scope", ["content"])[0]
@@ -67,6 +80,9 @@ def search(handler):
     identity = params.get("identity", [""])[0].strip()
     if identity not in ("anonymous", "real") or not admin:
         identity = None
+    source_state = params.get("source_state", ["all"])[0].strip()
+    if not admin or source_state not in ("all", "available", "deleted"):
+        source_state = "all"
 
     date_from = date_to = None
     preset = params.get("date", [""])[0].strip()
@@ -108,6 +124,7 @@ def search(handler):
         limit,
         **cursor_args,
         category=category,
+        l2=l2,
         date_from=date_from,
         date_to=date_to,
         scope=scope,
@@ -115,9 +132,11 @@ def search(handler):
         uname=uname,
         admin=admin,
         identity=identity,
+        source_state=source_state,
         admin_fields=admin_fields,
         id_match=id_match,
         name_match=name_match,
+        gender_method=gender_method,
     )
     handler.serve_json(result)
 
@@ -145,7 +164,20 @@ def comments(handler):
             code=401,
         )
         return
-    result = handler.context.search.comments(post_id, admin=admin)
+    gender_sort = params.get("sort", ["time"])[0]
+    if gender_sort not in {"time", "female_desc", "female_asc"}:
+        gender_sort = "time"
+    gender_method = params.get("gender_method", ["combined"])[0]
+    if gender_method not in {
+        "combined", "rule", "context", "anchor", "pu", "thread_prior", "llm"
+    }:
+        gender_method = "combined"
+    result = handler.context.search.comments(
+        post_id,
+        admin=admin,
+        gender_sort=gender_sort,
+        gender_method=gender_method,
+    )
     if result is None:
         handler.serve_json({"error": "Post not found"}, code=404)
         return

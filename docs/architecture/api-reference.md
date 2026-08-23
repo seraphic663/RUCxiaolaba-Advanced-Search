@@ -13,8 +13,9 @@
 | `cursor=1` | 允许慢速 LIKE 查询按页扫描 |
 | `scan_offset` | 已扫描候选位置，第一页为 `0` |
 | `matched_before` | 前面页面累计命中数量 |
+| `source_state` | 仅 Admin 可用：`all`、`available`、`deleted` |
 
-Bigram/trigram 等快速查询仍返回 `pagination_mode=numbered`。单字 LIKE 和复杂 Admin 查询返回 `pagination_mode=cursor`，附带：
+Bigram/trigram 等快速查询，以及 Admin 的普通单字 LIKE 查询，返回 `pagination_mode=numbered`。无索引的普通 LIKE 查询和复杂 Admin 查询仍可能返回 `pagination_mode=cursor`，附带：
 
 ```json
 {
@@ -28,6 +29,8 @@ Bigram/trigram 等快速查询仍返回 `pagination_mode=numbered`。单字 LIKE
 ```
 
 候选总数是在分类、日期、匿名/实名等非文本条件过滤后统计的。游标模式先按时间、点赞、评论或综合排序，再扫描关键词，因此返回页面顺序与完整查询一致。
+
+Public 搜索、分类、首页总量和评论接口统一排除 `deleted_or_unavailable`。Admin 搜索默认包含这些归档，并返回 `source_state`、`crawl_status`、状态时间和 `archived_comment_rows`，用于明确展示“删除前最后观察评论数”和“本站保存评论/回复记录数”。
 
 ### Admin 上游预览与人工现爬
 

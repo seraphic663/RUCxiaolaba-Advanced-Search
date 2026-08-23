@@ -12,6 +12,7 @@ DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 DEFAULT_BIGRAM_DB = DEFAULT_DATA_DIR / "bigram_index.db"
 DEFAULT_SYMBOL_DB = DEFAULT_DATA_DIR / "symbol_index.db"
+DEFAULT_GENDER_DB = DEFAULT_DATA_DIR / "gender_browse_scores.db"
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -78,6 +79,33 @@ def choose_symbol_db(
     return DEFAULT_SYMBOL_DB if DEFAULT_SYMBOL_DB.exists() else None
 
 
+def choose_gender_db(
+    explicit_path: str | Path | None = None,
+    posts_db: str | Path | None = None,
+) -> Path | None:
+    """Resolve the optional local research-score sidecar.
+
+    When a custom SQLite database is selected, prefer a score sidecar next to
+    it. This keeps local Browse FWB launches self-contained without changing
+    the normal application's default database behavior.
+    """
+    if explicit_path is not None:
+        return Path(explicit_path) if str(explicit_path).strip() else None
+    env_path = os.environ.get("GENDER_DB_PATH") or os.environ.get("GENDER_DB")
+    if env_path:
+        return Path(env_path)
+    if posts_db:
+        for filename in (
+            "gender_browse_scores_full.db",
+            "gender_browse_scores_human.db",
+            "gender_browse_scores.db",
+        ):
+            sibling = Path(posts_db).with_name(filename)
+            if sibling.exists():
+                return sibling
+    return DEFAULT_GENDER_DB if DEFAULT_GENDER_DB.exists() else None
+
+
 @dataclass(frozen=True)
 class AppConfig:
     project_root: Path
@@ -86,6 +114,7 @@ class AppConfig:
     posts_db: Path
     bigram_db: Path | None
     symbol_db: Path | None
+    gender_db: Path | None
     admin_password_file: Path
     host: str
     port: int
@@ -97,14 +126,17 @@ class AppConfig:
         posts_db: str | Path | None = None,
         bigram_db: str | Path | None = None,
         symbol_db: str | Path | None = None,
+        gender_db: str | Path | None = None,
     ) -> "AppConfig":
+        resolved_posts_db = choose_posts_db(posts_db)
         return cls(
             project_root=PROJECT_ROOT,
             data_dir=DEFAULT_DATA_DIR,
             templates_dir=DEFAULT_TEMPLATES_DIR,
-            posts_db=choose_posts_db(posts_db),
+            posts_db=resolved_posts_db,
             bigram_db=choose_bigram_db(bigram_db),
             symbol_db=choose_symbol_db(symbol_db),
+            gender_db=choose_gender_db(gender_db, resolved_posts_db),
             admin_password_file=DEFAULT_DATA_DIR / "admin_password.txt",
             host=os.environ.get("HOST", "0.0.0.0"),
             port=_env_int("PORT", 8080),

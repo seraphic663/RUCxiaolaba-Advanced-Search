@@ -34,6 +34,7 @@ TEMPLATES_DIR = str(APP_CONFIG.templates_dir)
 SQLITE_DB = str(APP_CONFIG.posts_db)
 BIGRAM_DB = str(APP_CONFIG.bigram_db or "")
 SYMBOL_DB = str(APP_CONFIG.symbol_db or "")
+GENDER_DB = str(APP_CONFIG.gender_db or "")
 PASSWORD_FILE = str(APP_CONFIG.admin_password_file)
 
 
@@ -61,7 +62,12 @@ def sqlite_connect():
 
 
 def _search_service() -> SearchService:
-    return SearchService(SQLITE_DB, BIGRAM_DB or None, SYMBOL_DB or None)
+    return SearchService(
+        SQLITE_DB,
+        BIGRAM_DB or None,
+        SYMBOL_DB or None,
+        GENDER_DB or None,
+    )
 
 
 def sqlite_overview():
@@ -108,6 +114,7 @@ def api_search_sqlite(
     admin_fields=None,
     id_match="exact",
     name_match="exact",
+    gender_method="combined",
 ):
     return _search_service().search(
         query,
@@ -125,6 +132,7 @@ def api_search_sqlite(
         admin_fields=admin_fields,
         id_match=id_match,
         name_match=name_match,
+        gender_method=gender_method,
     )
 
 
@@ -132,8 +140,18 @@ def api_categories_sqlite():
     return _search_service().categories()
 
 
-def api_comments_sqlite(post_id, admin=False):
-    return _search_service().comments(post_id, admin=admin)
+def api_comments_sqlite(
+    post_id,
+    admin=False,
+    gender_sort="time",
+    gender_method="combined",
+):
+    return _search_service().comments(
+        post_id,
+        admin=admin,
+        gender_sort=gender_sort,
+        gender_method=gender_method,
+    )
 
 
 def render_template(name, **values):
@@ -169,14 +187,21 @@ class ApplicationContext:
     admin_crawl: AdminCrawlService
     auth: AdminAuthService
     templates: TemplateService
+    gender_db: str = ""
 
 
 def build_context() -> ApplicationContext:
     return ApplicationContext(
         posts_db=SQLITE_DB,
+        gender_db=GENDER_DB,
         admin_password=get_password(),
         posts=PostRepository(SQLITE_DB),
-        search=SearchService(SQLITE_DB, BIGRAM_DB or None, SYMBOL_DB or None),
+        search=SearchService(
+            SQLITE_DB,
+            BIGRAM_DB or None,
+            SYMBOL_DB or None,
+            GENDER_DB or None,
+        ),
         admin=AdminService(SQLITE_DB),
         admin_crawl=AdminCrawlService(
             SQLITE_DB,
@@ -284,7 +309,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def main(argv=None):
-    global SQLITE_DB, BIGRAM_DB, SYMBOL_DB, APP_CONFIG
+    global SQLITE_DB, BIGRAM_DB, SYMBOL_DB, GENDER_DB, APP_CONFIG
     parser = argparse.ArgumentParser(description="Run RUC Xiaolaba search server")
     parser.add_argument(
         "--db",
@@ -308,6 +333,14 @@ def main(argv=None):
             "SYMBOL_INDEX_DB, or data/symbol_index.db when present"
         ),
     )
+    parser.add_argument(
+        "--gender-db",
+        default=None,
+        help=(
+            "optional local Browse FWB gender-score sidecar; defaults to "
+            "GENDER_DB_PATH, GENDER_DB, or a sibling gender_browse_scores.db"
+        ),
+    )
     parser.add_argument("--port", type=int, default=APP_CONFIG.port)
     parser.add_argument("--host", default=APP_CONFIG.host)
     args = parser.parse_args(argv)
@@ -316,10 +349,12 @@ def main(argv=None):
         posts_db=args.sqlite_db,
         bigram_db=args.bigram_db,
         symbol_db=args.symbol_db,
+        gender_db=args.gender_db,
     )
     SQLITE_DB = str(APP_CONFIG.posts_db)
     BIGRAM_DB = str(APP_CONFIG.bigram_db or "")
     SYMBOL_DB = str(APP_CONFIG.symbol_db or "")
+    GENDER_DB = str(APP_CONFIG.gender_db or "")
     Handler.context = build_context()
 
     overview = sqlite_overview()
@@ -342,6 +377,10 @@ def main(argv=None):
         print(f"  Search:  symbol sidecar ({SYMBOL_DB}, {status})")
     else:
         print("  Search:  symbol fallback (data/symbol_index.db not found)")
+    if GENDER_DB:
+        print(f"  Gender:  local research score sidecar ({GENDER_DB})")
+    else:
+        print("  Gender:  disabled (no local score sidecar)")
     ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
     return 0
 

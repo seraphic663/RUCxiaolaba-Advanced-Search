@@ -43,6 +43,14 @@ html.hide-stats .post-stats-inline { display: none; }
 .sort-bar button:hover { border-color: #8b0012; color: #8b0012; }
 .sort-bar button.active { background: #8b0012; color: #fff; border-color: #8b0012; }
 .sort-bar .count-text { margin-left: auto; color: #999; font-size: 0.8em; }
+.gender-bar { max-width: 760px; margin: 0 auto 8px; padding: 0 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: #777; font-size: .82em; }
+.gender-bar select { padding: 5px 8px; border: 1px solid #ddd; border-radius: 8px; background: #fff; color: #555; }
+.gender-note { color: #a17d83; }
+.gender-score { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; padding: 1px 6px; border: 1px solid #ead6da; border-radius: 10px; color: #8b0012; background: #fff8f8; font-size: .76em; white-space: nowrap; cursor: help; }
+.identity-pill { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border: 1px solid #d8d3c8; border-radius: 10px; color: #746d62; background: #f7f4ec; font-size: .74em; white-space: nowrap; }
+.identity-pill.real { border-color: #b8d9c0; color: #2b7541; background: #f0faf2; }
+.identity-pill.anonymous { border-color: #d9d3c9; color: #857e73; background: #f5f2ec; }
+.identity-pill.unknown { border-color: #e5c6a5; color: #996b3e; background: #fff8ed; }
 
 /* Results */
 .results { max-width: 760px; margin: 0 auto; padding: 0 16px; }
@@ -174,6 +182,10 @@ html[data-theme="dark"] .post-stats-inline,
 html[data-theme="dark"] .cmt .cmt-meta,
 html[data-theme="dark"] .pagination .total-pages { color: #929aa2; }
 html[data-theme="dark"] .post .post-content.collapsed::after { background: linear-gradient(transparent, #1a1d20); }
+html[data-theme="dark"] .identity-pill { border-color: #4a4c47; color: #c7c1b6; background: #302f2a; }
+html[data-theme="dark"] .identity-pill.real { border-color: #3e7650; color: #9bd5a7; background: #203326; }
+html[data-theme="dark"] .identity-pill.anonymous { border-color: #4a4c47; color: #b3aea5; background: #302f2a; }
+html[data-theme="dark"] .identity-pill.unknown { border-color: #7e5c3c; color: #e0b37d; background: #3b2d20; }
 html[data-theme="dark"] .post-bottom-row,
 html[data-theme="dark"] .cmt { border-color: #30363c; }
 html[data-theme="dark"] .post .comments-wrap,
@@ -242,6 +254,8 @@ html[data-theme] .pagination button { background: var(--ui-surface); border-colo
 html[data-theme] .sort-bar button:hover,
 html[data-theme] .pagination button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); }
 html[data-theme] .sort-bar button.active { background: var(--ui-accent); border-color: var(--ui-accent); color: #fff; }
+html[data-theme] .gender-bar select { background: var(--ui-surface); border-color: var(--ui-border); color: var(--ui-text); }
+html[data-theme] .gender-score { background: var(--ui-accent-soft); border-color: var(--ui-border); color: var(--ui-accent); }
 html[data-theme] .post { background: var(--ui-surface); border-color: var(--ui-border); border-radius: 8px; box-shadow: 0 1px 4px var(--ui-shadow); }
 html[data-theme] .post.expanded { border-color: var(--ui-accent); background: color-mix(in srgb, var(--ui-accent-soft) 28%, var(--ui-surface)); }
 html[data-theme] .post .post-cat { background: var(--ui-accent-soft); color: var(--ui-accent); }
@@ -323,13 +337,47 @@ html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: va
   <button id="btn-stars" onclick="setSort('stars')">按点赞</button>
   <button id="btn-comments" onclick="setSort('comments')">按评论</button>
   <button id="btn-score" onclick="setSort('score')">综合</button>
+  <button id="btn-female_desc" onclick="setSort('female_desc')">女性概率高→低</button>
+  <button id="btn-female_asc" onclick="setSort('female_asc')">女性概率低→高</button>
   <span class="count-text" id="count-text"></span>
+</div>
+
+<div class="gender-bar">
+  <label for="gender-method">女性作者分布方法:</label>
+  <select id="gender-method" onchange="setGenderMethod(this.value)">
+    <option value="combined">组合（默认）</option>
+    <option value="rule">高/中精度规则</option>
+    <option value="context">遮掉自称词的上下文模型</option>
+    <option value="anchor">含自称词的传统 NLP</option>
+    <option value="pu">PU 弱监督</option>
+    <option value="thread_prior">帖子线程先验（评论）</option>
+    <option value="llm">LLM/人工复核</option>
+  </select>
+  <label for="comment-sort">评论排序:</label>
+  <select id="comment-sort" onchange="setCommentSort(this.value)">
+    <option value="time">按时间</option>
+    <option value="female_desc">女性概率高→低</option>
+    <option value="female_asc">女性概率低→高</option>
+  </select>
+  <span class="gender-note" title="默认显示完整上下文的 human-context 分布；strict 结果和三项概率保存在详情中，尚未用独立标注集校准">默认 human-context；分布未校准</span>
 </div>
 
 <div class="filter-bar">
   <label>分类:</label>
   <input type="text" id="filter-category" list="category-options" placeholder="全部分类 / 输入tag">
   <datalist id="category-options"></datalist>
+  <label>主题:</label>
+  <select id="filter-l2" onchange="doSearch()">
+    <option value="">全部主题</option>
+    <option value="fwb">fwb / 约炮</option>
+    <option value="sex_behavior">性行为</option>
+    <option value="sex_kink">性癖擦边</option>
+    <option value="harassment">性骚扰受害</option>
+    <option value="gender_view">两性观念</option>
+    <option value="romance">恋爱情感</option>
+    <option value="dating">征友交友</option>
+    <option value="noise">误保留(noise)</option>
+  </select>
   <label>时间:</label>
   <select id="filter-date" onchange="doSearch()">
     <option value="1d">最近 24 小时</option>
@@ -358,6 +406,8 @@ __SHARED_UI_JS__
 // ===== State =====
 let currentPage = 1;
 let currentSort = 'time';
+let currentGenderMethod = 'combined';
+let currentCommentSort = 'time';
 let currentQuery = '';
 let totalPages = 1;
 let paginationMode = 'numbered';
@@ -415,6 +465,32 @@ function truncateContent(text) {
   return { truncated: true, preview: text.substring(0, TRUNCATE_LEN) + '...', full: text };
 }
 
+function renderGenderScore(item) {
+  var gender = item && item.gender;
+  if (!gender) return '';
+  var female = Math.round(Number(gender.female || 0) * 100);
+  var male = Math.round(Number(gender.male || 0) * 100);
+  var unknown = Math.max(0, 100 - female - male);
+  var classification = gender.classification || 'unknown';
+  var strictClassification = gender.strict_classification || '';
+  var humanClassification = gender.human_context_classification || classification;
+  var level = Number.isFinite(Number(gender.female_likely)) ? Number(gender.female_likely) : 0;
+  var title = '分类 ' + classification + '；女性 ' + female + '% / 男性 ' + male + '% / 未知 ' + unknown + '%；female_likely L' + level;
+  if (humanClassification) title += '；human-context=' + humanClassification;
+  if (strictClassification) title += '；strict=' + strictClassification;
+  if (gender.strict_female !== null && gender.strict_female !== undefined) {
+    title += '；strict概率 女性 ' + Math.round(Number(gender.strict_female) * 100) + '% / 男性 ' + Math.round(Number(gender.strict_male || 0) * 100) + '% / 未知 ' + Math.round(Number(gender.strict_unknown || 0) * 100) + '%';
+  }
+  if (gender.uncalibrated) title += '；研究分数，未校准';
+  return '<span class="gender-score" title="' + escapeHtml(title) + '">♀' + female + '% · ♂' + male + '% · ?' + unknown + '% · ' + escapeHtml(classification) + ' · L' + level + '</span>';
+}
+
+function renderIdentityStatus(item) {
+  var status = item && item.identity_status;
+  var label = status === 'real' ? '实名' : status === 'anonymous' ? '匿名' : '未知';
+  return '<span class="identity-pill ' + escapeHtml(status || 'unknown') + '">' + label + '</span>';
+}
+
 // ===== Render post card =====
 let _postData = {};       // index -> { fullContent, postId, commentCount }
 let _contentState = {};   // index -> bool (true=expanded, false=collapsed)
@@ -430,6 +506,8 @@ function renderPost(post, index, keywords) {
     '<div class="left">' +
       '<span class="post-cat">' + escapeHtml(post.category || '?') + '</span>' +
       '<span class="post-user">' + escapeHtml(post.user || '?') + '</span>' +
+      renderIdentityStatus(post) +
+      renderGenderScore(post) +
       '<span class="post-id">#' + escapeHtml(post.id) + '</span>' +
     '</div>' +
     '<span class="post-time-right">' + escapeHtml(post.time || '') + '</span>' +
@@ -544,7 +622,9 @@ function loadComments(index, postId) {
 
   wrap.innerHTML = '<div class="loading"><span class="spinner"></span>加载评论...</div>';
 
-  fetch('/api/comments?id=' + encodeURIComponent(postId))
+  fetch('/api/comments?id=' + encodeURIComponent(postId) +
+    '&sort=' + encodeURIComponent(currentCommentSort) +
+    '&gender_method=' + encodeURIComponent(currentGenderMethod))
     .then(parseJsonResponse)
     .then(function(data) {
       var cmts = data.comment_list || [];
@@ -584,7 +664,7 @@ function renderComments(cmts, keywords) {
       else if (depth > 1) depthLabel = '<span class="depth-tag">L' + (depth + 1) + (depth >= 4 ? '+' : '') + '</span>';
       levelParts.push(
         '<div class="cmt" data-depth="' + depth + '" style="--indent:' + (visualDepth * 14) + 'px">' +
-          '<div class="cmt-meta">' + marker + depthLabel + escapeHtml(c.show_user_name || '?') + replyTo + opTag + '</div>' +
+          '<div class="cmt-meta">' + marker + depthLabel + escapeHtml(c.show_user_name || '?') + renderIdentityStatus(c) + renderGenderScore(c) + replyTo + opTag + '</div>' +
           '<div class="cmt-text">' + txt + '</div>' +
           nested +
         '</div>'
@@ -597,6 +677,31 @@ function renderComments(cmts, keywords) {
     html += '<div class="loading">已显示前 ' + limit + ' 条顶层评论，另有 ' + hiddenTopLevel + ' 条可在设置中改为全部显示</div>';
   }
   return html;
+}
+
+function reloadVisibleComments() {
+  Object.keys(_postData).forEach(function(index) {
+    var wrap = document.getElementById('cmts-' + index);
+    var data = _postData[index];
+    if (wrap && data && wrap.style.display === 'block') {
+      _commentsLoaded[index] = false;
+      loadComments(index, data.postId);
+    }
+  });
+}
+
+function setCommentSort(sort) {
+  currentCommentSort = sort;
+  reloadVisibleComments();
+}
+
+function setGenderMethod(method) {
+  currentGenderMethod = method;
+  currentPage = 1;
+  cursorPages = [{ offset: 0, matchedBefore: 0 }];
+  pageCache = {};
+  fetchResults();
+  reloadVisibleComments();
 }
 
 // ===== Search & Pagination =====
@@ -664,6 +769,8 @@ function getFilterParams() {
   var parts = [];
   var cat = document.getElementById('filter-category').value;
   if (cat) parts.push('category=' + encodeURIComponent(cat));
+  var l2 = document.getElementById('filter-l2').value;
+  if (l2) parts.push('l2=' + l2);
   var date = document.getElementById('filter-date').value;
   if (date) parts.push('date=' + date);
   return parts.length ? '&' + parts.join('&') : '';
@@ -679,6 +786,7 @@ function fetchResults() {
   var cursor = cursorPages[currentPage - 1] || { offset: 0, matchedBefore: 0 };
   let url = '/api/search?q=' + encodeURIComponent(currentQuery) +
     '&sort=' + currentSort +
+    '&gender_method=' + encodeURIComponent(currentGenderMethod) +
     '&page=' + currentPage +
     '&limit=' + PAGE_SIZE +
     '&cursor=1&scan_offset=' + cursor.offset +

@@ -86,6 +86,7 @@ class SearchQuery:
     page: int = 1
     limit: int = 50
     category: str | None = None
+    l2: str | None = None
     date_from: datetime | None = None
     date_to: datetime | None = None
     scope: str = "content"
@@ -93,6 +94,8 @@ class SearchQuery:
     user_name: str | None = None
     admin: bool = False
     identity: str | None = None
+    source_state: str = "all"
+    gender_method: str = "combined"
     admin_fields: frozenset[str] = field(
         default_factory=lambda: frozenset({"body", "cmt", "uid", "name", "post"})
     )
