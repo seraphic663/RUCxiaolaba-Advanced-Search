@@ -335,7 +335,8 @@ class AdaptiveDetailBudgetTest(unittest.TestCase):
                 {"time": "22:00", "fraction": 1.00},
             ],
         )
-        quota = scheduler.load_quota()
+        with patch.object(scheduler, "TRICKLE_LIMIT", 12):
+            quota = scheduler.load_quota()
         self.assertEqual(quota["detail_budget_target"], 1000)
         self.assertEqual(
             quota["detail_budget_decision"],

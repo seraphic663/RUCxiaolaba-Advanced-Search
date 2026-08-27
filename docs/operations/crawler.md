@@ -106,7 +106,7 @@ priority 大于 0 的 coverage 任务还按 `crawler_queue.queue_order` 升序�
 `discover-latest`：
 
 - bootstrap 模式固定完成 `--min-pages=--max-pages=20`；不使用连续无收益页或重复页提前停止，也不写 list stub。每成功提交一页就更新 `ledger_state.lists_bootstrap_next_page`，若额度停止或进程重启，下一轮从该游标续扫；旧状态没有游标时从台账最大 `first_seen_page` 推断。
-- 至少扫描 `--min-pages` 后，连续 `--no-action-page-threshold` 页没有可入队候选即可停止。
+- 常规监视把“有效信号”定义为新 ID、源端时间/评论数真实变化或新的 list2 事件；仅更新已有 pending 队列的元数据不算有效信号。达到 `--min-pages` 后，连续 `--no-action-page-threshold` 个无有效信号页即可停止。
 - 连续多页都早于 `--since` 时停止。
 - 非 bootstrap 模式页面 ID 签名重复时停止；bootstrap 必须完成目标页数，重复页仍记录但不会重复入队。
 - `--max-pages` 是硬上限。
@@ -114,7 +114,8 @@ priority 大于 0 的 coverage 任务还按 `crawler_queue.queue_order` 升序�
 `discover-active`：
 
 - 页面 ID 签名重复时停止，避免上游窗口循环。
-- 至少扫描 `--min-pages` 后，连续无收益页达到阈值时停止。
+- 只把新的事件键、真实字段变化和新 ID 视为有效信号；已有任务的重复更新不延长扫描。
+- 至少扫描 `--min-pages` 后，连续无有效信号页达到阈值时停止。
 - `--max-pages` 是硬上限。
 
 停止逻辑同时依赖最小页数、连续无收益页、重复页签名、时间边界和硬预算；单条重复不能作为停止条件。
@@ -148,7 +149,7 @@ CRAWLER_DAILY_ACTIVE_LIST_BUDGET=160
 CRAWLER_DAILY_DETAIL_BUDGET=1000
 CRAWLER_DAILY_ADMIN_PREVIEW_BUDGET=20
 CRAWLER_DAILY_ADMIN_DETAIL_BUDGET=10
-CRAWLER_TRICKLE_LIMIT_CAP=12
+CRAWLER_TRICKLE_LIMIT_CAP=18
 CRAWLER_TRICKLE_REFRESH_LIMIT=5
 CRAWLER_TRICKLE_MIN_DELAY=8
 CRAWLER_TRICKLE_MAX_DELAY=14
@@ -178,9 +179,9 @@ CRAWLER_BOOTSTRAP_SINCE=1970-01-01 00:00:00
 是自动详情的唯一内部预算。它不是上游承诺的无限额度：如果真实接口返回
 `rate_limited`，对应 lane 会进入 cooldown/次日恢复规则；单 cookie 兼容模式仍使用原来的全局暂停文件。
 
-当前积压加速配置把详情目标范围设为 900–1000，从 900 起步；旧目标低于 900 时会立即抬到 900，在安全满载或时间窗满载且无限流时，次日再增加 100 到 1000。详情使用独立的提前释放曲线：10:00 释放 20%、12:00 释放 40%、15:00 释放 65%、18:00 释放 82%、20:00 释放 93%、21:00 全量释放；按 10 分钟一轮、每轮最多 12 次计算，1000 次详情在午夜前可达。列表不再等待这条详情释放曲线或旧公共 source window，只按各自监视间隔请求并保留数字审计。
+当前单 cookie 详情目标范围仍由 `CRAWLER_DAILY_DETAIL_BUDGET` 控制；固定 cookie 池则以池文件的 lane 预算为准。当前池配置为新 cookie `detail=600`、旧 cookie `detail=500`。新 cookie 的 `id_followup` 每轮最多 18 条，旧 cookie 的 `history_detail` 每轮保持 12 条，详情仍逐请求、串行并使用 8–14 秒间隔。列表不等待详情释放曲线，只按各自监视间隔请求并保留数字审计。
 
-日切升级既看详情总目标利用率，也看旧释放曲线下的理论可达容量：如果昨日没有限流，虽然未达到目标的 95%，但已经使用了当日时间窗理论容量的 98%，视为 `schedule_limited_increase`，而不是错误判为需求不足。发生 `rate_limited` 时仍由全局 80% 安全回退统一缩减，详情控制器不重复降额。每轮 12 个详情默认最多 5 个 priority 0 新回复任务，剩余至少 7 个位置继续补新帖和历史覆盖。
+日切升级既看详情总目标利用率，也看旧释放曲线下的理论可达容量：如果昨日没有限流，虽然未达到目标的 95%，但已经使用了当日时间窗理论容量的 98%，视为 `schedule_limited_increase`，而不是错误判为需求不足。发生 `rate_limited` 时仍由全局 80% 安全回退统一缩减，详情控制器不重复降额。新 cookie 每轮最多 18 个详情，仍优先处理 priority 0 新回复；旧 cookie 每轮最多 12 个历史详情。
 
 2026-08-05 上线前快照显示：最近无 `rate_limited`，已验证最高约 816 次源请求/天；队列仍有 20,983 个 pending，其中 priority 0 新回复 4,172 个、priority 10 有评论新帖 12,371 个。该数据说明 700 详情上限只能接近追平新增，无法明显消化积压，因此提高到 1000；如果更高请求强度触发真实限流，全局 pause 仍会立即停止当天请求并在次日按 80% 安全系数回退。
 
@@ -206,12 +207,16 @@ scheduler 只用剩余额度裁剪子任务的 `max-pages` 或 `limit`，不再�
 CRAWLER_NEW_DISCOVER_INTERVAL=3600
 CRAWLER_ACTIVE_DISCOVER_INTERVAL=3600
 CRAWLER_ACTIVE_DISCOVER_OFFSET=1800
-CRAWLER_DISCOVER_LATEST_PAGES=5
-CRAWLER_DISCOVER_ACTIVE_PAGES=5
+CRAWLER_DISCOVER_LATEST_PAGES=5              # 04:00–06:00 深扫上限
+CRAWLER_DISCOVER_ACTIVE_PAGES=5              # 04:00–06:00 深扫上限
+CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=3      # 常规最多 3 页，有效信号不足时提前停
+CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=3      # 常规最多 3 页，有效信号不足时提前停
+CRAWLER_LIST_DEEP_SCAN_START=04:00
+CRAWLER_LIST_DEEP_SCAN_END=06:00
 CRAWLER_TRICKLE_INTERVAL=600
 ```
 
-首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；`history_detail` 旧任务在各阶段独立低速排队，不会改变这个门槛。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段两类列表默认至少扫描 2 页，并在连续 2 页没有队列变化或新的台账信号时停止；单轮最多 5 页。list1 每小时一次，list2 每小时一次并固定错开 30 分钟；只有出现新 ID、源端更新时间/评论数变化或新的 `lists2` 事件时才继续扩页。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
+首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；`history_detail` 旧任务在各阶段独立低速排队，不会改变这个门槛。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段 list1 常规最多 3 页、list2 常规最多 3 页，分别在第 1/2 页达到无有效信号时提前停止；04:00–06:00 两类列表各做一次最多 5 页的深扫。list1 每小时一次，list2 每小时一次并固定错开 30 分钟；有效信号只包括新 ID、源端更新时间/评论数变化或新的 `lists2` 事件。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
 
 
 ## 限流、Cookie 失效与暂停

@@ -178,6 +178,10 @@ def record_list_page(
         "rows": len(articles),
         "new_ids": 0,
         "new_events": 0,
+        "fresh_signals": 0,
+        "new_id_signals": 0,
+        "source_change_signals": 0,
+        "event_signals": 0,
         "actionable": 0,
         "actionable_ids": [],
         "stable": True,
@@ -258,6 +262,18 @@ def record_list_page(
             detail_status = "queued"
             actionable = True
 
+        new_id_signal = not was_known and not (endpoint == "lists2" and baseline)
+        source_change_signal = source_changed and was_known
+        event_signal = event_new and not baseline
+        fresh_signal = new_id_signal or source_change_signal or event_signal
+        if fresh_signal:
+            stats["fresh_signals"] += 1
+        if new_id_signal:
+            stats["new_id_signals"] += 1
+        if source_change_signal:
+            stats["source_change_signals"] += 1
+        if event_signal:
+            stats["event_signals"] += 1
         if not was_known:
             stats["new_ids"] += 1
             stats["stable"] = False

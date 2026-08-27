@@ -59,9 +59,9 @@ CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json
 `CRAWLER_ENABLED=1` 让 `start.sh` 启动后台 scheduler；当前线上推荐同时设置 `CRAWLER_TRICKLE_ENABLED=1`，启用 quota-friendly 模式：
 
 ```text
-discover-latest  默认每 60 分钟，至少 2 页、最多 5 页；列表请求只按真实请求记账
-discover-active  默认每 60 分钟，和 discover-latest 错开 30 分钟；至少 2 页、最多 5 页；列表请求只按真实请求记账
-trickle-fill     默认每 10 分钟，每轮最多 12 条详情
+discover-latest  默认每 60 分钟，常规最多 3 页、有效信号不足时提前停；04:00–06:00 深扫最多 5 页
+discover-active  默认每 60 分钟，和 discover-latest 错开 30 分钟；常规最多 3 页、深扫最多 5 页
+trickle-fill     新 cookie 默认每 10 分钟，每轮最多 18 条详情
 trickle-fill-history  默认每 30 分钟，每轮最多 12 条历史详情；与当前 ID 表共用去重队列但走独立任务路由
 ```
 
@@ -75,6 +75,10 @@ CRAWLER_ACTIVE_DISCOVER_INTERVAL=3600
 CRAWLER_ACTIVE_DISCOVER_OFFSET=1800
 CRAWLER_DISCOVER_LATEST_PAGES=5
 CRAWLER_DISCOVER_ACTIVE_PAGES=5
+CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=3
+CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=3
+CRAWLER_LIST_DEEP_SCAN_START=04:00
+CRAWLER_LIST_DEEP_SCAN_END=06:00
 CRAWLER_TRICKLE_INTERVAL=600
 CRAWLER_HISTORY_TRICKLE_INTERVAL=1800
 ```

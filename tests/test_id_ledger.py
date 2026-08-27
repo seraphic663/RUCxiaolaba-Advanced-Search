@@ -42,6 +42,7 @@ class IdLedgerTest(unittest.TestCase):
             articles=articles,
         )
         self.assertEqual(first["new_ids"], 2)
+        self.assertEqual(first["fresh_signals"], 2)
         self.assertEqual(first["actionable"], 2)
         self.assertEqual(first["source_create_time_min"], "2026-08-12 00:00:00")
         self.assertEqual(first["source_create_time_max"], "2026-08-12 00:00:00")
@@ -71,6 +72,7 @@ class IdLedgerTest(unittest.TestCase):
             articles=articles,
         )
         self.assertEqual(replay["new_ids"], 0)
+        self.assertEqual(replay["fresh_signals"], 0)
         self.assertEqual(replay["actionable"], 0)
         self.assertTrue(replay["stable"])
 
@@ -99,6 +101,7 @@ class IdLedgerTest(unittest.TestCase):
             baseline=True,
         )
         self.assertEqual(baseline["actionable"], 0)
+        self.assertEqual(baseline["fresh_signals"], 0)
         self.assertTrue(baseline["stable"])
         set_ledger_state(self.conn, "lists2_baseline_ready", "1")
 
@@ -110,6 +113,7 @@ class IdLedgerTest(unittest.TestCase):
             articles=[self.article("20", update="2026-08-12 02:00:00")],
         )
         self.assertEqual(changed["actionable"], 1)
+        self.assertEqual(changed["fresh_signals"], 1)
         self.assertEqual(changed["actionable_ids"], ["20"])
         self.assertFalse(changed["stable"])
         row = self.conn.execute(
