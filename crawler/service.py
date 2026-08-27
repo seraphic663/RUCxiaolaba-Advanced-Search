@@ -304,6 +304,10 @@ class CrawlerService:
             "ledger_baseline": False,
             "ledger_new_ids": 0,
             "ledger_new_events": 0,
+            "ledger_fresh_signals": 0,
+            "ledger_new_id_signals": 0,
+            "ledger_source_change_signals": 0,
+            "ledger_event_signals": 0,
             "ledger_actionable": 0,
             "ledger_stable_pages": 0,
             "source_create_time_min": "",
@@ -428,6 +432,18 @@ class CrawlerService:
                         stats["ledger_new_events"] += safe_int(
                             ledger_page.get("new_events")
                         )
+                        stats["ledger_fresh_signals"] += safe_int(
+                            ledger_page.get("fresh_signals")
+                        )
+                        stats["ledger_new_id_signals"] += safe_int(
+                            ledger_page.get("new_id_signals")
+                        )
+                        stats["ledger_source_change_signals"] += safe_int(
+                            ledger_page.get("source_change_signals")
+                        )
+                        stats["ledger_event_signals"] += safe_int(
+                            ledger_page.get("event_signals")
+                        )
                         stats["ledger_actionable"] += safe_int(
                             ledger_page.get("actionable")
                         )
@@ -456,6 +472,7 @@ class CrawlerService:
                         for item in ledger_page.get("actionable_ids", [])
                     )
                     page_queued = page_existing = page_changed = page_mutations = 0
+                    page_queue_inserted = page_queue_reopened = 0
                     page_has_since = False
                     for article in articles:
                         post_id = str(article.get("id") or "")
@@ -539,6 +556,10 @@ class CrawlerService:
                                     commit=False,
                                 )
                                 stats[f"queue_{action}"] += 1
+                                if action == "inserted":
+                                    page_queue_inserted += 1
+                                elif action == "reopened":
+                                    page_queue_reopened += 1
                                 if action != "unchanged":
                                     page_mutations += 1
                             elif dry_run:
@@ -559,18 +580,22 @@ class CrawlerService:
                                 str(page + 1),
                             )
                         store.conn.commit()
-                    page_has_ledger_signal = bool(
-                        ledger_page
-                        and endpoint == "lists2"
-                        and (
-                            safe_int(ledger_page.get("actionable")) > 0
+                    if endpoint == "lists":
+                        page_has_effective_signal = bool(
+                            safe_int(ledger_page.get("source_change_signals")) > 0
                             or (
-                                not list2_baseline
-                                and not ledger_page.get("stable", True)
+                                safe_int(ledger_page.get("new_id_signals")) > 0
+                                and page_queue_inserted + page_queue_reopened > 0
                             )
                         )
-                    )
-                    if page_mutations == 0 and not page_has_ledger_signal:
+                    else:
+                        page_has_effective_signal = bool(
+                            safe_int(ledger_page.get("event_signals")) > 0
+                            or safe_int(ledger_page.get("source_change_signals")) > 0
+                        )
+                    if dry_run:
+                        page_has_effective_signal = page_mutations > 0
+                    if not page_has_effective_signal:
                         no_action_pages += 1
                     else:
                         no_action_pages = 0

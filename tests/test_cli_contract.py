@@ -111,7 +111,7 @@ class CLIContractTest(unittest.TestCase):
             7,
         )
         trickle_args = job_args("trickle_fill")
-        self.assertLessEqual(int(trickle_args[trickle_args.index("--limit") + 1]), 12)
+        self.assertLessEqual(int(trickle_args[trickle_args.index("--limit") + 1]), 18)
         self.assertLessEqual(
             int(trickle_args[trickle_args.index("--refresh-limit") + 1]),
             5,

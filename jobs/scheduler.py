@@ -134,8 +134,8 @@ NIGHT_TRICKLE_INTERVAL = env_int(
 )
 DETAIL_NIGHT_START = os.environ.get("CRAWLER_DETAIL_NIGHT_START", "04:00")
 DETAIL_NIGHT_END = os.environ.get("CRAWLER_DETAIL_NIGHT_END", "06:00")
-TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 12)
-TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 12), TRICKLE_LIMIT_CAP)
+TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 18)
+TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 18), TRICKLE_LIMIT_CAP)
 HISTORY_TRICKLE_INTERVAL = env_int(
     "CRAWLER_HISTORY_TRICKLE_INTERVAL",
     30 * 60,
@@ -175,6 +175,28 @@ TRICKLE_MAX_DELAY = max(
 )
 DISCOVER_LATEST_PAGES = env_int("CRAWLER_DISCOVER_LATEST_PAGES", 5)
 DISCOVER_ACTIVE_PAGES = env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", 5)
+DISCOVER_LATEST_REGULAR_PAGES = max(
+    1,
+    min(
+        DISCOVER_LATEST_PAGES,
+        env_int("CRAWLER_DISCOVER_LATEST_REGULAR_PAGES", 3),
+    ),
+)
+DISCOVER_ACTIVE_REGULAR_PAGES = max(
+    1,
+    min(
+        DISCOVER_ACTIVE_PAGES,
+        env_int("CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES", 3),
+    ),
+)
+LIST_DEEP_SCAN_START = os.environ.get(
+    "CRAWLER_LIST_DEEP_SCAN_START",
+    "04:00",
+)
+LIST_DEEP_SCAN_END = os.environ.get(
+    "CRAWLER_LIST_DEEP_SCAN_END",
+    "06:00",
+)
 COOKIE_ERROR_COOLDOWN = env_int("CRAWLER_COOKIE_ERROR_COOLDOWN", 6 * 60 * 60)
 DAILY_LIST_BUDGET = env_int("CRAWLER_DAILY_LIST_BUDGET", 240)
 DAILY_NEW_LIST_BUDGET = env_int(
@@ -392,11 +414,11 @@ TRICKLE_JOBS = {
         "--since",
         TRICKLE_SINCE,
         "--max-pages",
-        str(DISCOVER_LATEST_PAGES),
+        str(DISCOVER_LATEST_REGULAR_PAGES),
         "--min-pages",
-        "2",
+        "1",
         "--no-action-page-threshold",
-        "2",
+        "1",
         "--min-delay",
         "0.1",
         "--max-delay",
@@ -407,11 +429,11 @@ TRICKLE_JOBS = {
         "--since",
         TRICKLE_SINCE,
         "--max-pages",
-        str(DISCOVER_ACTIVE_PAGES),
+        str(DISCOVER_ACTIVE_REGULAR_PAGES),
         "--min-pages",
         "2",
         "--no-action-page-threshold",
-        "2",
+        "1",
         "--min-delay",
         "0.1",
         "--max-delay",
@@ -1744,6 +1766,21 @@ def _clock_minute(value: str, default: int) -> int:
     return max(0, min(23 * 60 + 59, result))
 
 
+def list_deep_scan_bounds() -> tuple[int, int]:
+    start = _clock_minute(LIST_DEEP_SCAN_START, 4 * 60)
+    end = _clock_minute(LIST_DEEP_SCAN_END, 6 * 60)
+    if end <= start:
+        return 4 * 60, 6 * 60
+    return start, end
+
+
+def list_deep_scan_active(at: datetime | None = None) -> bool:
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    start, end = list_deep_scan_bounds()
+    minute = at.hour * 60 + at.minute
+    return start <= minute < end
+
+
 def detail_night_bounds() -> tuple[int, int]:
     start = _clock_minute(DETAIL_NIGHT_START, 4 * 60)
     end = _clock_minute(DETAIL_NIGHT_END, 6 * 60)
@@ -1796,6 +1833,43 @@ def replace_arg(args: list[str], flag: str, value: int) -> list[str]:
         return [*updated, flag, str(value)]
     updated[index + 1] = str(value)
     return updated
+
+
+def monitoring_list_args(
+    name: str,
+    *,
+    at: datetime | None = None,
+) -> list[str]:
+    """Return shallow regular scans and bounded deep scans at night.
+
+    Regular scans rely on the crawler's effective-signal stop condition, so
+    the page cap is a ceiling rather than a fixed number of requests.  The
+    configured deep window intentionally disables that early stop and reads
+    the full bounded page range to recover lower-page activity.
+    """
+
+    if name not in TRICKLE_JOBS:
+        return job_args(name)
+    args = job_args(name)
+    if name not in {"discover_new", "discover_active"}:
+        return args
+    if not all(
+        flag in args
+        for flag in ("--max-pages", "--min-pages", "--no-action-page-threshold")
+    ):
+        return args
+
+    deep = list_deep_scan_active(at)
+    if name == "discover_new":
+        max_pages = DISCOVER_LATEST_PAGES if deep else DISCOVER_LATEST_REGULAR_PAGES
+        min_pages = max_pages if deep else 1
+    else:
+        max_pages = DISCOVER_ACTIVE_PAGES if deep else DISCOVER_ACTIVE_REGULAR_PAGES
+        min_pages = max_pages if deep else 2
+    threshold = 0 if deep else 1
+    args = replace_arg(args, "--max-pages", max_pages)
+    args = replace_arg(args, "--min-pages", min_pages)
+    return replace_arg(args, "--no-action-page-threshold", threshold)
 
 
 def job_budget_kind(name: str) -> str:
@@ -1928,7 +2002,7 @@ def record_failed_crawler_run(
 def prepare_job(name: str) -> tuple[list[str] | None, str]:
     lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
     with exclusive_control_lock(lock_path):
-        args = job_args(name)
+        args = monitoring_list_args(name, at=beijing_now())
         kind = job_budget_kind(name)
         if not kind:
             return args, ""
@@ -1972,7 +2046,7 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
 
 def job_args(name: str) -> list[str]:
     if name in TRICKLE_JOBS:
-        return TRICKLE_JOBS[name]
+        return list(TRICKLE_JOBS[name])
     if name == "phase1":
         from_date = (datetime.now(CHINA_TZ).date() - timedelta(days=7)).isoformat()
         return [
@@ -2158,6 +2232,10 @@ def main() -> int:
             f"detail_night={NIGHT_TRICKLE_INTERVAL}s "
             f"night_window={DETAIL_NIGHT_START}-{DETAIL_NIGHT_END} "
             f"limit={TRICKLE_LIMIT} parallel_lanes={PARALLEL_LANES_ENABLED} "
+            f"list1_regular={DISCOVER_LATEST_REGULAR_PAGES} "
+            f"list1_deep={DISCOVER_LATEST_PAGES} "
+            f"list2_regular={DISCOVER_ACTIVE_REGULAR_PAGES} "
+            f"list2_deep={DISCOVER_ACTIVE_PAGES} "
             f"refresh_limit={TRICKLE_REFRESH_LIMIT} "
             f"fresh_hours={TRICKLE_FRESH_COVERAGE_HOURS} ",
             flush=True,
