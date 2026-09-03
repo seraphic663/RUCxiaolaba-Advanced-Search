@@ -8,9 +8,9 @@
 |---|---|---|---|---|
 | `server.py` | Web 兼容启动与导入入口 | 根文件看似主实现 | 保持薄入口，逻辑只进入 `app/` | 高：Railway、测试和本地命令仍引用 |
 | `crawler_db.py` | crawler 兼容 CLI 与导入入口 | 容易被误认为实现文件 | 保持薄入口，命令实现在 `crawler/cli.py` | 高：运维命令和测试仍引用 |
-| `app/` | 配置、Domain、Repository、Service、HTTP 与页面模板 | 搜索 SQL 仍集中在较大的 Repository | HTTP 不写 SQL，Service 不读写 HTTP，Repository 只负责读取 | 中：搜索语义和 public/admin 权限敏感 |
-| `crawler/` | API client、标准化、扫描策略和流程编排 | 新旧命令同时存在 | 新逻辑走 discover/trickle，旧命令仅兼容或人工修复 | 中：涉及源 API 成本与停止条件 |
-| `storage/` | SQLite schema、写入与可重建旁路索引 | `post_writer.py` 同时承担 schema 和队列写入 | 暂不拆表层，先由测试固定 schema/优先级 | 高：任何拆分都可能影响线上主库 |
+| `app/` | 配置、Domain、Repository、Service、HTTP 与页面模板 | 搜索 SQL 仍集中在较大的 Repository | HTTP 不写 SQL，Service 不读写 HTTP；搜索请求构造已集中到 `app/services/search_request.py` | 中：搜索语义和 public/admin 权限敏感 |
+| `crawler/` | API client、详情处理、标准化、扫描策略和流程编排 | 新旧命令同时存在 | 详情响应边界集中在 `crawler/detail_pipeline.py`；新逻辑走 discover/trickle，旧命令仅兼容或人工修复 | 中：涉及源 API 成本与停止条件 |
+| `storage/` | SQLite schema、内容写入与可重建旁路索引 | `post_writer.py` 仍承担 schema、内容和索引职责 | 队列认领和终态转换已抽到 `storage/queue_repository.py`，`post_writer.py` 保留兼容 facade；后续再按测试拆内容/schema | 高：任何拆分都可能影响线上主库 |
 | `jobs/` | Railway crawler scheduler | scheduler 同时保留新旧两种模式 | 明确 trickle 为推荐模式，旧模式只兼容 | 高：直接影响线上请求量和暂停恢复 |
 | `app/templates/` | public/admin 页面和共享 UI 资源 | 两页仍有各自的搜索与渲染逻辑 | 主题、设置等共同逻辑只维护一份，权限展示允许不同 | 中：需要浏览器与 HTTP 契约回归 |
 | `tools/operations/` | 操作员明确执行的维护命令 | 部分命令会处理敏感数据或替换 DB | 每个命令说明输入、输出、可逆性和权限边界 | 中到高 |
@@ -59,6 +59,9 @@ posts、comments、search_index、crawl_state
 | `crawler/README.md` 与 `docs/operations/crawler.md` | 内容重复且已发生新旧调度冲突 | 前者缩为模块说明，后者成为唯一运维事实源 |
 | 根 README、Railway 文档中的旧 scheduler 说明 | 与当前 trickle/quota 代码不一致 | 改为推荐主线，并保留旧模式的兼容说明 |
 | `server.py`、`crawler_db.py` | 不是冗余，是受支持兼容入口 | 保留，不迁移实现回根目录 |
+| `crawler/detail_pipeline.py` | 详情响应标准化和安全校验的共享边界 | 已由 crawler 与 Admin 共用 | 保留，后续扩展详情入库状态机时继续从这里分离 |
+| `storage/queue_repository.py` | 队列 claim fencing 和终态转换 | 依赖 store facade 的 schema 初始化 | 保留；trickle 队列 worker 的终态写入走 token 围栏 |
+| `app/services/search_request.py` | numbered/cursor search 共用的 SearchQuery 构造 | 查询 SQL 仍在 SearchRepository | 保留，避免两条 HTTP 搜索路径继续漂移 |
 | 根目录抓包脚本 | 有偶发调试价值，但不是生产入口 | 已迁入 `tools/capture/` 并去除个人安装路径和固定 Web 密码 |
 | 论坛词频实验 | 与网站、搜索和 crawler 运行无关 | 已删除；需要时从 Git 历史恢复 |
 | 已被当前 schema 覆盖的 migration | 当前运行时和恢复主线均不调用 | 已删除 `migrate_slim_raw_json.py` 与 `add_admin_search_indexes.py` |

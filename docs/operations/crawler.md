@@ -85,7 +85,7 @@ python crawler_db.py trickle-fill --db-path data\posts.db --limit 5 --min-delay 
 
 - 新发现帖子先以 `posts.crawl_status='list_only'` 写入，正文来自列表快照，评论尚未补全。
 - 详情成功后帖子更新为 `crawl_status='full'`，同时刷新 `comments`、SQLite FTS 和旁路索引。
-- `crawler_queue` 保存详情候选、优先级、原因、状态、尝试次数、最后错误以及 `in_progress` 认领的 owner/lane/租约；租约过期会在下一轮恢复为 pending。
+- `crawler_queue` 保存详情候选、优先级、原因、状态、尝试次数、最后错误以及 `in_progress` 认领的 owner/lane/token/租约；租约过期会在下一轮恢复为 pending，由 queue 认领的旧 worker 终态更新必须经过 claim token 围栏。
 - `crawl_state` 保存各命令最近一次统计。
 
 旧数据库首次运行新命令时，`SQLitePostStore.ensure_runtime_schema()` 会补齐这些运行字段和表。首次运行前应预留迁移时间并先做只读 schema 检查；不要把运行中的主库交给未经当前 schema 验证的瘦身脚本。

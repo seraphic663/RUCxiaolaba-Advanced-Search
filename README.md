@@ -103,8 +103,9 @@ ruff check .
 server.py                  Web 兼容启动入口
 crawler_db.py              爬虫兼容 CLI 入口
 app/                       Web、Repository、Service、HTTP 路由与页面模板
-crawler/                   API Client、规范化、扫描策略与执行服务
-storage/post_writer.py      SQLite 写入与搜索索引维护
+crawler/                   API Client、详情处理、规范化、扫描策略与执行服务
+storage/post_writer.py      SQLite 内容写入与搜索索引维护
+storage/queue_repository.py crawler 队列认领、围栏和终态转换
 demo/                      可提交的合成演示数据库
 jobs/                      Railway crawler 调度
 tools/                     迁移、审计、抓包、性能和人工运维工具；见 tools/README.md
