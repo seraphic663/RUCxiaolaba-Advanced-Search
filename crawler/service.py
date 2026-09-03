@@ -7,6 +7,7 @@ import os
 import random
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,7 @@ from crawler.task_routing import (
     normalize_task_type,
 )
 from storage.post_writer import SQLitePostStore, has_media_json, safe_int
+from storage.queue_repository import QueueClaim
 
 CHINA_TZ = timezone(timedelta(hours=8))
 OBSERVED_MISSING_PRIORITY = 60
@@ -825,11 +827,14 @@ class CrawlerService:
                     lane_for_task = getattr(client, "lane_for_task", None)
                     if lane_for_task is not None:
                         expected_lane = str(lane_for_task(task_type) or "")
+                    claim_token = uuid.uuid4().hex
+                    claim = QueueClaim(claim_owner, claim_token, expected_lane)
                     claimed = dry_run or store.claim_crawler_queue_item(
                         post_id,
                         owner=claim_owner,
                         lane_id=expected_lane,
                         claim_ttl_seconds=claim_ttl_seconds,
+                        token=claim_token,
                         commit=False,
                     )
                     if not claimed:
@@ -852,6 +857,7 @@ class CrawlerService:
                             post_id,
                             owner=claim_owner,
                             lane_id=routed_lane,
+                            claim=claim,
                             commit=False,
                         )
                     if error:
@@ -869,6 +875,7 @@ class CrawlerService:
                                     status="pending",
                                     last_error="",
                                     increment_attempts=False,
+                                    claim=claim,
                                     commit=False,
                                 )
                                 store.conn.commit()
@@ -892,6 +899,7 @@ class CrawlerService:
                                     last_error=error,
                                     increment_attempts=True,
                                     record_observation=True,
+                                    claim=claim,
                                     commit=False,
                                 )
                                 if error == "not_found":
@@ -937,6 +945,7 @@ class CrawlerService:
                                         last_error=error,
                                         retry_delay_seconds=transient_retry_delay,
                                         max_same_observation_attempts=max_transient_attempts,
+                                        claim=claim,
                                         commit=False,
                                     )
                                     if status == "pending":
@@ -953,6 +962,7 @@ class CrawlerService:
                                         max_same_observation_attempts=(
                                             max_observation_attempts
                                         ),
+                                        claim=claim,
                                         commit=False,
                                     )
                                     if status == "pending":
@@ -992,6 +1002,7 @@ class CrawlerService:
                                     status="pending",
                                     last_error=error,
                                     increment_attempts=True,
+                                    claim=claim,
                                     commit=False,
                                 )
                             else:
@@ -1000,6 +1011,7 @@ class CrawlerService:
                                     last_error=error,
                                     retry_delay_seconds=transient_retry_delay,
                                     max_same_observation_attempts=max_transient_attempts,
+                                    claim=claim,
                                     commit=False,
                                 )
                                 if status == "pending":
@@ -1064,6 +1076,7 @@ class CrawlerService:
                                 "comment_rows_incomplete"
                                 in str(item["reason"] or "").split("|")
                             ),
+                            claim=claim,
                             commit=False,
                         )
                         if queue_status == "pending":
@@ -1738,12 +1751,12 @@ class CrawlerService:
                     return post_id, None, f"error:{last_error}"
                 if not data:
                     return post_id, None, "missing"
-                parsed = normalize_detail(str(post_id), data)
+                parsed_result = parse_detail_payload(str(post_id), data)
+                parsed = parsed_result.parsed
                 if parsed is None:
                     return post_id, None, "foreign"
-                post, comments = parsed
-                payload_error = validate_normalized_detail(post, comments)
-                if payload_error:
+                if parsed_result.error:
+                    payload_error = parsed_result.error.removeprefix("suspicious_payload:")
                     return post_id, parsed, f"suspicious:{payload_error}"
                 return post_id, parsed, "ok"
             return post_id, None, f"error:{last_error}"

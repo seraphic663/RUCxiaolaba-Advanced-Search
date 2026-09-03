@@ -10,7 +10,6 @@ import json
 import os
 import sqlite3
 import time
-import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
@@ -22,6 +21,7 @@ from crawler.task_routing import (
     TASK_ID_FOLLOWUP,
     normalize_task_type,
 )
+from storage.queue_repository import CrawlerQueueRepository, QueueClaim
 
 
 def safe_int(value, default=0) -> int:
@@ -187,6 +187,7 @@ class SQLitePostStore:
         self.conn.execute("pragma mmap_size=0")
         self.conn.execute("pragma cache_size=-2000")
         self.conn.execute("pragma temp_store=file")
+        self.queue_repository = CrawlerQueueRepository(self)
         self._has_bigram_index = False
         self._has_symbol_index = False
         if self.bigram_path:
@@ -2557,43 +2558,18 @@ class SQLitePostStore:
         token: str = "",
         commit: bool = True,
     ) -> bool:
-        """Atomically move one due pending row to ``in_progress``.
-
-        The conditional status predicate is the duplicate-work guard.  A
-        second process may have selected the same row, but only one can change
-        it from pending to in-progress and receive ``True``.
-        """
-        self.ensure_crawler_queue(commit=False)
-        now = now_text()
-        claim_token = str(token or uuid.uuid4().hex)
-        cursor = self.conn.execute(
-            """
-            update crawler_queue
-            set status='in_progress',
-                claim_owner=?, claim_lane_id=?, claim_token=?,
-                claim_started_at=?, claim_until=?,
-                last_lane_id=case when ?='' then last_lane_id else ? end,
-                updated_at=?
-            where post_id=?
-              and status='pending'
-              and (next_attempt_at='' or next_attempt_at <= ?)
-            """,
-            (
-                str(owner),
-                str(lane_id or ""),
-                claim_token,
-                now,
-                later_text(claim_ttl_seconds),
-                str(lane_id or ""),
-                str(lane_id or ""),
-                now,
-                str(post_id),
-                now,
-            ),
+        """Atomically move one due pending row to ``in_progress``."""
+        return (
+            self.queue_repository.claim(
+                post_id,
+                owner=owner,
+                lane_id=lane_id,
+                claim_ttl_seconds=claim_ttl_seconds,
+                token=token,
+                commit=commit,
+            )
+            is not None
         )
-        if commit:
-            self.conn.commit()
-        return bool(cursor.rowcount)
 
     def set_crawler_queue_claim_lane(
         self,
@@ -2601,21 +2577,17 @@ class SQLitePostStore:
         *,
         owner: str,
         lane_id: str,
+        claim: QueueClaim | None = None,
         commit: bool = True,
     ) -> bool:
         """Persist the actual routed lane while a claim is active."""
-        self.ensure_crawler_queue(commit=False)
-        cursor = self.conn.execute(
-            """
-            update crawler_queue
-            set claim_lane_id=?, last_lane_id=?, updated_at=?
-            where post_id=? and status='in_progress' and claim_owner=?
-            """,
-            (str(lane_id or ""), str(lane_id or ""), now_text(), str(post_id), str(owner)),
+        return self.queue_repository.set_claim_lane(
+            post_id,
+            owner=owner,
+            lane_id=lane_id,
+            claim=claim,
+            commit=commit,
         )
-        if commit:
-            self.conn.commit()
-        return bool(cursor.rowcount)
 
     def crawler_queue_pending_snapshot(self) -> dict[str, int]:
         """Return mutually useful pending-lane counts for run-level deltas."""
@@ -2682,32 +2654,19 @@ class SQLitePostStore:
         increment_attempts: bool = True,
         record_observation: bool = False,
         next_attempt_at: str = "",
+        claim: QueueClaim | None = None,
         commit: bool = True,
-    ) -> None:
-        self.ensure_crawler_queue(commit=False)
-        attempts_sql = "attempts + 1" if increment_attempts else "attempts"
-        observation_sql = ""
-        if record_observation:
-            observation_sql = """
-                , last_attempt_list_comment_count=list_comment_count
-                , last_attempt_list_update_time=list_update_time
-                , same_observation_attempts=same_observation_attempts + 1
-            """
-        self.conn.execute(
-            f"""
-            update crawler_queue
-            set status=?, last_error=?, attempts={attempts_sql},
-                next_attempt_at=?,
-                claim_owner='', claim_lane_id='', claim_token='',
-                claim_started_at='', claim_until='',
-                updated_at=?
-                {observation_sql}
-            where post_id=?
-            """,
-            (status, last_error, next_attempt_at, now_text(), str(post_id)),
+    ) -> bool:
+        return self.queue_repository.mark(
+            post_id,
+            status=status,
+            last_error=last_error,
+            increment_attempts=increment_attempts,
+            record_observation=record_observation,
+            next_attempt_at=next_attempt_at,
+            claim=claim,
+            commit=commit,
         )
-        if commit:
-            self.conn.commit()
 
     def finish_crawler_queue_detail(
         self,
@@ -2717,69 +2676,19 @@ class SQLitePostStore:
         retry_delay_seconds: int,
         max_same_observation_attempts: int,
         accept_detail_count: bool = False,
+        claim: QueueClaim | None = None,
         commit: bool = True,
     ) -> str:
-        """Record the exact list observation consumed by a detail response."""
-        self.ensure_crawler_queue(commit=False)
-        row, observation_attempts = self._crawler_queue_observation_attempt(post_id)
-        if row is None:
-            return "missing"
-        list_count = safe_int(row["list_comment_count"])
-        detail_count = safe_int(detail_comment_count)
-        if accept_detail_count:
-            # A local row-count audit has no newer list observation to defend.
-            # Once the response passes payload validation, its current count is
-            # authoritative even when comments were deleted upstream.
-            list_count = detail_count
-        if detail_count >= list_count:
-            status = "done"
-            next_attempt_at = ""
-            last_error = ""
-        elif observation_attempts < max(1, int(max_same_observation_attempts)):
-            status = "pending"
-            next_attempt_at = later_text(retry_delay_seconds)
-            last_error = (
-                f"list_detail_comment_gap:list={list_count},detail={detail_count},"
-                f"retry={observation_attempts}"
-            )
-        else:
-            status = "deferred"
-            next_attempt_at = ""
-            last_error = (
-                f"list_detail_comment_gap:list={list_count},detail={detail_count},"
-                f"deferred={observation_attempts}"
-            )
-        self.conn.execute(
-            """
-            update crawler_queue
-            set status=?, list_comment_count=?, db_comment_count=?, last_error=?,
-                attempts=attempts + 1,
-                last_attempt_list_comment_count=?,
-                last_attempt_list_update_time=list_update_time,
-                last_detail_comment_count=?,
-                same_observation_attempts=?,
-                next_attempt_at=?,
-                claim_owner='', claim_lane_id='', claim_token='',
-                claim_started_at='', claim_until='',
-                updated_at=?
-            where post_id=?
-            """,
-            (
-                status,
-                list_count,
-                detail_count,
-                last_error,
-                list_count,
-                detail_count,
-                observation_attempts,
-                next_attempt_at,
-                now_text(),
-                str(post_id),
-            ),
+        """Record the list observation consumed by a detail response."""
+        return self.queue_repository.finish_detail(
+            post_id,
+            detail_comment_count=detail_comment_count,
+            retry_delay_seconds=retry_delay_seconds,
+            max_same_observation_attempts=max_same_observation_attempts,
+            accept_detail_count=accept_detail_count,
+            claim=claim,
+            commit=commit,
         )
-        if commit:
-            self.conn.commit()
-        return status
 
     def defer_crawler_queue_failure(
         self,
@@ -2788,69 +2697,17 @@ class SQLitePostStore:
         last_error: str,
         retry_delay_seconds: int,
         max_same_observation_attempts: int,
+        claim: QueueClaim | None = None,
         commit: bool = True,
     ) -> str:
-        self.ensure_crawler_queue(commit=False)
-        row, observation_attempts = self._crawler_queue_observation_attempt(post_id)
-        if row is None:
-            return "missing"
-        terminal = observation_attempts >= max(1, int(max_same_observation_attempts))
-        status = "failed" if terminal else "pending"
-        next_attempt_at = "" if terminal else later_text(retry_delay_seconds)
-        self.conn.execute(
-            """
-            update crawler_queue
-            set status=?, last_error=?, attempts=attempts + 1,
-                last_attempt_list_comment_count=list_comment_count,
-                last_attempt_list_update_time=list_update_time,
-                same_observation_attempts=?, next_attempt_at=?,
-                claim_owner='', claim_lane_id='', claim_token='',
-                claim_started_at='', claim_until='',
-                updated_at=?
-            where post_id=?
-            """,
-            (
-                status,
-                last_error,
-                observation_attempts,
-                next_attempt_at,
-                now_text(),
-                str(post_id),
-            ),
+        return self.queue_repository.defer_failure(
+            post_id,
+            last_error=last_error,
+            retry_delay_seconds=retry_delay_seconds,
+            max_same_observation_attempts=max_same_observation_attempts,
+            claim=claim,
+            commit=commit,
         )
-        if commit:
-            self.conn.commit()
-        return status
-
-    def _crawler_queue_observation_attempt(
-        self,
-        post_id: str,
-    ) -> tuple[sqlite3.Row | None, int]:
-        row = self.conn.execute(
-            """
-            select list_comment_count, list_update_time,
-                   last_attempt_list_comment_count,
-                   last_attempt_list_update_time,
-                   same_observation_attempts
-            from crawler_queue where post_id=?
-            """,
-            (str(post_id),),
-        ).fetchone()
-        if row is None:
-            return None, 0
-        same_observation = (
-            row["last_attempt_list_comment_count"] is not None
-            and safe_int(row["last_attempt_list_comment_count"])
-            == safe_int(row["list_comment_count"])
-            and str(row["last_attempt_list_update_time"] or "")
-            == str(row["list_update_time"] or "")
-        )
-        attempts = (
-            safe_int(row["same_observation_attempts"]) + 1
-            if same_observation
-            else 1
-        )
-        return row, attempts
 
     def set_state(self, key: str, value: str, commit: bool = True) -> None:
         self.conn.execute(
