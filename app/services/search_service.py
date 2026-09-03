@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from app.domain.search import SearchQuery
 from app.repositories.search_repository import SearchRepository
+from app.services.search_request import build_search_query
 
 
 class SearchService:
@@ -41,27 +41,25 @@ class SearchService:
         name_match: str = "exact",
         gender_method: str = "combined",
     ) -> dict:
-        request = SearchQuery(
-            text=query,
-            sort_by=sort_by,
-            page=page,
-            limit=limit,
+        request = build_search_query(
+            query,
+            sort_by,
+            page,
+            limit,
             category=category,
             l2=l2,
             date_from=date_from,
             date_to=date_to,
             scope=scope,
-            user_id=uid,
-            user_name=uname,
+            uid=uid,
+            uname=uname,
             admin=admin,
             identity=identity,
             source_state=source_state,
-            gender_method=gender_method,
-            admin_fields=frozenset(
-                admin_fields or {"body", "cmt", "uid", "name"}
-            ),
+            admin_fields=admin_fields,
             id_match=id_match,
             name_match=name_match,
+            gender_method=gender_method,
         )
         return self.repository.search(request)
 
@@ -92,27 +90,25 @@ class SearchService:
         name_match: str = "exact",
         gender_method: str = "combined",
     ) -> dict:
-        request = SearchQuery(
-            text=query,
-            sort_by=sort_by,
-            page=page,
-            limit=limit,
+        request = build_search_query(
+            query,
+            sort_by,
+            page,
+            limit,
             category=category,
             l2=l2,
             date_from=date_from,
             date_to=date_to,
             scope=scope,
-            user_id=uid,
-            user_name=uname,
+            uid=uid,
+            uname=uname,
             admin=admin,
             identity=identity,
             source_state=source_state,
-            gender_method=gender_method,
-            admin_fields=frozenset(
-                admin_fields or {"body", "cmt", "uid", "name"}
-            ),
+            admin_fields=admin_fields,
             id_match=id_match,
             name_match=name_match,
+            gender_method=gender_method,
         )
         return self.repository.search_cursor(
             request,
