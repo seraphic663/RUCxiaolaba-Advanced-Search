@@ -65,7 +65,7 @@ trickle-fill     新 cookie 默认每 10 分钟，每轮最多 18 条详情
 trickle-fill-history  默认每 30 分钟，每轮最多 12 条历史详情；与当前 ID 表共用去重队列但走独立任务路由
 ```
 
-调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 模式启动后首轮新帖发现约等 1 分钟、活跃发现约等 3 分钟、详情补全约等 5 分钟。列表请求按列表 lane 的 release window 控制；普通详情从 00:00 起按详情曲线释放，新详情 lane 还在 04:00–06:00 有额外释放，不应笼统写成“11:00 前所有 crawler 都不运行”。更新完成后 Web 无需重启。
+调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 队列 worker 另外用 owner/token 认领围栏防止租约过期后的旧 worker 覆盖新 worker。trickle 模式启动后首轮新帖发现约等 1 分钟、活跃发现约等 3 分钟、详情补全约等 5 分钟。列表请求按列表 lane 的 release window 控制；普通详情从 00:00 起按详情曲线释放，新详情 lane 还在 04:00–06:00 有额外释放，不应笼统写成“11:00 前所有 crawler 都不运行”。更新完成后 Web 无需重启。
 
 主要间隔变量，单位为秒：
 

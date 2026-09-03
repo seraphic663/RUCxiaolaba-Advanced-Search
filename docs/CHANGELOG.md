@@ -1,5 +1,13 @@
 # 更新记录
 
+## 2026-09-04：分阶段模块化详情、搜索请求与队列
+
+- 手工核对并同步当前 crawler quota、数据库运行表、迁移工具边界和历史快照说明。
+- 抽出 `crawler/detail_pipeline.py`，统一 crawler 与 Admin 的详情响应标准化和可疑 payload 判定。
+- 抽出 `app/services/search_request.py`，让 numbered search 和 cursor search 共用同一套 `SearchQuery` 构造。
+- 抽出 `storage/queue_repository.py`，集中队列认领和终态转换，并用 owner/token fencing 防止过期 worker 覆盖重新认领的任务。
+- 新增详情边界、搜索请求和队列认领回归测试；当前全量测试为 180 passed。
+
 ## 2026-06-13：慢速搜索按页游标扫描
 
 - 单字 LIKE 和复杂 Admin 查询按所选排序分批扫描，找到一页即返回。

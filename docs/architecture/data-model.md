@@ -113,13 +113,13 @@ body     正文或评论文本
 
 | 表 | 用途 |
 |---|---|
-| `crawler_queue` | 保存待补详情帖子、`task_type` 路由、priority、reason、状态、列表/数据库评论数、重试信息和原子认领租约/lane |
+| `crawler_queue` | 保存待补详情帖子、`task_type` 路由、priority、reason、状态、列表/数据库评论数、重试信息和带 owner/token 的原子认领租约/lane |
 | `post_id_ledger` | 保存 ID 首次/最近由 list1 或 list2 观察的来源、事件键、详情状态、详情时间线和帖子存在性 |
 | `list2_observation_log` | 保存 list2 事件键，避免同一活跃观察重复触发详情 |
 | `crawler_run_history` | 保存 scheduler/crawler 运行的开始、结束、来源请求和错误摘要；没有记录时不能据此证明最近没有运行 |
 | `crawler_quarantine_posts` | 保存被可疑详情响应校验拒绝覆盖的帖子及原因，供人工复核 |
 
-它们是 crawler 的持久运行状态，不等于帖子内容覆盖率。完整度需要同时查看 `posts.crawl_status`、`comments`、queue 状态和各命令统计。
+它们是 crawler 的持久运行状态，不等于帖子内容覆盖率。完整度需要同时查看 `posts.crawl_status`、`comments`、queue 状态和各命令统计。由 queue 认领的详情 worker 在完成、失败或重试时必须带回本次 claim token；租约过期后旧 worker 的终态写入应被拒绝，不能覆盖重新认领任务。
 
 ## 为什么不再保留 posts.comments_json
 

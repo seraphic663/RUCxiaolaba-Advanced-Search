@@ -8,6 +8,7 @@
 | [data-model](architecture/data-model.md) | SQLite 表结构、索引、数据规模 |
 | [api-reference](architecture/api-reference.md) | 所有已知 API 端点、参数、响应码 |
 | [refactoring](architecture/refactoring.md) | 当前目录职责、兼容入口、冗余判断和文件生命周期 |
+| [module-map](architecture/module-map.md) | 核心 Python 文件的用途、调用方式、副作用和测试 |
 
 ## operations/ — 如何运行
 
