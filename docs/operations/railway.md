@@ -65,7 +65,7 @@ trickle-fill     新 cookie 默认每 10 分钟，每轮最多 18 条详情
 trickle-fill-history  默认每 30 分钟，每轮最多 12 条历史详情；与当前 ID 表共用去重队列但走独立任务路由
 ```
 
-调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 模式启动后首轮新帖发现约等 1 分钟、活跃发现约等 3 分钟、详情补全约等 5 分钟，但默认 11:00 前仍会被 release window 拦截。更新完成后 Web 无需重启。
+调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 模式启动后首轮新帖发现约等 1 分钟、活跃发现约等 3 分钟、详情补全约等 5 分钟。列表请求按列表 lane 的 release window 控制；普通详情从 00:00 起按详情曲线释放，新详情 lane 还在 04:00–06:00 有额外释放，不应笼统写成“11:00 前所有 crawler 都不运行”。更新完成后 Web 无需重启。
 
 主要间隔变量，单位为秒：
 
@@ -85,7 +85,7 @@ CRAWLER_HISTORY_TRICKLE_INTERVAL=1800
 
 完整请求成本、队列优先级、每日预算、阶梯释放、自适应缩放和暂停语义统一见 [爬虫运行与调度](crawler.md)，本页不再复制完整参数表。
 
-如果没有设置 `CRAWLER_TRICKLE_ENABLED=1`，scheduler 仍会运行兼容的 `sync-latest`、`sync-active`、`scan-history` 和每周 `scan-id-range`。该分支用于保持旧部署兼容，不是当前推荐配置。
+如果没有设置 `CRAWLER_TRICKLE_ENABLED=1`，scheduler 仍会运行兼容的 `sync-latest`、`sync-active`、`scan-history` 和每周 `scan-id-range`。该分支用于保持旧部署兼容，不是当前推荐配置；旧分支的自动配额语义和详情上限应视为待收紧的兼容面，不能在没有额外人工确认时作为日常生产模式。
 
 ## 限流与 Cookie
 
@@ -108,7 +108,7 @@ python crawler_db.py scan-id-range --start-id 5004321 --end-id 5066654 --db-path
 
 ## 运行库瘦身迁移
 
-需要删除旧字段或重建主库 schema 时，不要在线上原地 `ALTER/VACUUM`。先暂停 crawler，在 Volume 内生成替换库并验证：
+需要删除旧字段或重建主库 schema 时，不要在线上原地 `ALTER/VACUUM`。当前 `compact_runtime_db` 仍按旧版精简 schema 生成替换库；在它完成当前 crawler 运行状态的全量保留前，不得对现有运行库执行 `migrate`/`swap`。下面流程只表示未来完成兼容改造后的目标流程；当前先执行 `plan --quick-check`，并把结果作为迁移前检查记录：
 
 ```bash
 python -m tools.operations.compact_runtime_db plan --db /app/data/posts.db --bigram /app/data/bigram_index.db --symbol /app/data/symbol_index.db
