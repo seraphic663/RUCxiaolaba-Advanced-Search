@@ -1,5 +1,7 @@
 # 爬虫运行与调度
 
+> 本页按 2026-09-04 当前代码核对。若代码、环境变量示例和历史报告不一致，以当前 `jobs/scheduler.py` 和本文的当前配置段为准；历史测量只用于解释当时现象。
+
 本文档是爬虫命令、停止条件、队列、配额和 Railway 调度的当前唯一运维事实源。`crawler/README.md` 只说明模块边界，不再复制运行手册。
 
 > 合规边界：只能使用本人合法取得且有权使用的 cookie，不得规避登录、验证码、签名、限流或权限检查。持续抓取、全量扫描、公开部署或共享真实数据前，应取得平台运营方的书面授权。无法确认授权范围时，不要连接真实接口。
@@ -86,7 +88,9 @@ python crawler_db.py trickle-fill --db-path data\posts.db --limit 5 --min-delay 
 - `crawler_queue` 保存详情候选、优先级、原因、状态、尝试次数、最后错误以及 `in_progress` 认领的 owner/lane/租约；租约过期会在下一轮恢复为 pending。
 - `crawl_state` 保存各命令最近一次统计。
 
-旧数据库首次运行新命令时，`SQLitePostStore.ensure_runtime_schema()` 会补齐这些运行字段和表。
+旧数据库首次运行新命令时，`SQLitePostStore.ensure_runtime_schema()` 会补齐这些运行字段和表。首次运行前应预留迁移时间并先做只读 schema 检查；不要把运行中的主库交给未经当前 schema 验证的瘦身脚本。
+
+特别注意：`tools.operations.compact_runtime_db` 当前仍按旧版精简结构生成替换库，不能默认保留 crawler queue、ID 台账、观察日志、删除记录和其他运行状态。未完成全量 schema/state 对照、临时库验证和回滚演练前，只能使用它的 `plan --quick-check` 做检查，不得执行 `migrate` 或 `swap`。
 
 ## 队列优先级
 
@@ -141,7 +145,7 @@ CRAWLER_TRICKLE_ENABLED=1
 CRAWLER_TRICKLE_SINCE=<需要持续覆盖的起始时间>
 ```
 
-代码默认预算：
+代码默认预算（以当前 `jobs/scheduler.py` 为准）：
 
 ```text
 CRAWLER_DAILY_NEW_LIST_BUDGET=80
@@ -153,12 +157,13 @@ CRAWLER_TRICKLE_LIMIT_CAP=18
 CRAWLER_TRICKLE_REFRESH_LIMIT=5
 CRAWLER_TRICKLE_MIN_DELAY=8
 CRAWLER_TRICKLE_MAX_DELAY=14
-CRAWLER_QUOTA_RELEASE_STEPS=11=0.20,14=0.35,17=0.50,20=0.70,21=0.85,22=1.00
-CRAWLER_DETAIL_QUOTA_RELEASE_STEPS=10=0.20,12=0.40,15=0.65,18=0.82,20=0.93,21=1.00
+CRAWLER_QUOTA_RELEASE_STEPS=11=0.20,14=0.35,17=0.50,20=0.65,21=0.75,22=0.88,23=0.97,23:30=1.00
+CRAWLER_DETAIL_QUOTA_RELEASE_STEPS=0=0.05,6=0.10,10=0.20,12=0.38,15=0.58,18=0.74,20=0.84,21=0.91,22=0.97,23=0.99,23:30=1.00
+CRAWLER_NEW_DETAIL_QUOTA_RELEASE_STEPS=0=0.05,04:00=0.75,06:00=1.00
 CRAWLER_QUOTA_ADAPTIVE_ENABLED=1
-CRAWLER_QUOTA_ADAPTIVE_SAFETY=0.80
 CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS=14
-CRAWLER_QUOTA_RATE_LIMIT_EXCLUDED_DATES=2026-08-06
+# 默认空；只有确认某天的限流来自共享 session 的人工使用时才临时设置
+# CRAWLER_QUOTA_RATE_LIMIT_EXCLUDED_DATES=YYYY-MM-DD
 CRAWLER_DETAIL_ADAPTIVE_ENABLED=1
 CRAWLER_DETAIL_ADAPTIVE_MIN=900
 CRAWLER_DETAIL_ADAPTIVE_START=900
@@ -195,7 +200,7 @@ Admin 使用独立额外额度：每天 20 次候选预览和 10 次人工详情
 
 预览只写主库旁的 `.admin_crawl.db`，10 分钟后失效，不会写入 `posts`。人工任务也保存在该 sidecar，服务重启后会恢复未完成任务。详情成功后在同一写入路径更新 SQLite FTS、Bigram 和可用的 Symbol sidecar；上游声称有评论却返回空评论、正文为空或社区不匹配时拒绝覆盖旧数据。
 
-scheduler 只用剩余额度裁剪子任务的 `max-pages` 或 `limit`，不再整批预扣。scheduler 启动的子进程会在每一次真实 HTTP 请求前原子领取 1 次对应额度，因此 quota 文件记录的是实际发起的源请求；部署中断、提前停止、重复页和空页不会再虚扣整批额度。北京时间跨日后 release 重新归零，仍在运行的旧任务会在下一次请求前正常停止，不能偷吃次日 11:00 前的额度。
+scheduler 只用剩余额度裁剪子任务的 `max-pages` 或 `limit`，不再整批预扣。scheduler 启动的子进程会在每一次真实 HTTP 请求前原子领取 1 次对应额度，因此 quota 文件记录的是实际发起的源请求；部署中断、提前停止、重复页和空页不会再虚扣整批额度。北京时间跨日后 release 重新归零，仍在运行的旧任务会在下一次请求前按新一天对应 lane 的已释放额度重新判断；不能把列表额度的 11:00 首次释放规则套用到普通详情或新详情 lane。
 
 多个任务同时过期时按 `trickle-fill`、`discover-active`、`discover-latest` 的价值顺序运行；间隔按开始时间计算，所以“每 10 分钟详情”是接近真实的 start-to-start 节拍，不再变成“任务耗时 + 10 分钟”。列表日志保留 `queued` 作为候选观察数，同时新增 `queue_inserted`、`queue_reopened`、`queue_updated`、`queue_unchanged`；连续无收益页按真实队列变化判断。
 

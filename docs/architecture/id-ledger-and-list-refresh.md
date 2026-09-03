@@ -1,6 +1,6 @@
 # ID 台账与列表刷新方案
 
-状态：已接入现有 crawler/scheduler；`crawler/ledger_monitor.py` 仍是本地一次性建表工具，Railway 使用主 scheduler、可选旧 lane worker 和持久三阶段状态。两个 worker 共用同一个去重队列与 quota 文件，不创建第二个数据库或独立队列。旧 coverage 门槛和列表内部配额门槛已从主流程中暂停；详情仍保留独立详情预算和真实上游限流熔断。
+状态：已接入现有 crawler/scheduler；ID 台账实现位于 `crawler/id_ledger.py`，列表与详情编排位于 `crawler/service.py`，Railway 使用主 scheduler、可选旧 lane worker 和持久三阶段状态。两个 worker 共用同一个去重队列与 quota 文件，不创建第二个数据库或独立队列。旧 coverage 门槛和列表内部配额门槛已从主流程中暂停；详情仍保留独立详情预算和真实上游限流熔断。
 
 本地 2026-08-12 的初始 list1 建表记录了 397 个唯一 ID，源端 `create_time` 覆盖 `2026-08-10 19:14:57` 到 `2026-08-12 07:02:25`（北京时间，约 35 小时 47 分钟）。这说明初始 20 页是一个按帖子创建时间排序的约 36 小时内容窗口；线上重新建表时应以 `post_id_ledger` / `crawler_run_history` 实际记录的边界为准，不能把这个时间段硬编码成永久结论。
 

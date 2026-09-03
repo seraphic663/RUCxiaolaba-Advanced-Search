@@ -11,6 +11,8 @@
 | `benchmarks/` | 性能基准 | 只手动运行，不属于普通测试；数据前提见该目录 README |
 | `demo/` | 合成演示数据 | 可重复生成，不读取真实主库 |
 
+`operations/fetch_messages.py` 不属于帖子搜索主线，可能读取私信和账户相关数据，只能按 [数据来源、隐私与合规说明](../docs/legal-and-data.md) 处理；默认不要运行、上传或公开其输出。
+
 常用入口：
 
 ```powershell
