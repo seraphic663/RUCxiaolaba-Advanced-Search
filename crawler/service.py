@@ -14,6 +14,7 @@ from pathlib import Path
 
 from crawler.client import MiniProgramClient
 from crawler.cookie_pool import CookiePoolClient
+from crawler.detail_pipeline import parse_detail_payload
 from crawler.id_ledger import (
     ledger_state,
     mark_detail_finished,
@@ -22,10 +23,6 @@ from crawler.id_ledger import (
     set_ledger_state,
 )
 from crawler.lock import database_write_lock
-from crawler.normalizer import (
-    normalize_detail,
-    validate_normalized_detail,
-)
 from crawler.strategies.page_scan import PageScanProgress
 from crawler.task_routing import (
     TASK_HISTORY_DETAIL,
@@ -167,13 +164,8 @@ class CrawlerService:
         data, error = self._article(client, post_id, task_type=task_type)
         if error or not data:
             return None
-        parsed = normalize_detail(str(post_id), data)
-        if parsed is None:
-            return None
-        post, comments = parsed
-        if validate_normalized_detail(post, comments):
-            return None
-        return parsed
+        result = parse_detail_payload(str(post_id), data)
+        return result.parsed if result.error is None else None
 
     @staticmethod
     def article_time(article: dict, key: str) -> str:
@@ -236,14 +228,8 @@ class CrawlerService:
         data, error = self._article(client, post_id, task_type=task_type)
         if error or not data:
             return None, error or "empty_detail"
-        parsed = normalize_detail(str(post_id), data)
-        if parsed is None:
-            return None, "foreign_or_invalid"
-        post, comments = parsed
-        payload_error = validate_normalized_detail(post, comments)
-        if payload_error:
-            return parsed, f"suspicious_payload:{payload_error}"
-        return parsed, None
+        result = parse_detail_payload(str(post_id), data)
+        return result.parsed, result.error
 
     @staticmethod
     def merge_partial_detail(

@@ -12,9 +12,9 @@ from pathlib import Path
 
 from app.repositories.admin_crawl_repository import AdminCrawlRepository
 from crawler.client import MiniProgramClient, load_cookie
+from crawler.detail_pipeline import parse_detail_payload
 from crawler.lock import database_write_lock
 from crawler.manual_quota import ManualQuota, ManualQuotaError
-from crawler.normalizer import normalize_detail, validate_normalized_detail
 from storage.post_writer import SQLitePostStore, safe_int
 
 
@@ -322,14 +322,18 @@ class AdminCrawlService:
                     404,
                 )
             raise AdminCrawlError("upstream_error", str(error), 502)
-        parsed = normalize_detail(post_id, data or {})
-        if parsed is None:
+        parsed_result = parse_detail_payload(
+            post_id,
+            data or {},
+            empty_error="foreign_or_invalid",
+        )
+        if parsed_result.parsed is None:
             raise AdminCrawlError("invalid_payload", "上游返回的社区或帖子数据无效", 502)
-        post, comments = parsed
-        payload_error = validate_normalized_detail(post, comments)
-        if payload_error == "empty_content":
+        post, comments = parsed_result.parsed
+        payload_error = parsed_result.error
+        if payload_error == "suspicious_payload:empty_content":
             raise AdminCrawlError("suspicious_payload", "上游正文为空，已保留旧数据", 502)
-        if payload_error == "empty_comments":
+        if payload_error == "suspicious_payload:empty_comments":
             raise AdminCrawlError("suspicious_payload", "上游评论异常为空，已保留旧数据", 502)
         self._update_item(item["job_id"], post_id, status="waiting_write")
         with database_write_lock(self.posts_db, timeout=180):
