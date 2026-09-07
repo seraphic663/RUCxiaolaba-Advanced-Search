@@ -74,14 +74,16 @@ class MiniProgramClient:
             payload = response.json()
         except Exception as exc:
             return None, str(exc)
-        code = payload.get("code")
+        code = str(payload.get("code") or "")
         if code == "0000":
             return payload.get("data", {}), None
-        if code == "1000":
+        if code in {"1000", "7001"}:
             return None, "cookie_expired"
         if code == "0102":
             return None, "not_found"
         message = str(payload.get("message", ""))
+        if "请先登录" in message:
+            return None, "cookie_expired"
         if any(marker in message for marker in RATE_LIMIT_MARKERS):
             return None, f"rate_limited:{message}"
         return None, f"code={code} {message}"
