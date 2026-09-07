@@ -771,7 +771,13 @@ class SearchRepository:
         }
 
     @classmethod
-    def _public_post(cls, row, gender_method: str = "combined") -> dict:
+    def _public_post(
+        cls,
+        row,
+        gender_method: str = "combined",
+        *,
+        include_gender: bool = False,
+    ) -> dict:
         item = {
             "id": row["id"],
             "content": row["content"],
@@ -785,13 +791,14 @@ class SearchRepository:
                 row["real_user_id"] if "real_user_id" in row.keys() else None
             ),
         }
-        gender = cls._gender_from_row(row, gender_method)
-        if gender is not None:
-            item["gender"] = gender
-            item["female_probability"] = gender["female"]
-            item["female_likely"] = gender["female_likely"]
-            item["female_likely_method"] = gender["female_likely_method"]
-            item["gender_classification"] = gender["classification"] or "unknown"
+        if include_gender:
+            gender = cls._gender_from_row(row, gender_method)
+            if gender is not None:
+                item["gender"] = gender
+                item["female_probability"] = gender["female"]
+                item["female_likely"] = gender["female_likely"]
+                item["female_likely_method"] = gender["female_likely_method"]
+                item["gender_classification"] = gender["classification"] or "unknown"
         media = _media_object(
             row["media_json"] if "media_json" in row.keys() else "{}"
         )
@@ -820,7 +827,8 @@ class SearchRepository:
                 "results": [],
             }
 
-        order_by = self._order_by(request.sort_by, request.gender_method)
+        sort_by = request.sort_by if request.admin else "time"
+        order_by = self._order_by(sort_by, request.gender_method)
         use_bigram, use_fts, use_symbol, backend = self._plan(request)
         with self.connect(include_bigram=use_bigram, include_symbol=use_symbol) as conn:
             has_source_state = self._has_column(conn, "posts", "source_state")
@@ -897,7 +905,9 @@ class SearchRepository:
 
         results = []
         for row in rows:
-            item = self._public_post(row, request.gender_method)
+            item = self._public_post(
+                row, request.gender_method, include_gender=request.admin
+            )
             if request.admin:
                 self._add_admin_post_metadata(item, row)
             results.append(item)
@@ -945,7 +955,8 @@ class SearchRepository:
 
         scan_offset = max(0, scan_offset)
         matched_before = max(0, matched_before)
-        order_by = self._order_by(request.sort_by, request.gender_method)
+        sort_by = request.sort_by if request.admin else "time"
+        order_by = self._order_by(sort_by, request.gender_method)
         results: list[dict] = []
         fields = set(request.admin_fields)
         identity_mode = request.admin and bool(fields & ADMIN_IDENTITY_FIELDS)
@@ -1053,7 +1064,9 @@ class SearchRepository:
                         comments.get(str(row["id"]), []),
                         request,
                     ):
-                        item = self._public_post(row, request.gender_method)
+                        item = self._public_post(
+                            row, request.gender_method, include_gender=request.admin
+                        )
                         if request.admin:
                             self._add_admin_post_metadata(item, row)
                         results.append(item)
@@ -1095,7 +1108,8 @@ class SearchRepository:
         """
         scan_offset = max(0, scan_offset)
         matched_before = max(0, matched_before)
-        order_by = self._order_by(request.sort_by, request.gender_method)
+        sort_by = request.sort_by if request.admin else "time"
+        order_by = self._order_by(sort_by, request.gender_method)
         fetch_limit = request.limit + 1
 
         with self.connect() as conn:
@@ -1166,7 +1180,9 @@ class SearchRepository:
         has_more = len(rows) > request.limit
         results = []
         for row in page_rows:
-            item = self._public_post(row, request.gender_method)
+            item = self._public_post(
+                row, request.gender_method, include_gender=request.admin
+            )
             if request.admin:
                 self._add_admin_post_metadata(item, row)
             results.append(item)
@@ -1229,7 +1245,9 @@ class SearchRepository:
         if not self.posts_db.exists():
             return None
         gender_method = self._normalize_gender_method(gender_method)
-        if gender_sort not in {"time", "female_desc", "female_asc"}:
+        if not admin:
+            gender_sort = "time"
+        elif gender_sort not in {"time", "female_desc", "female_asc"}:
             gender_sort = "time"
         with self.connect() as conn:
             comment_media_sql = (
@@ -1285,13 +1303,14 @@ class SearchRepository:
                 "children": children,
                 "reply_comment_list": children,
             }
-            gender = self._gender_from_row(row, gender_method)
-            if gender is not None:
-                item["gender"] = gender
-                item["female_probability"] = gender["female"]
-                item["female_likely"] = gender["female_likely"]
-                item["female_likely_method"] = gender["female_likely_method"]
-                item["gender_classification"] = gender["classification"] or "unknown"
+            if admin:
+                gender = self._gender_from_row(row, gender_method)
+                if gender is not None:
+                    item["gender"] = gender
+                    item["female_probability"] = gender["female"]
+                    item["female_likely"] = gender["female_likely"]
+                    item["female_likely_method"] = gender["female_likely_method"]
+                    item["gender_classification"] = gender["classification"] or "unknown"
             if admin:
                 item["show_user_id"] = row["show_user_id"]
                 item["real_user_id"] = row["real_user_id"]
@@ -1364,9 +1383,9 @@ class SearchRepository:
             "post_id": post_id,
             "comment_count": post["comment_count"],
             "comment_list": top[:limit],
-            "gender_sort": gender_sort,
-            "gender_method": gender_method,
         }
         if admin:
+            result["gender_sort"] = gender_sort
+            result["gender_method"] = gender_method
             result["source_state"] = post["source_state"]
         return result

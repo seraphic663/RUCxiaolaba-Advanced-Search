@@ -97,20 +97,36 @@ class GenderSortTest(unittest.TestCase):
 
     def test_posts_sort_high_low_and_low_high(self) -> None:
         high = self.repository.search_cursor(
-            SearchQuery(text="", sort_by="female_desc", limit=3)
+            SearchQuery(text="", sort_by="female_desc", limit=3, admin=True)
         )
         low = self.repository.search_cursor(
-            SearchQuery(text="", sort_by="female_asc", limit=3)
+            SearchQuery(text="", sort_by="female_asc", limit=3, admin=True)
         )
         self.assertEqual([row["id"] for row in high["results"]], ["2", "3", "1"])
         self.assertEqual([row["id"] for row in low["results"]], ["1", "3", "2"])
         self.assertEqual(high["results"][0]["gender"]["female"], 0.8)
 
     def test_comment_score_ties_break_newest_first(self) -> None:
-        result = self.repository.comments("3", gender_sort="female_asc")
+        result = self.repository.comments("3", admin=True, gender_sort="female_asc")
         self.assertEqual([row["comment_id"] for row in result["comment_list"]], ["c2", "c1", "c3"])
-        result = self.repository.comments("3", gender_sort="female_desc")
+        result = self.repository.comments("3", admin=True, gender_sort="female_desc")
         self.assertEqual([row["comment_id"] for row in result["comment_list"]], ["c3", "c2", "c1"])
+
+    def test_public_results_hide_gender_metadata_and_ignore_gender_sort(self) -> None:
+        result = self.repository.search_cursor(
+            SearchQuery(text="", sort_by="female_desc", limit=3)
+        )
+        self.assertEqual([row["id"] for row in result["results"]], ["3", "2", "1"])
+        self.assertNotIn("gender", result["results"][0])
+        self.assertNotIn("female_probability", result["results"][0])
+
+        comments = self.repository.comments("3", gender_sort="female_desc")
+        self.assertEqual(
+            [row["comment_id"] for row in comments["comment_list"]],
+            ["c1", "c2", "c3"],
+        )
+        self.assertNotIn("gender", comments["comment_list"][0])
+        self.assertNotIn("gender_sort", comments)
 
 
 if __name__ == "__main__":

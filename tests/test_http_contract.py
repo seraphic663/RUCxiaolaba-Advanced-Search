@@ -236,6 +236,8 @@ class HTTPContractTest(unittest.TestCase):
         self.assertIn("RUC", content)
         self.assertNotIn("__SHARED_UI_", content)
         self.assertEqual(content.count("function updateThemeButton()"), 1)
+        self.assertNotIn("女性概率", content)
+        self.assertNotIn("gender-method", content)
 
     def test_admin_login_contract(self):
         opener = build_opener(HTTPCookieProcessor(CookieJar()))

@@ -53,6 +53,10 @@ def search(handler):
 
     admin_required = params.get("admin_required", ["0"])[0] == "1"
     admin = handler.is_admin()
+    if not admin:
+        # Gender scores and their ordering are admin-only research metadata.
+        sort_by = "time"
+        gender_method = "combined"
     if admin_required and not admin:
         handler.serve_json(
             {"ok": False, "error": "管理员登录已失效，请重新登录"},
@@ -171,6 +175,10 @@ def comments(handler):
     if gender_method not in {
         "combined", "rule", "context", "anchor", "pu", "thread_prior", "llm"
     }:
+        gender_method = "combined"
+    if not admin:
+        # Keep the public comments API free of gender-score metadata too.
+        gender_sort = "time"
         gender_method = "combined"
     result = handler.context.search.comments(
         post_id,
