@@ -31,7 +31,7 @@ lists
 
 ## 配置与 Cookie
 
-Cookie 存放在 `data/config.txt`，爬虫只读取 `ys7_ysxy_session`：
+Cookie 存放在 `data/config.txt`；爬虫兼容当前和历史两种会话名称：`ys7_ysxy_session`、`ys_ysxy_sess`。捕获器会保留实际观察到的名称：
 
 ```text
 ys7_ysxy_session=你的cookie

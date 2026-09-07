@@ -28,6 +28,7 @@ RATE_LIMIT_MARKERS = (
     "稍后再试",
     "访问频繁",
 )
+SESSION_COOKIE_NAMES = ("ys7_ysxy_session", "ys_ysxy_sess")
 
 
 def load_cookie(config_path: str | Path) -> str:
@@ -35,8 +36,12 @@ def load_cookie(config_path: str | Path) -> str:
     if not path.exists():
         raise FileNotFoundError(f"missing cookie config: {path}")
     for line in path.read_text(encoding="utf-8").splitlines():
-        if "ys7_ysxy_session=" in line:
-            return line.strip().split("=", 1)[1]
+        for cookie_name in SESSION_COOKIE_NAMES:
+            marker = f"{cookie_name}="
+            if marker in line:
+                value = line.split(marker, 1)[1].split(";", 1)[0].strip()
+                if value:
+                    return value
     raise RuntimeError(f"cookie not found in {path}")
 
 
@@ -46,7 +51,8 @@ class MiniProgramClient:
         self.lane_id = str(lane_id or "")
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
-        self.session.cookies.set("ys7_ysxy_session", cookie)
+        for cookie_name in SESSION_COOKIE_NAMES:
+            self.session.cookies.set(cookie_name, cookie)
         self.session.verify = False
         self.automatic_quota = AutomaticQuota.from_environment(
             lane_id=self.lane_id
