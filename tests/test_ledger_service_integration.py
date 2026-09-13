@@ -113,6 +113,98 @@ class LedgerServiceIntegrationTest(unittest.TestCase):
                 ).fetchone()[0]
             self.assertEqual(events, 2)
 
+    def test_new_lists2_event_reopens_completed_full_queue_row(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "posts.db"
+            with SQLitePostStore(db_path) as store:
+                store.init_schema()
+                post, comments = CrawlerService(
+                    db_path=db_path,
+                    cookie="test",
+                    lock_timeout=2,
+                ).fetch_detail_with_error(
+                    FakeLedgerServiceClient({}, {"1": detail_payload("1")}),
+                    "1",
+                )[0]
+                store.upsert_post(post, comments)
+                article = {
+                    "id": "1",
+                    "create_time": "2026-08-12 00:00:00",
+                    "update_time": "2026-08-12 01:00:00",
+                    "count_comment": 0,
+                }
+                record_list_page(
+                    store.conn,
+                    run_id="lists",
+                    endpoint="lists",
+                    page=1,
+                    articles=[article],
+                )
+                store.enqueue_crawler_candidate(
+                    post_id="1",
+                    source="lists",
+                    priority=10,
+                    list_create_time=article["create_time"],
+                    list_update_time=article["update_time"],
+                    list_comment_count=0,
+                    db_comment_count=0,
+                    reason="new_post",
+                    task_type="id_followup",
+                )
+                store.finish_crawler_queue_detail(
+                    "1",
+                    detail_comment_count=0,
+                    retry_delay_seconds=1,
+                    max_same_observation_attempts=2,
+                    accept_detail_count=True,
+                )
+                mark_detail_finished(store.conn, "1", status="succeeded")
+                record_list_page(
+                    store.conn,
+                    run_id="lists2-baseline",
+                    endpoint="lists2",
+                    page=1,
+                    articles=[article],
+                    baseline=True,
+                )
+                set_ledger_state(store.conn, "lists2_baseline_ready", "1")
+                store.conn.commit()
+
+            service = CrawlerService(db_path=db_path, cookie="test", lock_timeout=2)
+            service.client = lambda: FakeLedgerServiceClient(
+                {
+                    1: [
+                        {
+                            "id": "1",
+                            "create_time": "2026-08-12 00:00:00",
+                            "update_time": "2026-08-12 02:00:00",
+                            "count_comment": 0,
+                        }
+                    ],
+                    2: [],
+                },
+                {},
+            )
+            service.discover_queue(
+                command="discover-active",
+                endpoint="lists2",
+                since="2026-08-12 00:00:00",
+                max_pages=2,
+                old_page_threshold=2,
+                min_pages=1,
+                no_action_page_threshold=1,
+                min_delay=0,
+                max_delay=0,
+            )
+            with SQLitePostStore(db_path) as store:
+                queue = store.conn.execute(
+                    "select priority,reason,status from crawler_queue where post_id='1'"
+                ).fetchone()
+            self.assertEqual(
+                dict(queue),
+                {"priority": 0, "reason": "active_event|new_post", "status": "pending"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

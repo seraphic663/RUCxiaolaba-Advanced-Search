@@ -2204,8 +2204,12 @@ class SQLitePostStore:
                     )
                 )
             )
+            reason_tokens = {
+                token for token in str(reason or "").split("|") if token
+            }
             has_new_evidence = (
                 reason == "admin_selected"
+                or "active_event" in reason_tokens
                 or never_attempted
                 or count_growth
                 or incomplete_changed
