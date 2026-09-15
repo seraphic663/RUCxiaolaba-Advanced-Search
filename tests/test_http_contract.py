@@ -199,6 +199,51 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(cursor["candidate_total"], 1)
         self.assertTrue(cursor["total_exact"])
 
+    def test_public_can_search_comment_text_without_admin_metadata(self):
+        status, payload = self.get_json(
+            f"/api/search?q={quote('十一点关门')}&scope=all&limit=10"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in payload["results"]], ["100"])
+        self.assertNotIn("show_user_id", payload["results"][0])
+
+        status, body_only = self.get_json(
+            f"/api/search?q={quote('十一点关门')}&scope=content&limit=10"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body_only["results"], [])
+
+    def test_calendar_date_range_includes_end_date_for_numbered_and_cursor_search(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.executemany(
+            "insert into posts values (?,?,?,?,?,?,?,?,?,?)",
+            [
+                ("101", "当天最后一秒", "日常", "甲", "u6", "0", "2026-06-11 23:59:59", 0, 0, 0),
+                ("102", "次日零点", "日常", "乙", "u7", "0", "2026-06-12 00:00:00", 0, 0, 0),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        expected = {"100", "101"}
+        for cursor in ("0", "1"):
+            status, payload = self.get_json(
+                "/api/search?from=2026-06-11&to=2026-06-11&limit=10&cursor=" + cursor
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual({item["id"] for item in payload["results"]}, expected)
+
+    def test_invalid_calendar_date_range_returns_400(self):
+        status, payload = self.get_json(
+            "/api/search?from=2026-06-12&to=2026-06-11"
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("开始日期不能晚于结束日期", payload["error"])
+
+        status, payload = self.get_json("/api/search?from=not-a-date")
+        self.assertEqual(status, 400)
+        self.assertIn("日期格式无效", payload["error"])
+
     def test_comments_and_categories_contract(self):
         _, categories = self.get_json("/api/categories")
         self.assertEqual(categories, {"categories": []})
@@ -238,6 +283,10 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(content.count("function updateThemeButton()"), 1)
         self.assertNotIn("女性概率", content)
         self.assertNotIn("gender-method", content)
+        self.assertIn('id="scope-content"', content)
+        self.assertIn('id="scope-all"', content)
+        self.assertIn('id="date-range-panel"', content)
+        self.assertIn('type="date" id="date-from"', content)
 
     def test_admin_login_contract(self):
         opener = build_opener(HTTPCookieProcessor(CookieJar()))
@@ -258,6 +307,8 @@ class HTTPContractTest(unittest.TestCase):
         self.assertNotIn("__SHARED_UI_", dashboard)
         self.assertEqual(dashboard.count("function updateThemeButton()"), 1)
         self.assertIn("上游候选与人工现爬", dashboard)
+        self.assertIn('id="date-range-panel"', dashboard)
+        self.assertIn('type="date" id="date-to"', dashboard)
         self.assertNotIn("__ADMIN_CSRF_TOKEN__", dashboard)
         with opener.open(self.base + "/api/admin/crawl-status", timeout=5) as response:
             crawler_status = json.loads(response.read())

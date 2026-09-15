@@ -36,6 +36,14 @@ html.hide-stats .post-stats-inline { display: none; }
 .search-wrap { max-width: 760px; margin: 14px auto 10px; padding: 0 16px; }
 .search-wrap input { width: 100%; padding: 12px 16px; font-size: 16px; border: 2px solid #ddd; border-radius: 12px; outline: none; transition: border-color .2s; }
 .search-wrap input:focus { border-color: #8b0012; }
+.search-scope-switch { display: flex; align-items: center; gap: 5px; margin-top: 8px; }
+.search-scope-switch button { padding: 5px 11px; border: 1px solid #ddd7ca; border-radius: 999px; background: #fffdf8; color: #70695f; cursor: pointer; font-size: .8em; transition: all .15s; }
+.search-scope-switch button:hover { border-color: #8b0012; color: #8b0012; }
+.search-scope-switch button.active { border-color: #8b0012; background: #8b0012; color: #fff; }
+.search-scope-hint { margin-left: 4px; color: #999187; font-size: .75em; }
+html[data-theme="dark"] .search-scope-switch button { border-color: #45423b; background: #252521; color: #c7c1b6; }
+html[data-theme="dark"] .search-scope-switch button.active { border-color: #8b0012; background: #8b0012; color: #fff; }
+html[data-theme="dark"] .search-scope-hint { color: #a49e93; }
 
 /* Sort bar */
 .sort-bar { max-width: 760px; margin: 0 auto 8px; padding: 0 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -132,6 +140,8 @@ html.hide-stats .post-stats-inline { display: none; }
   .header .admin-link { position: static; display: block; margin-top: 0; transform: none; }
   .search-wrap { margin: 10px auto; }
   .search-wrap input { padding: 10px 14px; font-size: 15px; }
+  .search-scope-switch { flex-wrap: wrap; }
+  .search-scope-hint { flex-basis: 100%; margin-left: 2px; }
   .sort-bar { gap: 4px; }
   .sort-bar button { padding: 5px 10px; font-size: 0.78em; }
   .post { padding: 12px 14px; }
@@ -324,6 +334,11 @@ html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: va
 
 <div class="search-wrap">
   <input type="text" id="q" placeholder="搜索关键词（空格分隔多个词），空着即显示最新..." autofocus>
+  <div class="search-scope-switch" role="group" aria-label="搜索范围">
+    <button type="button" id="scope-content" class="active" aria-pressed="true" onclick="setSearchScope('content')">正文</button>
+    <button type="button" id="scope-all" aria-pressed="false" onclick="setSearchScope('all')">正文 + 评论</button>
+    <span class="search-scope-hint" id="scope-hint" aria-live="polite">只检索帖子正文</span>
+  </div>
 </div>
 
 <div class="sort-bar">
@@ -351,13 +366,37 @@ html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: va
     <option value="noise">误保留(noise)</option>
   </select>
   <label>时间:</label>
-  <select id="filter-date" onchange="doSearch()">
-    <option value="1d">最近 24 小时</option>
-    <option value="3d">最近 3 天</option>
-    <option value="7d">最近 7 天</option>
-    <option value="30d">最近 30 天</option>
-    <option value="">全部时间</option>
-  </select>
+  <div class="date-filter" id="date-filter" data-preset="1d">
+    <button type="button" class="date-filter-trigger" id="date-filter-trigger" aria-controls="date-range-panel" aria-expanded="false">
+      <span class="date-filter-icon" aria-hidden="true">▦</span>
+      <span id="date-filter-summary">今天</span>
+      <span aria-hidden="true">⌄</span>
+    </button>
+  </div>
+</div>
+
+<div class="date-range-panel" id="date-range-panel" hidden>
+  <div class="date-range-heading">
+    <div><div class="date-range-title">按日期筛选</div><div class="date-range-help">筛选帖子发布时间；首尾日期均包含，留空表示不限制这一侧</div></div>
+    <button type="button" class="date-range-close" id="date-range-close" aria-label="关闭日期筛选">×</button>
+  </div>
+  <div class="date-presets" role="group" aria-label="快捷时间范围">
+    <button type="button" class="date-preset-button" data-date-preset="1d">今天</button>
+    <button type="button" class="date-preset-button" data-date-preset="3d">近3天</button>
+    <button type="button" class="date-preset-button" data-date-preset="7d">近7天</button>
+    <button type="button" class="date-preset-button" data-date-preset="30d">近30天</button>
+    <button type="button" class="date-preset-button" data-date-preset="">不限时间</button>
+  </div>
+  <div class="date-range-fields">
+    <label>开始日期<input type="date" id="date-from"></label>
+    <span class="date-range-separator" aria-hidden="true">至</span>
+    <label>结束日期<input type="date" id="date-to"></label>
+  </div>
+  <div class="date-range-error" id="date-range-error" aria-live="polite"></div>
+  <div class="date-range-actions">
+    <button type="button" id="date-range-clear">清除筛选</button>
+    <button type="button" class="primary" id="date-range-apply">应用日期</button>
+  </div>
 </div>
 
 <div class="results" id="results">
@@ -379,6 +418,7 @@ __SHARED_UI_JS__
 let currentPage = 1;
 let currentSort = 'time';
 let currentQuery = '';
+let currentScope = 'content';
 let totalPages = 1;
 let paginationMode = 'numbered';
 let cursorPages = [{ offset: 0, matchedBefore: 0 }];
@@ -647,6 +687,20 @@ function doSearch() {
   fetchResults();
 }
 
+function setSearchScope(scope) {
+  currentScope = scope === 'all' ? 'all' : 'content';
+  var contentButton = document.getElementById('scope-content');
+  var allButton = document.getElementById('scope-all');
+  contentButton.classList.toggle('active', currentScope === 'content');
+  allButton.classList.toggle('active', currentScope === 'all');
+  contentButton.setAttribute('aria-pressed', currentScope === 'content' ? 'true' : 'false');
+  allButton.setAttribute('aria-pressed', currentScope === 'all' ? 'true' : 'false');
+  document.getElementById('scope-hint').textContent = currentScope === 'all'
+    ? '也检索公开帖子的评论；展开评论可查看关键词高亮'
+    : '只检索帖子正文';
+  doSearch();
+}
+
 function setSort(sort) {
   currentSort = sort;
   currentPage = 1;
@@ -705,8 +759,8 @@ function getFilterParams() {
   if (cat) parts.push('category=' + encodeURIComponent(cat));
   var l2 = document.getElementById('filter-l2').value;
   if (l2) parts.push('l2=' + l2);
-  var date = document.getElementById('filter-date').value;
-  if (date) parts.push('date=' + date);
+  parts.push('scope=' + encodeURIComponent(currentScope));
+  parts.push.apply(parts, getDateFilterParams());
   return parts.length ? '&' + parts.join('&') : '';
 }
 
@@ -742,7 +796,10 @@ function fetchResults() {
       }
 
       if (!data.results || data.results.length === 0) {
-        resultsEl.innerHTML = '<div class="empty"><div class="icon">&#128269;</div><div class="text">没有找到匹配的帖子</div></div>';
+        var emptyMessage = currentScope === 'all'
+          ? '没有找到匹配的帖子或评论'
+          : '没有找到匹配的帖子';
+        resultsEl.innerHTML = '<div class="empty"><div class="icon">&#128269;</div><div class="text">' + emptyMessage + '</div></div>';
       } else {
         _postData = {};
         _contentState = {};
@@ -836,6 +893,7 @@ document.addEventListener('DOMContentLoaded', function() {
   updateThemeButton();
   fetchResults();
 });
+setupDateFilter(doSearch);
 </script>
 </body>
 </html>
