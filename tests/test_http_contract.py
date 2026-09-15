@@ -54,6 +54,7 @@ class HTTPContractTest(unittest.TestCase):
                 id text primary key,
                 content text,
                 category_name text,
+                l2_category text,
                 user_name text,
                 show_user_id text,
                 real_user_id text,
@@ -79,11 +80,12 @@ class HTTPContractTest(unittest.TestCase):
             """
         )
         conn.execute(
-            "insert into posts values (?,?,?,?,?,?,?,?,?,?)",
+            "insert into posts values (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 "100",
                 "食堂今天开门",
                 "日常",
+                "gender_view",
                 "某同学",
                 "u1",
                 "123",
@@ -213,13 +215,20 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body_only["results"], [])
 
+    def test_public_search_ignores_topic_filter(self):
+        status, payload = self.get_json(
+            f"/api/search?q={quote('食堂')}&l2=fwb&limit=10"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in payload["results"]], ["100"])
+
     def test_calendar_date_range_includes_end_date_for_numbered_and_cursor_search(self):
         conn = sqlite3.connect(self.db_path)
         conn.executemany(
-            "insert into posts values (?,?,?,?,?,?,?,?,?,?)",
+            "insert into posts values (?,?,?,?,?,?,?,?,?,?,?)",
             [
-                ("101", "当天最后一秒", "日常", "甲", "u6", "0", "2026-06-11 23:59:59", 0, 0, 0),
-                ("102", "次日零点", "日常", "乙", "u7", "0", "2026-06-12 00:00:00", 0, 0, 0),
+                ("101", "当天最后一秒", "日常", "", "甲", "u6", "0", "2026-06-11 23:59:59", 0, 0, 0),
+                ("102", "次日零点", "日常", "", "乙", "u7", "0", "2026-06-12 00:00:00", 0, 0, 0),
             ],
         )
         conn.commit()
@@ -283,10 +292,13 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(content.count("function updateThemeButton()"), 1)
         self.assertNotIn("女性概率", content)
         self.assertNotIn("gender-method", content)
+        self.assertNotIn('id="filter-l2"', content)
+        self.assertNotIn("主题:", content)
         self.assertIn('id="scope-content"', content)
         self.assertIn('id="scope-all"', content)
         self.assertIn('id="date-range-panel"', content)
         self.assertIn('type="date" id="date-from"', content)
+        self.assertIn('id="date-filter" data-preset="1d"', content)
 
     def test_admin_login_contract(self):
         opener = build_opener(HTTPCookieProcessor(CookieJar()))
@@ -309,6 +321,8 @@ class HTTPContractTest(unittest.TestCase):
         self.assertIn("上游候选与人工现爬", dashboard)
         self.assertIn('id="date-range-panel"', dashboard)
         self.assertIn('type="date" id="date-to"', dashboard)
+        self.assertIn('id="date-filter" data-preset="1d"', dashboard)
+        self.assertIn('<span id="date-filter-summary">今天</span>', dashboard)
         self.assertNotIn("__ADMIN_CSRF_TOKEN__", dashboard)
         with opener.open(self.base + "/api/admin/crawl-status", timeout=5) as response:
             crawler_status = json.loads(response.read())
