@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
+
+
+def _parse_search_date(raw_value: str, *, is_end: bool = False) -> datetime:
+    """Parse either a calendar date or the legacy timestamp query format."""
+    value = str(raw_value or "").strip()
+    if len(value) == 10:
+        day = datetime.strptime(value, "%Y-%m-%d").date()
+        return datetime.combine(day, time(23, 59, 59) if is_end else time.min)
+    return datetime.strptime(value[:19], "%Y-%m-%d %H:%M:%S")
 
 
 def main_page(handler):
@@ -105,11 +114,21 @@ def search(handler):
             raw_from = params.get("from", [""])[0]
             raw_to = params.get("to", [""])[0]
             if raw_from:
-                date_from = datetime.strptime(raw_from[:19], "%Y-%m-%d %H:%M:%S")
+                date_from = _parse_search_date(raw_from)
             if raw_to:
-                date_to = datetime.strptime(raw_to[:19], "%Y-%m-%d %H:%M:%S")
+                date_to = _parse_search_date(raw_to, is_end=True)
         except ValueError:
-            pass
+            handler.serve_json(
+                {"ok": False, "error": "日期格式无效，请使用 YYYY-MM-DD"},
+                code=400,
+            )
+            return
+        if date_from and date_to and date_from > date_to:
+            handler.serve_json(
+                {"ok": False, "error": "开始日期不能晚于结束日期"},
+                code=400,
+            )
+            return
 
     search_method = (
         handler.context.search.search_cursor

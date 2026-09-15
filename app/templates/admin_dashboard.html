@@ -340,7 +340,13 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
   <div class="filter-row control-grid">
     <div class="control-group select-group">
       <select id="sort"><option value="time">按时间</option><option value="stars">按点赞</option><option value="comments">按评论</option><option value="score">综合</option></select>
-      <select id="date"><option value="">全部时间</option><option value="1d">今天</option><option value="3d">3天</option><option value="7d">7天</option><option value="30d">30天</option></select>
+      <div class="date-filter" id="date-filter" data-preset="">
+        <button type="button" class="date-filter-trigger" id="date-filter-trigger" aria-controls="date-range-panel" aria-expanded="false">
+          <span class="date-filter-icon" aria-hidden="true">▦</span>
+          <span id="date-filter-summary">不限时间</span>
+          <span aria-hidden="true">⌄</span>
+        </button>
+      </div>
       <select id="identity"><option value="">匿名/实名</option><option value="anonymous">仅看匿名帖</option><option value="real">仅看实名帖</option></select>
       <select id="source-state"><option value="all">正常及已删除</option><option value="available">仅正常</option><option value="deleted">仅已删除</option></select>
       <input type="text" id="category" list="category-options" placeholder="全部分类 / 输入tag" aria-label="分类">
@@ -356,6 +362,29 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
     <div class="control-group match-group">
       <select class="match-select" id="id-match" aria-label="用户ID匹配方式"><option value="exact">用户ID精确</option><option value="contains">用户ID包含</option></select>
       <select class="match-select" id="name-match" aria-label="昵称匹配方式"><option value="exact">昵称精确</option><option value="contains">昵称包含</option></select>
+    </div>
+  </div>
+  <div class="date-range-panel" id="date-range-panel" hidden>
+    <div class="date-range-heading">
+      <div><div class="date-range-title">按日期筛选</div><div class="date-range-help">筛选帖子发布时间；首尾日期均包含，留空表示不限制这一侧</div></div>
+      <button type="button" class="date-range-close" id="date-range-close" aria-label="关闭日期筛选">×</button>
+    </div>
+    <div class="date-presets" role="group" aria-label="快捷时间范围">
+      <button type="button" class="date-preset-button" data-date-preset="1d">今天</button>
+      <button type="button" class="date-preset-button" data-date-preset="3d">近3天</button>
+      <button type="button" class="date-preset-button" data-date-preset="7d">近7天</button>
+      <button type="button" class="date-preset-button" data-date-preset="30d">近30天</button>
+      <button type="button" class="date-preset-button" data-date-preset="">不限时间</button>
+    </div>
+    <div class="date-range-fields">
+      <label>开始日期<input type="date" id="date-from"></label>
+      <span class="date-range-separator" aria-hidden="true">至</span>
+      <label>结束日期<input type="date" id="date-to"></label>
+    </div>
+    <div class="date-range-error" id="date-range-error" aria-live="polite"></div>
+    <div class="date-range-actions">
+      <button type="button" id="date-range-clear">清除筛选</button>
+      <button type="button" class="primary" id="date-range-apply">应用日期</button>
     </div>
   </div>
 </div>
@@ -549,7 +578,6 @@ function doSearch() {
   var q = document.getElementById('q').value.trim();
   currentKW = q ? q.split(/\s+/).filter(Boolean) : [];
   var sort = document.getElementById('sort').value;
-  var date = document.getElementById('date').value;
   var identity = document.getElementById('identity').value;
   var sourceState = document.getElementById('source-state').value;
   var category = document.getElementById('category').value;
@@ -562,7 +590,7 @@ function doSearch() {
     'matched_before=' + cursor.matchedBefore,
     'admin_required=1'
   ];
-  if (date) params.push('date=' + date);
+  params.push.apply(params, getDateFilterParams());
   if (identity) params.push('identity=' + identity);
   if (sourceState && sourceState !== 'all') params.push('source_state=' + sourceState);
   if (category) params.push('category=' + encodeURIComponent(category));
@@ -868,7 +896,7 @@ document.getElementById('sc-name').addEventListener('change', function() {
 ['sc-body', 'sc-cmt', 'id-match', 'name-match'].forEach(function(id) {
   document.getElementById(id).addEventListener('change', updateSearchMode);
 });
-['sort', 'date', 'identity'].forEach(function(id) {
+['sort', 'identity'].forEach(function(id) {
   document.getElementById(id).addEventListener('change', startSearch);
 });
 var categoryTimer = null;
@@ -877,6 +905,7 @@ document.getElementById('category').addEventListener('input', function() {
   categoryTimer = setTimeout(startSearch, 350);
 });
 updateSearchMode();
+setupDateFilter(startSearch);
 
 fetch('/api/categories')
   .then(parseJsonResponse)

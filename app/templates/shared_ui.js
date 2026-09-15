@@ -82,3 +82,127 @@ function saveSettings() {
   closeSettings();
   if (typeof onUiSettingsSaved === 'function') onUiSettingsSaved();
 }
+
+function getDateFilterParams() {
+  var root = document.getElementById('date-filter');
+  if (!root) return [];
+  var from = root.dataset.from || '';
+  var to = root.dataset.to || '';
+  if (from || to) {
+    var range = [];
+    if (from) range.push('from=' + encodeURIComponent(from));
+    if (to) range.push('to=' + encodeURIComponent(to));
+    return range;
+  }
+  var preset = root.dataset.preset || '';
+  return preset ? ['date=' + encodeURIComponent(preset)] : [];
+}
+
+function setupDateFilter(onChange) {
+  var root = document.getElementById('date-filter');
+  var panel = document.getElementById('date-range-panel');
+  if (!root || !panel) return;
+
+  var trigger = document.getElementById('date-filter-trigger');
+  var summary = document.getElementById('date-filter-summary');
+  var fromInput = document.getElementById('date-from');
+  var toInput = document.getElementById('date-to');
+  var error = document.getElementById('date-range-error');
+
+  function closePanel(restoreFocus) {
+    panel.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) trigger.focus();
+  }
+
+  function updateView() {
+    var from = root.dataset.from || '';
+    var to = root.dataset.to || '';
+    var preset = root.dataset.preset || '';
+    if (from && to) summary.textContent = from + ' – ' + to;
+    else if (from) summary.textContent = from + ' 起';
+    else if (to) summary.textContent = '截至 ' + to;
+    else {
+      var active = panel.querySelector('[data-date-preset="' + preset + '"]');
+      summary.textContent = active ? active.textContent.trim() : '不限时间';
+    }
+
+    panel.querySelectorAll('[data-date-preset]').forEach(function(button) {
+      var activePreset = button.getAttribute('data-date-preset') || '';
+      var active = !from && !to && activePreset === preset;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  trigger.addEventListener('click', function() {
+    var opening = panel.hidden;
+    if (opening) {
+      fromInput.value = root.dataset.from || '';
+      toInput.value = root.dataset.to || '';
+      error.textContent = '';
+    }
+    panel.hidden = !opening;
+    trigger.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  });
+
+  panel.querySelectorAll('[data-date-preset]').forEach(function(button) {
+    button.addEventListener('click', function() {
+      root.dataset.from = '';
+      root.dataset.to = '';
+      root.dataset.preset = button.getAttribute('data-date-preset') || '';
+      fromInput.value = '';
+      toInput.value = '';
+      error.textContent = '';
+      updateView();
+      closePanel(false);
+      if (typeof onChange === 'function') onChange();
+    });
+  });
+
+  document.getElementById('date-range-apply').addEventListener('click', function() {
+    var from = fromInput.value;
+    var to = toInput.value;
+    error.textContent = '';
+    if (!from && !to) {
+      error.textContent = '请至少选择一个日期';
+      return;
+    }
+    if (from && to && from > to) {
+      error.textContent = '开始日期不能晚于结束日期';
+      return;
+    }
+    root.dataset.from = from;
+    root.dataset.to = to;
+    root.dataset.preset = '';
+    updateView();
+    closePanel(false);
+    if (typeof onChange === 'function') onChange();
+  });
+
+  document.getElementById('date-range-clear').addEventListener('click', function() {
+    root.dataset.from = '';
+    root.dataset.to = '';
+    root.dataset.preset = '';
+    fromInput.value = '';
+    toInput.value = '';
+    error.textContent = '';
+    updateView();
+    closePanel(false);
+    if (typeof onChange === 'function') onChange();
+  });
+
+  document.getElementById('date-range-close').addEventListener('click', function() {
+    closePanel(true);
+  });
+
+  document.addEventListener('click', function(event) {
+    if (!panel.hidden && !root.contains(event.target) && !panel.contains(event.target)) {
+      closePanel(false);
+    }
+  });
+  document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape' && !panel.hidden) closePanel(true);
+  });
+  updateView();
+}
