@@ -66,6 +66,8 @@ def search(handler):
         # Gender scores and their ordering are admin-only research metadata.
         sort_by = "time"
         gender_method = "combined"
+        # Topic taxonomy is intentionally not exposed on the public search API.
+        l2 = None
     if admin_required and not admin:
         handler.serve_json(
             {"ok": False, "error": "管理员登录已失效，请重新登录"},

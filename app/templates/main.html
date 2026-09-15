@@ -353,18 +353,6 @@ html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: va
   <label>分类:</label>
   <input type="text" id="filter-category" list="category-options" placeholder="全部分类 / 输入tag">
   <datalist id="category-options"></datalist>
-  <label>主题:</label>
-  <select id="filter-l2" onchange="doSearch()">
-    <option value="">全部主题</option>
-    <option value="fwb">fwb / 约炮</option>
-    <option value="sex_behavior">性行为</option>
-    <option value="sex_kink">性癖擦边</option>
-    <option value="harassment">性骚扰受害</option>
-    <option value="gender_view">两性观念</option>
-    <option value="romance">恋爱情感</option>
-    <option value="dating">征友交友</option>
-    <option value="noise">误保留(noise)</option>
-  </select>
   <label>时间:</label>
   <div class="date-filter" id="date-filter" data-preset="1d">
     <button type="button" class="date-filter-trigger" id="date-filter-trigger" aria-controls="date-range-panel" aria-expanded="false">
@@ -757,8 +745,6 @@ function getFilterParams() {
   var parts = [];
   var cat = document.getElementById('filter-category').value;
   if (cat) parts.push('category=' + encodeURIComponent(cat));
-  var l2 = document.getElementById('filter-l2').value;
-  if (l2) parts.push('l2=' + l2);
   parts.push('scope=' + encodeURIComponent(currentScope));
   parts.push.apply(parts, getDateFilterParams());
   return parts.length ? '&' + parts.join('&') : '';
