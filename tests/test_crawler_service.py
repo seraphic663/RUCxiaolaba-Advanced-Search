@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from app.repositories.search_repository import SearchRepository
 from crawler.service import CHINA_TZ, CrawlerService
@@ -45,6 +46,25 @@ class QuotaStoppedClient(FakeClient):
 
     def article(self, post_id):
         return None, "source_quota_window_locked"
+
+
+class RoutedFakeClient(FakeClient):
+    def __init__(self, details, *, expected_lane, routed_lane):
+        super().__init__({}, details)
+        self.expected_lane = expected_lane
+        self.routed_lane = routed_lane
+        self.last_lane_id = ""
+        self.request_count = 0
+        self.lane_request_counts = {expected_lane: 0, routed_lane: 0}
+
+    def lane_for_task(self, _task_type):
+        return self.expected_lane
+
+    def article(self, post_id, **_kwargs):
+        self.last_lane_id = self.routed_lane
+        self.request_count += 1
+        self.lane_request_counts[self.routed_lane] += 1
+        return self.details.get(str(post_id), (None, "not_found"))
 
 
 def detail(post_id, comments=0):
@@ -88,6 +108,76 @@ class CrawlerServiceTest(unittest.TestCase):
         )
         service.client = lambda: client
         return service
+
+    def test_trickle_fill_skips_redundant_lane_write_that_can_hit_sqlite_lock(self):
+        with SQLitePostStore(self.db) as store:
+            store.enqueue_crawler_candidate(
+                post_id="299",
+                source="lists2",
+                priority=20,
+                list_create_time="2026-06-25 00:00:00",
+                list_update_time="2026-06-25 00:00:00",
+                list_comment_count=1,
+                db_comment_count=None,
+                reason="test",
+            )
+
+        client = RoutedFakeClient(
+            {"299": detail("299", 1)},
+            expected_lane="old",
+            routed_lane="old",
+        )
+        with patch.object(
+            SQLitePostStore,
+            "set_crawler_queue_claim_lane",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ) as set_lane:
+            stats = self.service(client).trickle_fill(
+                limit=1,
+                dry_run=False,
+                min_delay=0,
+                max_delay=0,
+                stop_after_misses=1,
+            )
+
+        self.assertEqual(stats["written"], 1)
+        self.assertEqual(stats["source_calls"], 1)
+        self.assertEqual(stats["cookie_lane_requests"], {"old": 1})
+        self.assertEqual(stats["lane_id"], "old")
+        set_lane.assert_not_called()
+
+    def test_trickle_fill_updates_lane_only_when_actual_route_differs(self):
+        with SQLitePostStore(self.db) as store:
+            store.enqueue_crawler_candidate(
+                post_id="298",
+                source="lists2",
+                priority=20,
+                list_create_time="2026-06-25 00:00:00",
+                list_update_time="2026-06-25 00:00:00",
+                list_comment_count=1,
+                db_comment_count=None,
+                reason="test",
+            )
+
+        client = RoutedFakeClient(
+            {"298": detail("298", 1)},
+            expected_lane="new",
+            routed_lane="old",
+        )
+        stats = self.service(client).trickle_fill(
+            limit=1,
+            dry_run=False,
+            min_delay=0,
+            max_delay=0,
+            stop_after_misses=1,
+        )
+
+        self.assertEqual(stats["written"], 1)
+        with SQLitePostStore(self.db) as store:
+            row = store.conn.execute(
+                "select last_lane_id from crawler_queue where post_id='298'"
+            ).fetchone()
+        self.assertEqual(row["last_lane_id"], "old")
 
     def test_page_scan_inserts_new_post(self):
         client = FakeClient(

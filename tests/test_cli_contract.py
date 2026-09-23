@@ -81,6 +81,7 @@ class CLIContractTest(unittest.TestCase):
                 returncode=1,
                 error_kind="rate_limited",
                 stderr="rate_limited:test",
+                lane_id="old",
                 db_path=db_path,
             )
             conn = sqlite3.connect(db_path)
@@ -101,6 +102,9 @@ class CLIContractTest(unittest.TestCase):
         stats = json.loads(row["stats_json"])
         self.assertTrue(stats["scheduler_failed"])
         self.assertEqual(stats["error_kind"], "rate_limited")
+        self.assertEqual(stats["source_calls_source"], "quota_counter_delta")
+        self.assertEqual(stats["lane_id"], "old")
+        self.assertEqual(stats["cookie_lane_requests"], {"old": 3})
 
     def test_scheduler_budgets_source_call_types(self):
         self.assertEqual(job_budget_kind("discover_new"), "new_list")
