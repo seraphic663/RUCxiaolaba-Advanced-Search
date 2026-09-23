@@ -30,15 +30,8 @@ def search(handler):
     params, _ = handler.parse_query()
     query = params.get("q", [""])[0].strip()
     sort_by = params.get("sort", ["time"])[0]
-    if sort_by not in (
-        "time", "stars", "comments", "score", "female_desc", "female_asc"
-    ):
+    if sort_by not in ("time", "stars", "comments", "score"):
         sort_by = "time"
-    gender_method = params.get("gender_method", ["combined"])[0]
-    if gender_method not in {
-        "combined", "rule", "context", "anchor", "pu", "thread_prior", "llm"
-    }:
-        gender_method = "combined"
     try:
         page = max(1, int(params.get("page", ["1"])[0]))
         limit = max(1, min(int(params.get("limit", ["50"])[0]), 200))
@@ -63,9 +56,7 @@ def search(handler):
     admin_required = params.get("admin_required", ["0"])[0] == "1"
     admin = handler.is_admin()
     if not admin:
-        # Gender scores and their ordering are admin-only research metadata.
         sort_by = "time"
-        gender_method = "combined"
         # Topic taxonomy is intentionally not exposed on the public search API.
         l2 = None
     if admin_required and not admin:
@@ -161,7 +152,6 @@ def search(handler):
         admin_fields=admin_fields,
         id_match=id_match,
         name_match=name_match,
-        gender_method=gender_method,
     )
     handler.serve_json(result)
 
@@ -189,23 +179,9 @@ def comments(handler):
             code=401,
         )
         return
-    gender_sort = params.get("sort", ["time"])[0]
-    if gender_sort not in {"time", "female_desc", "female_asc"}:
-        gender_sort = "time"
-    gender_method = params.get("gender_method", ["combined"])[0]
-    if gender_method not in {
-        "combined", "rule", "context", "anchor", "pu", "thread_prior", "llm"
-    }:
-        gender_method = "combined"
-    if not admin:
-        # Keep the public comments API free of gender-score metadata too.
-        gender_sort = "time"
-        gender_method = "combined"
     result = handler.context.search.comments(
         post_id,
         admin=admin,
-        gender_sort=gender_sort,
-        gender_method=gender_method,
     )
     if result is None:
         handler.serve_json({"error": "Post not found"}, code=404)

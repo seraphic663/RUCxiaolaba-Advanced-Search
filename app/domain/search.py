@@ -95,7 +95,6 @@ class SearchQuery:
     admin: bool = False
     identity: str | None = None
     source_state: str = "all"
-    gender_method: str = "combined"
     admin_fields: frozenset[str] = field(
         default_factory=lambda: frozenset({"body", "cmt", "uid", "name", "post"})
     )
