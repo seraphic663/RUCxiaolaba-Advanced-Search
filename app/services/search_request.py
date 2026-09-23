@@ -28,7 +28,6 @@ def build_search_query(
     admin_fields: set[str] | frozenset[str] | None = None,
     id_match: str = "exact",
     name_match: str = "exact",
-    gender_method: str = "combined",
 ) -> SearchQuery:
     """Create the repository request shared by numbered and cursor search."""
 
@@ -47,7 +46,6 @@ def build_search_query(
         admin=admin,
         identity=identity,
         source_state=source_state,
-        gender_method=gender_method,
         admin_fields=frozenset(admin_fields or DEFAULT_ADMIN_FIELDS),
         id_match=id_match,
         name_match=name_match,

@@ -15,9 +15,8 @@ class SearchService:
         posts_db: str | Path,
         bigram_db: str | Path | None = None,
         symbol_db: str | Path | None = None,
-        gender_db: str | Path | None = None,
     ):
-        self.repository = SearchRepository(posts_db, bigram_db, symbol_db, gender_db)
+        self.repository = SearchRepository(posts_db, bigram_db, symbol_db)
 
     def search(
         self,
@@ -39,7 +38,6 @@ class SearchService:
         admin_fields: set[str] | None = None,
         id_match: str = "exact",
         name_match: str = "exact",
-        gender_method: str = "combined",
     ) -> dict:
         request = build_search_query(
             query,
@@ -59,7 +57,6 @@ class SearchService:
             admin_fields=admin_fields,
             id_match=id_match,
             name_match=name_match,
-            gender_method=gender_method,
         )
         return self.repository.search(request)
 
@@ -88,7 +85,6 @@ class SearchService:
         admin_fields: set[str] | None = None,
         id_match: str = "exact",
         name_match: str = "exact",
-        gender_method: str = "combined",
     ) -> dict:
         request = build_search_query(
             query,
@@ -108,7 +104,6 @@ class SearchService:
             admin_fields=admin_fields,
             id_match=id_match,
             name_match=name_match,
-            gender_method=gender_method,
         )
         return self.repository.search_cursor(
             request,
@@ -121,12 +116,8 @@ class SearchService:
         post_id: str,
         *,
         admin: bool = False,
-        gender_sort: str = "time",
-        gender_method: str = "combined",
     ) -> dict | None:
         return self.repository.comments(
             post_id,
             admin=admin,
-            gender_sort=gender_sort,
-            gender_method=gender_method,
         )

@@ -215,6 +215,30 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body_only["results"], [])
 
+    def test_admin_search_and_comments_omit_inferred_gender_metadata(self):
+        search = SearchService(self.db_path)
+        result = search.search("", "time", 1, 10, admin=True)
+        self.assertEqual([item["id"] for item in result["results"]], ["100"])
+        for key in (
+            "gender",
+            "female_probability",
+            "female_likely",
+            "gender_classification",
+        ):
+            self.assertNotIn(key, result["results"][0])
+
+        comments = search.comments("100", admin=True)
+        self.assertIsNotNone(comments)
+        for key in ("gender_sort", "gender_method"):
+            self.assertNotIn(key, comments)
+        for key in (
+            "gender",
+            "female_probability",
+            "female_likely",
+            "gender_classification",
+        ):
+            self.assertNotIn(key, comments["comment_list"][0])
+
     def test_public_search_ignores_topic_filter(self):
         status, payload = self.get_json(
             f"/api/search?q={quote('食堂')}&l2=fwb&limit=10"
