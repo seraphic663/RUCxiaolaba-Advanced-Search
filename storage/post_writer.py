@@ -2714,12 +2714,23 @@ class SQLitePostStore:
         )
 
     def set_state(self, key: str, value: str, commit: bool = True) -> None:
-        self.conn.execute(
-            "insert into crawl_state values (?,?,?) on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at",
-            (key, value, now_text()),
-        )
-        if commit:
-            self.conn.commit()
+        for attempt in range(2):
+            try:
+                self.conn.execute(
+                    "insert into crawl_state values (?,?,?) on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at",
+                    (key, value, now_text()),
+                )
+                if commit:
+                    self.conn.commit()
+                return
+            except sqlite3.OperationalError as error:
+                code = getattr(error, "sqlite_errorcode", 0) or 0
+                if attempt or (int(code) & 0xFF) not in {
+                    sqlite3.SQLITE_BUSY,
+                    sqlite3.SQLITE_LOCKED,
+                }:
+                    raise
+                time.sleep(0.1)
 
     def latest_post_id(self) -> str | None:
         row = self.conn.execute(

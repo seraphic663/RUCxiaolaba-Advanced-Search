@@ -213,12 +213,20 @@ class CrawlerService:
     @staticmethod
     def add_client_source_stats(stats: dict, client) -> None:
         stats["source_calls"] = safe_int(getattr(client, "request_count", 0))
+        stats["source_calls_source"] = "client_request_count"
         lane_counts = getattr(client, "lane_request_counts", None)
         if lane_counts:
             stats["cookie_lane_requests"] = {
                 str(key): safe_int(value)
                 for key, value in lane_counts.items()
             }
+            used_lanes = [
+                str(key)
+                for key, value in lane_counts.items()
+                if safe_int(value) > 0
+            ]
+            if len(used_lanes) == 1:
+                stats["lane_id"] = used_lanes[0]
 
     def fetch_detail_with_error(
         self,
@@ -852,7 +860,7 @@ class CrawlerService:
                         task_type=task_type,
                     )
                     routed_lane = str(getattr(client, "last_lane_id", "") or "")
-                    if routed_lane and not dry_run:
+                    if routed_lane and routed_lane != expected_lane and not dry_run:
                         store.set_crawler_queue_claim_lane(
                             post_id,
                             owner=claim_owner,

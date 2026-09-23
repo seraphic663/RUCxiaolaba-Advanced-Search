@@ -1955,6 +1955,7 @@ def record_failed_crawler_run(
     returncode: int,
     error_kind: str,
     stderr: str,
+    lane_id: str = "",
     db_path: str | Path | None = None,
 ) -> None:
     command = {
@@ -1967,6 +1968,11 @@ def record_failed_crawler_run(
     }.get(name, name.replace("_", "-"))
     stats = {
         "source_calls": max(0, int(source_calls)),
+        "source_calls_source": "quota_counter_delta",
+        "lane_id": str(lane_id or ""),
+        "cookie_lane_requests": (
+            {str(lane_id): max(0, int(source_calls))} if lane_id else {}
+        ),
         "errors": 1,
         "rate_limited": error_kind == "rate_limited",
         "scheduler_failed": True,
@@ -2135,6 +2141,7 @@ def run_job(name: str) -> JobResult:
             returncode=-1,
             error_kind=type(exc).__name__,
             stderr=str(exc),
+            lane_id=lane_id,
         )
         raise
     stderr = result.stderr or ""
@@ -2163,6 +2170,7 @@ def run_job(name: str) -> JobResult:
             returncode=job_result.returncode,
             error_kind=job_result.error_kind,
             stderr=job_result.stderr,
+            lane_id=lane_id,
         )
     return job_result
 
