@@ -103,6 +103,7 @@ CHINA_TZ = timezone(timedelta(hours=8))
 TRICKLE_ENABLED = os.environ.get("CRAWLER_TRICKLE_ENABLED", "0") == "1"
 PARALLEL_LANES_ENABLED = os.environ.get("CRAWLER_PARALLEL_LANES", "0") == "1"
 LANE_WORKER_MODE = os.environ.get("CRAWLER_LANE_WORKER_MODE", "").strip().lower()
+COOKIE_POOL_LANE = os.environ.get("CRAWLER_COOKIE_POOL_LANE", "").strip().lower()
 TRICKLE_SINCE = os.environ.get("CRAWLER_TRICKLE_SINCE", "2026-06-25 00:00:00")
 DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 60 * 60)
 NEW_DISCOVER_INTERVAL = env_int(
@@ -301,6 +302,15 @@ def job_lane_id(name: str) -> str:
     specs = cookie_pool_specs()
     if not specs:
         return ""
+    if COOKIE_POOL_LANE:
+        forced = [
+            spec
+            for spec in specs
+            if spec.lane_id.lower() == COOKIE_POOL_LANE
+            and spec.supports_task(task_type)
+        ]
+        if forced:
+            return forced[0].lane_id
     matches = [spec for spec in specs if spec.supports_task(task_type)]
     return matches[0].lane_id if len(matches) == 1 else ""
 

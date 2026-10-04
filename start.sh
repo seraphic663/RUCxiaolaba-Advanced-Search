@@ -32,6 +32,9 @@ if [ "${CRAWLER_ENABLED:-0}" = "1" ]; then
   echo "[boot] Starting crawler scheduler"
   (
     set +e
+    if [ "${CRAWLER_PARALLEL_LANES:-0}" = "1" ]; then
+      export CRAWLER_COOKIE_POOL_LANE=new
+    fi
     while true; do
       python -u -m jobs.scheduler
       code=$?
@@ -44,6 +47,7 @@ if [ "${CRAWLER_ENABLED:-0}" = "1" ]; then
     (
       set +e
       export CRAWLER_LANE_WORKER_MODE=old
+      export CRAWLER_COOKIE_POOL_LANE=old
       while true; do
         python -u -m jobs.lane_worker
         code=$?

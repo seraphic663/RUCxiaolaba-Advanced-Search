@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -14,7 +15,7 @@ from crawler.task_routing import (
     TASK_ID_FOLLOWUP,
     TASK_LIST_NEW,
 )
-from jobs import scheduler
+from jobs import lane_worker, scheduler
 from storage.post_writer import SQLitePostStore
 
 
@@ -90,6 +91,40 @@ class CookiePoolTest(unittest.TestCase):
             sorted(pool.lane_request_counts.values()),
             [2, 2],
         )
+
+    def test_from_file_can_pin_one_process_to_a_lane(self):
+        with patch.dict(os.environ, {"CRAWLER_COOKIE_POOL_LANE": "main"}):
+            pool = CookiePoolClient.from_file(self.pool_path)
+
+        self.assertEqual(pool.lane_ids, ("main",))
+
+    def test_lane_worker_switches_to_id_queue_when_old_lane_is_reassigned(self):
+        self.pool_path.write_text(
+            json.dumps(
+                {
+                    "lanes": [
+                        {
+                            "id": "small",
+                            "config": "small.txt",
+                            "task_types": [TASK_ID_FOLLOWUP],
+                            "daily_budgets": {"detail": 550},
+                        },
+                        {
+                            "id": "main",
+                            "config": "main.txt",
+                            "task_types": [TASK_ID_FOLLOWUP],
+                            "daily_budgets": {"detail": 450},
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch.object(scheduler, "COOKIE_POOL_PATH", str(self.pool_path)),
+            patch.object(lane_worker, "LANE_ID", "main"),
+        ):
+            self.assertEqual(lane_worker._worker_job(), "trickle_fill")
 
     def test_pool_fails_over_only_local_quota_exhaustion(self):
         specs = load_cookie_pool_specs(self.pool_path)

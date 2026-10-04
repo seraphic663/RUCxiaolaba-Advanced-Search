@@ -27,7 +27,7 @@ crawler.cli / jobs.scheduler
   -> storage.post_writer
 ```
 
-默认模式仍是一个顺序请求流；启用 `CRAWLER_PARALLEL_LANES=1` 后，主 scheduler 负责新 cookie，`jobs.lane_worker` 负责旧 cookie。两个 worker 共用 SQLite 队列，先原子认领并记录 owner/lane，详情完成或失败后才释放；WAL 和短写事务允许不同 lane 的 HTTP 请求重叠，同一 ID 仍不能被两条任务同时认领。遇到上游 `rate_limited` 不会静默切换 lane，错误 lane 单独暂停；只有本地 lane 配额耗尽时才会选择另一个已配置 lane。
+默认模式仍是一个顺序请求流；启用 `CRAWLER_PARALLEL_LANES=1` 后，主 scheduler 负责新 cookie，`jobs.lane_worker` 负责旧 cookie 被分配的详情任务。两个 worker 共用 SQLite 队列，先原子认领并记录 owner/lane，详情完成或失败后才释放；WAL 和短写事务允许不同 lane 的 HTTP 请求重叠，同一 ID 仍不能被两条任务同时认领。遇到上游 `rate_limited` 不会静默切换 lane，错误 lane 单独暂停；只有本地 lane 配额耗尽时才会选择另一个已配置 lane。
 
 新逻辑不要写回根兼容入口 `crawler_db.py`，不要在 `jobs.scheduler` 中复制爬取判定，也不要让 Strategy 直接写 SQLite。
 

@@ -8,6 +8,7 @@ it only chooses which already-authorized lane owns that request.
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -219,6 +220,16 @@ class CookiePoolClient:
     @classmethod
     def from_file(cls, path: str | Path) -> "CookiePoolClient":
         specs = load_cookie_pool_specs(path)
+        forced_lane = os.environ.get("CRAWLER_COOKIE_POOL_LANE", "").strip()
+        if forced_lane:
+            forced_key = forced_lane.casefold()
+            specs = tuple(
+                spec for spec in specs if spec.lane_id.casefold() == forced_key
+            )
+            if not specs:
+                raise ValueError(
+                    f"cookie pool has no configured lane: {forced_lane!r}"
+                )
 
         def factory(cookie: str, lane_id: str):
             from crawler.client import MiniProgramClient
