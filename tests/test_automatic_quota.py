@@ -217,6 +217,40 @@ class AutomaticQuotaTest(unittest.TestCase):
             ["23:00", "23:30"],
         )
 
+    def test_forced_lane_routes_shared_id_job_to_that_lane(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pool_path = root / "pool.json"
+            pool_path.write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "new",
+                                "config": "new.txt",
+                                "task_types": ["id_followup"],
+                                "daily_budgets": {"detail": 550},
+                            },
+                            {
+                                "id": "old",
+                                "config": "old.txt",
+                                "task_types": ["id_followup"],
+                                "daily_budgets": {"detail": 450},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(scheduler, "COOKIE_POOL_PATH", str(pool_path)),
+                patch.object(scheduler, "COOKIE_POOL_LANE", "old"),
+            ):
+                self.assertEqual(
+                    scheduler.job_lane_id("trickle_fill"),
+                    "old",
+                )
+
 
 class AdaptiveDetailBudgetTest(unittest.TestCase):
     def setUp(self):

@@ -1,8 +1,9 @@
 """Dedicated worker for the old cookie lane.
 
 The main scheduler owns the new-cookie monitoring lane.  When parallel lane
-mode is enabled, this process owns historical details. Queue claims remain in
-the shared SQLite database; this worker never creates a second queue.
+mode is enabled, this process owns whichever detail task is assigned to the
+old lane. Queue claims remain in the shared SQLite database; this worker never
+creates a second queue.
 """
 
 from __future__ import annotations
@@ -43,6 +44,27 @@ def _monitoring_ready() -> bool:
         return False
 
 
+def _worker_job() -> str:
+    """Select the old lane's configured detail queue without guessing.
+
+    The history lane remains supported for deployments that are still draining
+    it. Once history is finished, assigning ``id_followup`` to the same lane
+    automatically moves this worker onto the shared ID table.
+    """
+
+    lane = next(
+        (spec for spec in scheduler.cookie_pool_specs() if spec.lane_id == LANE_ID),
+        None,
+    )
+    if lane is None:
+        raise SystemExit(f"cookie pool has no configured lane: {LANE_ID!r}")
+    if lane.supports_task(scheduler.TASK_ID_FOLLOWUP):
+        return "trickle_fill"
+    if lane.supports_task(scheduler.TASK_HISTORY_DETAIL):
+        return "trickle_fill_history"
+    raise SystemExit(f"cookie lane {LANE_ID!r} has no detail task assignment")
+
+
 def _handle_result(job: str, result) -> None:
     if result.error_kind == "rate_limited":
         scheduler.handle_rate_limit(
@@ -66,32 +88,39 @@ def main() -> int:
     if not scheduler.PARALLEL_LANES_ENABLED:
         raise SystemExit("lane worker requires CRAWLER_PARALLEL_LANES=1")
 
+    job = _worker_job()
+    interval = (
+        scheduler.detail_trickle_interval()
+        if job == "trickle_fill"
+        else scheduler.HISTORY_TRICKLE_INTERVAL
+    )
     print(
-        f"[lane-worker] started lane={LANE_ID} "
-        f"history_interval={scheduler.HISTORY_TRICKLE_INTERVAL}s",
+        f"[lane-worker] started lane={LANE_ID} job={job} interval={interval}s",
         flush=True,
     )
     with _single_worker_lock():
         started_at = time.monotonic()
-        next_history = started_at + 3 * 60
+        next_run = started_at + 3 * 60
         while True:
             now_mono = time.monotonic()
             if now_mono - started_at >= STARTUP_GRACE_SECONDS and _monitoring_ready():
-                if now_mono >= next_history:
+                if now_mono >= next_run:
                     started = now_mono
-                    result = scheduler.run_job("trickle_fill_history")
-                    _handle_result("trickle_fill_history", result)
+                    result = scheduler.run_job(job)
+                    _handle_result(job, result)
                     finished = time.monotonic()
                     if result.deferred_until:
-                        next_history = max(
+                        next_run = max(
                             finished + 30,
                             finished + max(0.0, result.deferred_until - scheduler.now_wall()),
                         )
+                    elif job == "trickle_fill" and result.succeeded:
+                        next_run = scheduler.next_detail_trickle_run(finished)
                     else:
-                        next_history = scheduler.next_job_run(
+                        next_run = scheduler.next_job_run(
                             started,
                             finished,
-                            scheduler.HISTORY_TRICKLE_INTERVAL,
+                            interval,
                         )
             time.sleep(max(1, min(30, WORKER_CHECK_INTERVAL)))
 
