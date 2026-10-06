@@ -219,6 +219,10 @@ NEW_DETAIL_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
     "CRAWLER_NEW_DETAIL_QUOTA_RELEASE_STEPS",
     "0=0.05,04:00=0.75,06:00=1.00",
 )
+# Both fixed cookie lanes now serve the same ID-followup queue.  Keep the
+# existing environment variable name for deployment compatibility while using
+# one release profile for the two ID lanes.
+ID_DETAIL_LANES = frozenset(("new", "old"))
 QUOTA_ADAPTIVE_ENABLED = os.environ.get("CRAWLER_QUOTA_ADAPTIVE_ENABLED", "1") == "1"
 QUOTA_ADAPTIVE_LOOKBACK_DAYS = env_int("CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14)
 QUOTA_RATE_LIMIT_EXCLUDED_DATES = env_iso_dates(
@@ -592,7 +596,7 @@ def quota_release_steps() -> list[tuple[int, float]]:
 def detail_quota_release_steps(lane_id: str = "") -> list[tuple[int, float]]:
     text = (
         NEW_DETAIL_QUOTA_RELEASE_STEPS_TEXT
-        if str(lane_id or "") == "new"
+        if str(lane_id or "").lower() in ID_DETAIL_LANES
         else DETAIL_QUOTA_RELEASE_STEPS_TEXT
     )
     steps = parse_release_steps(text)

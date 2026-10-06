@@ -408,6 +408,24 @@ class AdaptiveDetailBudgetTest(unittest.TestCase):
         self.assertEqual(scheduler.detail_quota_release_fraction(at_10), 0.20)
         self.assertEqual(scheduler.detail_quota_release_fraction(at_2330), 1.00)
 
+    def test_id_lanes_share_the_new_detail_release_profile(self):
+        self.assertEqual(
+            scheduler.detail_quota_release_steps("old"),
+            scheduler.detail_quota_release_steps("new"),
+        )
+        at_05 = datetime(
+            2026,
+            7,
+            12,
+            5,
+            0,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+        self.assertEqual(
+            scheduler.detail_quota_release_fraction(at_05, lane_id="old"),
+            0.75,
+        )
+
     def test_deployment_preserves_release_profile_already_used_today(self):
         old_steps = [
             {"time": "11:00", "fraction": 0.20},
