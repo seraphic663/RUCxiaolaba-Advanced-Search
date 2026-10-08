@@ -291,13 +291,34 @@ def job_task_type(name: str) -> str:
     }.get(name, "")
 
 
-def job_lane_id(name: str) -> str:
-    """Return a lane only when the configured route is unambiguous.
+def _lane_detail_calls(quota: dict, lane_id: str) -> int:
+    lane = (quota.get("cookie_lanes") or {}).get(str(lane_id))
+    if not isinstance(lane, dict):
+        return 0
+    try:
+        return max(0, int(lane.get("detail_calls", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
 
-    With multiple lanes assigned to one task, the pool itself performs the
-    weighted sequential choice and the automatic quota is aggregated.  A
-    unique route gets a per-lane scheduler budget so the other cookie cannot
-    consume it accidentally.
+
+def _lane_is_paused(lane_id: str) -> bool:
+    document = load_pause()
+    lanes = document.get("lanes")
+    pause = lanes.get(str(lane_id), {}) if isinstance(lanes, dict) else {}
+    try:
+        return float(pause.get("until", 0) or 0) > now_wall()
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def job_lane_id(name: str) -> str:
+    """Choose one fixed cookie lane for the whole scheduler job.
+
+    A unique task route is pinned directly.  When a task is valid on more than
+    one lane, sequential mode chooses the lane with the lower persisted detail
+    utilization and prefers ``new`` on ties.  This keeps one scheduler process
+    responsible for one queue claim at a time; the old parallel worker remains
+    available only for explicitly enabled legacy deployments.
     """
 
     task_type = job_task_type(name)
@@ -316,7 +337,32 @@ def job_lane_id(name: str) -> str:
         if forced:
             return forced[0].lane_id
     matches = [spec for spec in specs if spec.supports_task(task_type)]
-    return matches[0].lane_id if len(matches) == 1 else ""
+    if len(matches) == 1:
+        return matches[0].lane_id
+
+    if PARALLEL_LANES_ENABLED or not matches:
+        return ""
+
+    quota = load_quota()
+    available = [
+        spec
+        for spec in matches
+        if spec.budget("detail") <= 0
+        or _lane_detail_calls(quota, spec.lane_id) < spec.budget("detail")
+    ]
+    if available:
+        matches = available
+    healthy = [spec for spec in matches if not _lane_is_paused(spec.lane_id)]
+    if healthy:
+        matches = healthy
+
+    def lane_key(spec: CookieLaneSpec) -> tuple[float, int, int]:
+        budget = max(1, spec.budget("detail"))
+        utilization = _lane_detail_calls(quota, spec.lane_id) / budget
+        new_preference = 0 if spec.lane_id.casefold() == "new" else 1
+        return utilization, new_preference, specs.index(spec)
+
+    return min(matches, key=lane_key).lane_id
 
 
 def pool_supports_job(name: str) -> bool:
