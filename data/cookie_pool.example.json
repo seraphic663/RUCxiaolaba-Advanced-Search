@@ -8,16 +8,16 @@
       "daily_budgets": {
         "new_list": 0,
         "active_list": 0,
-        "detail": 550
+        "detail": 500
       }
     },
     {
       "id": "old",
       "config": "config.txt",
       "enabled": true,
-      "task_types": ["id_followup"],
+      "task_types": ["id_followup", "history_detail"],
       "daily_budgets": {
-        "detail": 450
+        "detail": 500
       }
     }
   ]

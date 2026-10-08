@@ -251,6 +251,107 @@ class AutomaticQuotaTest(unittest.TestCase):
                     "old",
                 )
 
+    def test_sequential_shared_id_job_uses_lower_lane_utilization(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pool_path = root / "pool.json"
+            pool_path.write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "new",
+                                "config": "new.txt",
+                                "task_types": ["list_new", "id_followup"],
+                                "daily_budgets": {"detail": 500},
+                            },
+                            {
+                                "id": "old",
+                                "config": "old.txt",
+                                "task_types": ["id_followup", "history_detail"],
+                                "daily_budgets": {"detail": 500},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.quota_path.write_text(
+                json.dumps(
+                    {
+                        "date": "2026-07-11",
+                        "detail_calls": 24,
+                        "cookie_lanes": {
+                            "new": {"detail_calls": 24},
+                            "old": {"detail_calls": 0},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(scheduler, "COOKIE_POOL_PATH", str(pool_path)),
+                patch.object(scheduler, "COOKIE_POOL_LANE", ""),
+                patch.object(scheduler, "PARALLEL_LANES_ENABLED", False),
+            ):
+                self.assertEqual(scheduler.job_lane_id("trickle_fill"), "old")
+
+            self.quota_path.write_text(
+                json.dumps(
+                    {
+                        "date": "2026-07-11",
+                        "detail_calls": 48,
+                        "cookie_lanes": {
+                            "new": {"detail_calls": 24},
+                            "old": {"detail_calls": 24},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(scheduler, "COOKIE_POOL_PATH", str(pool_path)),
+                patch.object(scheduler, "COOKIE_POOL_LANE", ""),
+                patch.object(scheduler, "PARALLEL_LANES_ENABLED", False),
+            ):
+                self.assertEqual(scheduler.job_lane_id("trickle_fill"), "new")
+
+    def test_sequential_tasks_keep_unique_lane_routes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pool_path = root / "pool.json"
+            pool_path.write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "new",
+                                "config": "new.txt",
+                                "task_types": ["list_new", "list_active", "id_followup"],
+                                "daily_budgets": {"detail": 500},
+                            },
+                            {
+                                "id": "old",
+                                "config": "old.txt",
+                                "task_types": ["id_followup", "history_detail"],
+                                "daily_budgets": {"detail": 500},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(scheduler, "COOKIE_POOL_PATH", str(pool_path)),
+                patch.object(scheduler, "COOKIE_POOL_LANE", ""),
+                patch.object(scheduler, "PARALLEL_LANES_ENABLED", False),
+            ):
+                self.assertEqual(scheduler.job_lane_id("discover_new"), "new")
+                self.assertEqual(
+                    scheduler.job_lane_id("trickle_fill_history"),
+                    "old",
+                )
+
 
 class AdaptiveDetailBudgetTest(unittest.TestCase):
     def setUp(self):
