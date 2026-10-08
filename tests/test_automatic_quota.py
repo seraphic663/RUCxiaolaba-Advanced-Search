@@ -352,6 +352,70 @@ class AutomaticQuotaTest(unittest.TestCase):
                     "old",
                 )
 
+    def test_run_job_passes_selected_lane_to_child_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pool_path = root / "pool.json"
+            pool_path.write_text(
+                json.dumps(
+                    {
+                        "lanes": [
+                            {
+                                "id": "new",
+                                "config": "new.txt",
+                                "task_types": ["list_new", "id_followup"],
+                                "daily_budgets": {"detail": 500},
+                            },
+                            {
+                                "id": "old",
+                                "config": "old.txt",
+                                "task_types": ["id_followup", "history_detail"],
+                                "daily_budgets": {"detail": 500},
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.quota_path.write_text(
+                json.dumps(
+                    {
+                        "date": "2026-07-11",
+                        "detail_calls": 10,
+                        "cookie_lanes": {
+                            "new": {"detail_calls": 0},
+                            "old": {"detail_calls": 10},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            captured = {}
+
+            def fake_run(_command, **kwargs):
+                captured.update(kwargs["env"])
+                return Mock(returncode=0, stderr="")
+
+            with (
+                patch.object(scheduler, "COOKIE_POOL_PATH", str(pool_path)),
+                patch.object(scheduler, "COOKIE_POOL_LANE", ""),
+                patch.object(scheduler, "PARALLEL_LANES_ENABLED", False),
+                patch.object(
+                    scheduler,
+                    "prepare_job",
+                    return_value=(
+                        ["discover-latest", "--max-pages", "1"],
+                        "test",
+                    ),
+                ),
+                patch.object(scheduler.subprocess, "run", side_effect=fake_run),
+            ):
+                result = scheduler.run_job("discover_new")
+
+            self.assertTrue(result.succeeded)
+            self.assertEqual(result.lane_id, "new")
+            self.assertEqual(captured["CRAWLER_COOKIE_POOL_LANE"], "new")
+
 
 class AdaptiveDetailBudgetTest(unittest.TestCase):
     def setUp(self):

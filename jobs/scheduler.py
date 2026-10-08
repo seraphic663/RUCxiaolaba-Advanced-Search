@@ -2166,6 +2166,13 @@ def run_job(name: str) -> JobResult:
     child_env["CRAWLER_PAUSE_FILE"] = str(PAUSE_PATH)
     if str(COOKIE_POOL_PATH or "").strip():
         child_env["CRAWLER_COOKIE_POOL"] = COOKIE_POOL_PATH
+        if lane_id:
+            # The scheduler's lane choice must survive the process boundary.
+            # Without this pin, a fresh CookiePoolClient would reset its local
+            # counters and route one task across both cookies again.
+            child_env["CRAWLER_COOKIE_POOL_LANE"] = lane_id
+        else:
+            child_env.pop("CRAWLER_COOKIE_POOL_LANE", None)
     kind = job_budget_kind(name)
     if kind:
         child_env[AUTOMATIC_QUOTA_KIND_ENV] = kind
