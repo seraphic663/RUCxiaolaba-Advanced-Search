@@ -11,7 +11,7 @@
 | `benchmarks/` | 性能基准 | 只手动运行，不属于普通测试；数据前提见该目录 README |
 | `demo/` | 合成演示数据 | 可重复生成，不读取真实主库 |
 
-`operations/fetch_messages.py` 不属于帖子搜索主线，可能读取私信和账户相关数据，只能按 [数据来源、隐私与合规说明](../docs/legal-and-data.md) 处理；默认不要运行、上传或公开其输出。
+`operations/fetch_messages.py` 不属于帖子搜索主线，默认不要运行、上传或公开其输出。
 
 常用入口：
 
@@ -19,6 +19,7 @@
 python -m tools.audits.probe_upstream
 python -m tools.operations.build_symbol_index --posts-db data\posts.db --output data\symbol_index.db
 python -m tools.operations.backup_runtime --data-dir data
+python -m tools.operations.crawler_metrics render --metrics-path metrics\crawler_history.csv --output-dir reports\generated
 ```
 
 新增工具时先判断：日常可重复运维进入 `operations/`，一次性 schema/data 变换进入 `migrations/`，验证假设进入 `audits/`，性能测量进入 `benchmarks/`。

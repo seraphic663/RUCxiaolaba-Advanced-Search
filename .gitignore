@@ -22,6 +22,8 @@ data/*
 # Generated exports and backups
 backups/
 backup/
+/reports/generated/
+metrics/*.lock
 messages.json
 messages.txt
 messages.*.json
