@@ -21,6 +21,11 @@ from crawler.task_routing import (
     TASK_ID_FOLLOWUP,
     normalize_task_type,
 )
+from storage.crawler_metrics import (
+    format_crawler_pool_snapshot_log,
+    metrics_path_for_db,
+    record_crawler_pool_snapshot,
+)
 from storage.queue_repository import CrawlerQueueRepository, QueueClaim
 
 
@@ -1428,7 +1433,7 @@ class SQLitePostStore:
         commit: bool = True,
     ) -> None:
         self.ensure_crawler_run_history(commit=False)
-        self.conn.execute(
+        cursor = self.conn.execute(
             """
             insert into crawler_run_history(
                 command,started_at,finished_at,source_calls,seen,selected,
@@ -1457,6 +1462,24 @@ class SQLitePostStore:
                 int(bool(stats.get("rate_limited"))),
                 json.dumps(stats, ensure_ascii=False, sort_keys=True),
             ),
+        )
+        snapshot = record_crawler_pool_snapshot(
+            self.conn,
+            metrics_path=metrics_path_for_db(self.db_path),
+            source_run_id=int(cursor.lastrowid),
+            source_command=str(command),
+            source_lane_id=str(stats.get("lane_id") or ""),
+            sample_kind="run",
+            method="exact",
+            stats=stats,
+        )
+        print(
+            format_crawler_pool_snapshot_log(
+                snapshot,
+                source=str(command),
+                lane=str(stats.get("lane_id") or ""),
+            ),
+            flush=True,
         )
         if commit:
             self.conn.commit()

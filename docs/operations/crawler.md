@@ -1,6 +1,6 @@
 # 爬虫运行与调度
 
-> 本页按 2026-09-04 当前代码核对。若代码、环境变量示例和历史报告不一致，以当前 `jobs/scheduler.py` 和本文的当前配置段为准；历史测量只用于解释当时现象。
+> 本页按 2026-10-10 当前代码核对。若代码、环境变量示例和历史报告不一致，以当前 `jobs/scheduler.py` 和本文的当前配置段为准；历史测量只用于解释当时现象。
 
 本文档是爬虫命令、停止条件、队列、配额和 Railway 调度的当前唯一运维事实源。`crawler/README.md` 只说明模块边界，不再复制运行手册。
 
@@ -184,11 +184,9 @@ CRAWLER_BOOTSTRAP_SINCE=1970-01-01 00:00:00
 是自动详情的唯一内部预算。它不是上游承诺的无限额度：如果真实接口返回
 `rate_limited`，对应 lane 会进入 cooldown/次日恢复规则；单 cookie 兼容模式仍使用原来的全局暂停文件。
 
-当前单 cookie 详情目标范围仍由 `CRAWLER_DAILY_DETAIL_BUDGET` 控制；固定 cookie 池则以池文件的 lane 预算为准。当前池配置为新 cookie `detail=600`、旧 cookie `detail=500`。新 cookie 的 `id_followup` 每轮最多 18 条，旧 cookie 的 `history_detail` 每轮保持 12 条，详情仍逐请求、串行并使用 8–14 秒间隔。列表不等待详情释放曲线，只按各自监视间隔请求并保留数字审计。
+当前单 cookie 详情目标范围仍由 `CRAWLER_DAILY_DETAIL_BUDGET` 控制；固定 cookie 池则以池文件的 lane 预算为准。当前池配置为新 cookie `detail=600`、旧 cookie `detail=600`。新 cookie 的 `id_followup` 每轮最多 18 条，旧 cookie 的 `history_detail` 每轮最多 15 条，详情仍逐请求、串行并使用 8–14 秒间隔。列表不等待详情释放曲线，只按各自监视间隔请求并保留数字审计。
 
-日切升级既看详情总目标利用率，也看旧释放曲线下的理论可达容量：如果昨日没有限流，虽然未达到目标的 95%，但已经使用了当日时间窗理论容量的 98%，视为 `schedule_limited_increase`，而不是错误判为需求不足。发生 `rate_limited` 时仍由全局 80% 安全回退统一缩减，详情控制器不重复降额。新 cookie 每轮最多 18 个详情，仍优先处理 priority 0 新回复；旧 cookie 每轮最多 12 个历史详情。
-
-2026-08-05 上线前快照显示：最近无 `rate_limited`，已验证最高约 816 次源请求/天；队列仍有 20,983 个 pending，其中 priority 0 新回复 4,172 个、priority 10 有评论新帖 12,371 个。该数据说明 700 详情上限只能接近追平新增，无法明显消化积压，因此提高到 1000；如果更高请求强度触发真实限流，全局 pause 仍会立即停止当天请求并在次日按 80% 安全系数回退。
+日切升级既看详情总目标利用率，也看当前释放曲线下的理论可达容量：如果昨日没有限流，虽然未达到目标的 95%，但已经使用了当日时间窗理论容量的 98%，视为 `schedule_limited_increase`。发生 `rate_limited` 时不再把配置预算机械乘以 80%；scheduler 记录共享 session 的 pacing anchor，详情目标保持稳定，并按软 cooldown/硬暂停规则恢复。新 cookie 每轮最多 18 个详情，仍优先处理 priority 0 新回复；旧 cookie 每轮最多 15 个历史详情。
 
 Admin 使用独立额外额度：每天 20 次候选预览和 10 次人工详情，不扣减 new-list、active-list 或自动 detail 主计数，也不受自动详情释放约束；列表观察不再用固定的内部日上限裁剪，因此不能再用旧的 1240/1270 总数描述新主线。人工调用仍读取同一个全局 pause，发生 `rate_limited` 时会和 scheduler 一起暂停；人工计数也会进入 quota history 的真实 `source_calls`，不能在限流分析中漏算。一次预览最多 3 页，一次任务最多 10 个帖子；详情任务第一个帖子立即请求，后续帖子继续使用 8–14 秒串行间隔。
 
@@ -209,29 +207,29 @@ scheduler 只用剩余额度裁剪子任务的 `max-pages` 或 `limit`，不再�
 默认调度间隔：
 
 ```text
-CRAWLER_NEW_DISCOVER_INTERVAL=3600
-CRAWLER_ACTIVE_DISCOVER_INTERVAL=3600
-CRAWLER_ACTIVE_DISCOVER_OFFSET=1800
+CRAWLER_NEW_DISCOVER_INTERVAL=10800
+CRAWLER_ACTIVE_DISCOVER_INTERVAL=10800
+CRAWLER_ACTIVE_DISCOVER_OFFSET=3600
 CRAWLER_DISCOVER_LATEST_PAGES=5              # 04:00–06:00 深扫上限
 CRAWLER_DISCOVER_ACTIVE_PAGES=5              # 04:00–06:00 深扫上限
-CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=3      # 常规最多 3 页，有效信号不足时提前停
-CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=3      # 常规最多 3 页，有效信号不足时提前停
+CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=10     # 常规最多 10 页，有效信号不足时提前停
+CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=10     # 常规最多 10 页，有效信号不足时提前停
 CRAWLER_LIST_DEEP_SCAN_START=04:00
 CRAWLER_LIST_DEEP_SCAN_END=06:00
 CRAWLER_TRICKLE_INTERVAL=600
 ```
 
-首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；`history_detail` 旧任务在各阶段独立低速排队，不会改变这个门槛。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段 list1 常规最多 3 页、list2 常规最多 3 页，分别在第 1/2 页达到无有效信号时提前停止；04:00–06:00 两类列表各做一次最多 5 页的深扫。list1 每小时一次，list2 每小时一次并固定错开 30 分钟；有效信号只包括新 ID、源端更新时间/评论数变化或新的 `lists2` 事件。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
+首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；`history_detail` 旧任务在各阶段独立低速排队，不会改变这个门槛。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段 list1/list2 常规最多 10 页，并依据有效信号不足提前停止；04:00–06:00 两类列表各做一次最多 5 页的深扫。list1 和 list2 都是每 3 小时一次，并固定错开 1 小时；有效信号只包括新 ID、源端更新时间/评论数变化或新的 `lists2` 事件。`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
 
 
 ## 限流、Cookie 失效与暂停
 
 - `code == "1000"` 映射为 `cookie_expired`，通常需要人工替换 cookie。
 - “今天刷得太久”“休息一下”“操作频繁”“稍后再试”“访问频繁”等文本映射为 `rate_limited:*`。
-- `rate_limited` 发生后当前候选保持 `pending`，本轮立即停止；scheduler 暂停全部爬虫到下一个北京时间 00:05。
+- `rate_limited` 发生后当前候选保持 `pending`，本轮立即停止；固定 cookie 模式首次进入 cooldown，达到硬阈值后暂停到下一个北京时间 00:05，cookie 池模式只暂停出错的 lane。
 - 暂停结束不代表立即放量，主动请求仍受当天 release step 约束。
 - `cookie_expired` 默认暂停 6 小时，但恢复通常依赖人工更新 `/app/data/config.txt`。
-- 最近 14 天发生过 `rate_limited` 时，有效总预算按最近触顶时已预留源请求数的 80% 缩小。
+- 最近 14 天发生过 `rate_limited` 时，不直接缩小配置总预算；共享 session 的历史触顶值只用于 pacing，详情目标在限流日保持不变。
 - 只有经人工确认由共享 session 的用户高强度浏览导致时，才可把对应北京时间日期加入 `CRAWLER_QUOTA_RATE_LIMIT_EXCLUDED_DATES`。原始 quota history 不删除、不改写；排除项只阻止该日期参与后续自动降额，其他日期的真实 crawler 限流仍正常暂停和回退。
 
 运行文件位于主库旁：
@@ -245,6 +243,23 @@ CRAWLER_TRICKLE_INTERVAL=600
 ```
 
 启用 cookie 池时，`.crawler_quota.json` 还会有 `cookie_lanes` 数字计数，例如每个 lane 的 `detail_calls`；不会写入 cookie 内容。
+
+## 数量历史自动记录
+
+运行数据库中的数量口径固定为：`post_id_ledger` 是已观察 ID 总台账，`crawler_queue` 中 `id_followup/pending` 是当前 ID 表待查量，`history_detail/pending` 是当前历史详情待查量，`crawler_run_history` 是运行事件。历史数量独立追加到 CSV ledger，不进入主库 schema；crawler 每次持久化运行后、scheduler 空闲或暂停达到默认一小时时都会追加精确快照，并在日志输出同一时刻的 `id_ledger_total`、`id_pending`、`history_pending` 和队列总量。这个过程只读本地 SQLite 状态，不发起源 API 请求，也不读取或记录 cookie。
+
+标准报告工具是 `tools/operations/crawler_metrics.py`：
+
+```powershell
+python -m tools.operations.crawler_metrics capture --db-path data\posts.db --metrics-path metrics\crawler_history.csv
+python -m tools.operations.crawler_metrics render --metrics-path metrics\crawler_history.csv --output-dir reports\generated
+python -m tools.operations.crawler_metrics validate --db-path data\posts.db --metrics-path metrics\crawler_history.csv
+python -m tools.operations.crawler_metrics import-legacy --reports-dir reports --metrics-path metrics\crawler_history.csv --sources-path metrics\crawler_sources.csv
+```
+
+`metrics/crawler_history.csv` 是历史事实源，`metrics/crawler_sources.csv` 是来源索引。`render` 只生成 `latest.json`、`history.csv`、`latest.html` 和 `summary.md`；这些报告可以删除后重建。PNG-only 旧文件在完成人工数字化前仍应保留，并标记为 `visual_only`。
+
+线上 scheduler 默认把 ledger 写到主库旁的 `/app/data/crawler_metrics/crawler_history.csv`；设置 `CRAWLER_METRICS_PATH` 可以指定其他持久化路径。仓库中的 `metrics/` 是旧报告导入后的可审计副本。
 
 数据库写锁使用带 token、容器主机名和心跳的 90 秒租约；新旧 Railway 容器重叠时，新容器不会仅因为看不到旧容器 PID 就删除活锁。scheduler 还由 `start.sh` 监督，意外退出后 30 秒重启；管理员状态接口会返回 scheduler heartbeat 和终态队列中仍未补的评论差值。
 

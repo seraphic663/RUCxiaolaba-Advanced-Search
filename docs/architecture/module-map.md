@@ -60,6 +60,7 @@
 | 文件 | 用途 | 用法与边界 | 主要测试 |
 |---|---|---|---|
 | `storage/post_writer.py` | SQLite schema、帖子/评论写入、FTS 和 sidecar 更新 facade | 通过 `SQLitePostStore` 使用；它仍是兼容入口，不能直接替换主库或删除运行表 | `tests/test_sqlite_store.py`、crawler tests |
+| `storage/crawler_metrics.py` | 将精确的 ID/history 队列快照追加到独立 CSV ledger | 只读取同一 SQLite connection；不改主库 schema、不发请求、不读取 cookie | `tests/test_crawler_metrics.py` |
 | `storage/queue_repository.py` | crawler queue 的 claim、token fencing 和终态转换 | 由 `SQLitePostStore` 委托；`QueueClaim` 只对当前 owner/token 有效，过期 worker 返回 `stale_claim` 或 false | `tests/test_queue_claim_fencing.py` |
 | `storage/bigram_index.py` | 构建和维护普通文本 Bigram sidecar | 只在明确的临时输出路径构建并验证后替换；不要直接覆盖正在使用的 sidecar | `tests/test_search_bigram.py`、benchmark |
 | `storage/symbol_index.py` | 构建特殊符号、表情和混合查询 sidecar | 与主库的 searchable row 数和 schema version 一起核对 | `tests/test_search_bigram.py` |

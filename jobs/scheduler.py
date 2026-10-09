@@ -19,6 +19,11 @@ from crawler.cookie_pool import COOKIE_KINDS, CookieLaneSpec, load_cookie_pool_s
 from crawler.id_ledger import ledger_state, set_ledger_state
 from crawler.lock import database_write_lock
 from crawler.manual_quota import exclusive_control_lock
+from storage.crawler_metrics import (
+    format_crawler_pool_snapshot_log,
+    metrics_path_for_db,
+    record_crawler_pool_snapshot,
+)
 from storage.post_writer import SQLitePostStore
 from crawler.task_routing import (
     TASK_HISTORY_DETAIL,
@@ -268,6 +273,10 @@ RATE_LIMIT_HARD_THRESHOLD = max(
 )
 PAUSE_LOG_INTERVAL = env_int("CRAWLER_PAUSE_LOG_INTERVAL", 10 * 60)
 HEARTBEAT_INTERVAL = env_int("CRAWLER_SCHEDULER_HEARTBEAT_INTERVAL", 30)
+METRICS_SNAPSHOT_INTERVAL = env_int(
+    "CRAWLER_METRICS_SNAPSHOT_INTERVAL",
+    60 * 60,
+)
 
 
 def cookie_pool_specs() -> tuple[CookieLaneSpec, ...]:
@@ -1428,6 +1437,57 @@ def save_heartbeat(*, state: str, job: str = "", detail: str = "") -> None:
         print(f"[scheduler] heartbeat write failed: {exc}", flush=True)
 
 
+def record_scheduler_metrics_snapshot(
+    *,
+    state: str,
+    job: str = "",
+    detail: str = "",
+) -> bool:
+    """Persist an exact queue snapshot without making an upstream request."""
+
+    try:
+        with database_write_lock(DB_PATH, 30):
+            with SQLitePostStore(DB_PATH) as store:
+                quota = load_quota()
+                lanes = quota.get("cookie_lanes") or {}
+                lane_detail_calls = {
+                    str(lane_id): int((lane or {}).get("detail_calls", 0) or 0)
+                    for lane_id, lane in lanes.items()
+                    if isinstance(lane, dict)
+                }
+                snapshot = record_crawler_pool_snapshot(
+                    store.conn,
+                    metrics_path=metrics_path_for_db(DB_PATH),
+                    source_command="scheduler-heartbeat",
+                    sample_kind="heartbeat",
+                    method="exact",
+                    stats={
+                        "scheduler_state": str(state or ""),
+                        "scheduler_job": str(job or ""),
+                        "scheduler_detail": str(detail or "")[-500:],
+                        "quota_detail_calls": int(quota.get("detail_calls", 0) or 0),
+                        "quota_rate_limited": int(quota.get("rate_limited", 0) or 0),
+                        "quota_effective_detail_budget": int(
+                            quota.get("effective_detail_budget", 0) or 0
+                        ),
+                        "quota_lane_detail_calls": lane_detail_calls,
+                    },
+                )
+                print(
+                    format_crawler_pool_snapshot_log(
+                        snapshot,
+                        source="scheduler-heartbeat",
+                        state=str(state or ""),
+                        job=str(job or ""),
+                    ),
+                    flush=True,
+                )
+        return True
+    except Exception as exc:
+        print(f"[scheduler] metrics snapshot failed: {exc}", flush=True)
+        return False
+
+
 def refresh_runtime_state() -> dict:
     """Refresh quota metadata and repair local queue invariants without source I/O."""
     quota_lock = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
@@ -2333,7 +2393,10 @@ def main() -> int:
 
     last_pause_log: dict[str, float] = {}
     last_heartbeat = 0.0
+    last_metrics_snapshot = 0.0
     save_heartbeat(state="started")
+    record_scheduler_metrics_snapshot(state="started")
+    last_metrics_snapshot = time.monotonic()
     while True:
         now = time.monotonic()
         if TRICKLE_ENABLED:
@@ -2361,6 +2424,13 @@ def main() -> int:
                     detail=str(pause.get("reason") or ""),
                 )
                 last_heartbeat = now
+            if now - last_metrics_snapshot >= METRICS_SNAPSHOT_INTERVAL:
+                if record_scheduler_metrics_snapshot(
+                    state="paused",
+                    job=due,
+                    detail=str(pause.get("reason") or ""),
+                ):
+                    last_metrics_snapshot = now
             for name in next_run:
                 next_run[name] = max(next_run[name], until_monotonic)
             time.sleep(min(max(1.0, until_monotonic - now), 30))
@@ -2370,6 +2440,9 @@ def main() -> int:
             if now - last_heartbeat >= 60:
                 save_heartbeat(state="idle", job=due)
                 last_heartbeat = now
+            if now - last_metrics_snapshot >= METRICS_SNAPSHOT_INTERVAL:
+                if record_scheduler_metrics_snapshot(state="idle", job=due):
+                    last_metrics_snapshot = now
             time.sleep(min(wait, 30))
             continue
         started_at = time.monotonic()
@@ -2471,6 +2544,12 @@ def main() -> int:
                     detail=result.stderr,
                 )
                 last_heartbeat = time.monotonic()
+                if record_scheduler_metrics_snapshot(
+                    state="idle",
+                    job=due,
+                    detail=result.stderr,
+                ):
+                    last_metrics_snapshot = last_heartbeat
                 continue
         except Exception as exc:
             print(
@@ -2497,6 +2576,7 @@ def main() -> int:
             detail="succeeded" if result.succeeded else "failed",
         )
         last_heartbeat = finished_at
+        last_metrics_snapshot = finished_at
 
 
 if __name__ == "__main__":

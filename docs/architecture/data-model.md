@@ -121,6 +121,8 @@ body     正文或评论文本
 
 它们是 crawler 的持久运行状态，不等于帖子内容覆盖率。完整度需要同时查看 `posts.crawl_status`、`comments`、queue 状态和各命令统计。由 queue 认领的详情 worker 在完成、失败或重试时必须带回本次 claim token；租约过期后旧 worker 的终态写入应被拒绝，不能覆盖重新认领任务。
 
+`crawler_queue` 是当前状态，`crawler_run_history` 是运行事件；数量历史不进入主库，而写入独立的 `metrics/crawler_history.csv`。其中 `id_pending` 和 `history_pending` 分别来自同一时刻的 `task_type='id_followup'` 与 `task_type='history_detail'`。每条记录带有来源、方法和质量标记，报告工具只从这个独立 ledger 生成。
+
 ## 为什么不再保留 posts.comments_json
 
 旧 CSV/完整 DB 里曾经在帖子表保存完整嵌套评论 JSON。当前主模型是：
