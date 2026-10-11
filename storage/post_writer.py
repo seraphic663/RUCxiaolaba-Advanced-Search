@@ -1595,6 +1595,7 @@ class SQLitePostStore:
         comments: list[dict],
         *,
         preserve_existing_content: bool = False,
+        force_partial: bool = False,
         commit: bool = True,
     ) -> dict[str, int]:
         """Merge useful data from an incomplete detail without deleting rows."""
@@ -1619,10 +1620,14 @@ class SQLitePostStore:
             merged_post["content"] = str(existing["content"] or "")
             merged_post["media_json"] = str(existing["media_json"] or "{}")
         merged_post["crawl_status"] = (
-            "full"
-            if existing is not None
-            and str(existing["crawl_status"] or "full") == "full"
-            else "partial"
+            "partial"
+            if force_partial
+            else (
+                "full"
+                if existing is not None
+                and str(existing["crawl_status"] or "full") == "full"
+                else "partial"
+            )
         )
         merged_post["comment_count"] = max(
             safe_int(post.get("comment_count")),
@@ -1763,6 +1768,12 @@ class SQLitePostStore:
             changed = True
         else:
             status = str(existing["crawl_status"] or "full")
+            actual_comment_count = safe_int(
+                self.conn.execute(
+                    "select count(*) from comments where post_id=?",
+                    (post_id,),
+                ).fetchone()[0]
+            )
             if status == "full":
                 existing_media = str(existing["media_json"] or "{}")
                 promoted_media = (
@@ -1785,7 +1796,8 @@ class SQLitePostStore:
                     """
                     update posts
                     set media_json=?, comment_count=?, star_count=?, trace_count=?,
-                        list_update_time=?, list_source=?, source_state='available',
+                        list_update_time=?, list_source=?,
+                        crawl_status=?, source_state='available',
                         source_state_changed_at=case
                             when source_state='available'
                             then source_state_changed_at else ? end,
@@ -1800,6 +1812,11 @@ class SQLitePostStore:
                         values["trace_count"],
                         list_update_time,
                         source,
+                        (
+                            "partial"
+                            if values["comment_count"] > actual_comment_count
+                            else "full"
+                        ),
                         now,
                         now,
                         metadata_changed,
@@ -1833,7 +1850,7 @@ class SQLitePostStore:
                     set content=?, media_json=?, category_name=?, user_name=?,
                         show_user_id=?, real_user_id=?, create_time=?,
                         comment_count=?, star_count=?, trace_count=?,
-                        crawl_status='list_only', list_update_time=?, list_source=?,
+                        crawl_status=?, list_update_time=?, list_source=?,
                         source_state='available',
                         source_state_changed_at=case
                             when source_state='available'
@@ -1853,6 +1870,12 @@ class SQLitePostStore:
                         values["comment_count"],
                         values["star_count"],
                         values["trace_count"],
+                        (
+                            "partial"
+                            if status == "partial"
+                            or values["comment_count"] > actual_comment_count
+                            else "list_only"
+                        ),
                         list_update_time,
                         source,
                         now,
@@ -2207,6 +2230,9 @@ class SQLitePostStore:
             attempted_update = str(existing["last_attempt_list_update_time"] or "")
             snapshot = self.get_post_crawl_snapshot(str(post_id))
             is_full = bool(snapshot and snapshot["crawl_status"] == "full")
+            has_detail_snapshot = bool(
+                snapshot and snapshot["crawl_status"] in {"full", "partial"}
+            )
             current_db_count = (
                 safe_int(snapshot["comment_count"])
                 if snapshot is not None
@@ -2218,7 +2244,7 @@ class SQLitePostStore:
             )
             never_attempted = attempted_count is None and not attempted_update
             incomplete_changed = (
-                not is_full
+                not has_detail_snapshot
                 and (
                     list_comment_count != safe_int(attempted_count)
                     or (
@@ -2249,7 +2275,7 @@ class SQLitePostStore:
             # Keeping the previous timestamp also lets discovery count this as a
             # true no-op instead of extending list scans with metadata churn.
             if (
-                is_full
+                has_detail_snapshot
                 and list_comment_count == old_list_count
                 and reason != "admin_selected"
             ):

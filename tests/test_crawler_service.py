@@ -734,6 +734,37 @@ class CrawlerServiceTest(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual(row["updated_at"], "sentinel")
 
+    def test_list_stub_marks_full_post_partial_when_source_count_exceeds_saved_rows(self):
+        with SQLitePostStore(self.db) as store:
+            store.upsert_post(
+                {
+                    "id": "6082962",
+                    "content": "正文",
+                    "create_time": "2026-09-28 03:57:22",
+                    "comment_count": 1,
+                    "crawl_status": "full",
+                },
+                [{"id": "c1", "detail": "唯一已保存的评论"}],
+            )
+            store.upsert_list_stub(
+                {
+                    "id": "6082962",
+                    "detail": "正文",
+                    "create_time": "2026-09-28 03:57:22",
+                    "update_time": "2026-09-28 08:49:13",
+                    "count_comment": 7,
+                },
+                source="lists2",
+            )
+            post = store.conn.execute(
+                "select comment_count,crawl_status from posts where id='6082962'"
+            ).fetchone()
+            saved = store.conn.execute(
+                "select count(*) from comments where post_id='6082962'"
+            ).fetchone()[0]
+        self.assertEqual(dict(post), {"comment_count": 7, "crawl_status": "partial"})
+        self.assertEqual(saved, 1)
+
     def test_enqueue_crawler_candidate_noops_when_candidate_is_unchanged(self):
         with SQLitePostStore(self.db) as store:
             kwargs = {
@@ -1199,7 +1230,8 @@ class CrawlerServiceTest(unittest.TestCase):
             max_delay=0,
             stop_after_misses=1,
         )
-        self.assertEqual(result["refreshed_details"], 1)
+        self.assertEqual(result["completed_details"], 1)
+        self.assertEqual(result["refreshed_details"], 0)
         self.assertEqual(result["new_comment_rows"], 1)
         with SQLitePostStore(self.db) as store:
             self.assertEqual(store.get_post_counts("205"), 2)
@@ -1532,7 +1564,7 @@ class CrawlerServiceTest(unittest.TestCase):
                 list_create_time="",
                 list_update_time="2026-06-25 13:00:00",
                 list_comment_count=3,
-                db_comment_count=1,
+                db_comment_count=2,
                 reason="comment_changed",
             )
 
@@ -1585,7 +1617,7 @@ class CrawlerServiceTest(unittest.TestCase):
                 list_create_time="",
                 list_update_time="2026-06-25 13:00:00",
                 list_comment_count=3,
-                db_comment_count=1,
+                db_comment_count=2,
                 reason="comment_changed",
             )
             self.assertEqual(unchanged, "unchanged")
@@ -1596,7 +1628,7 @@ class CrawlerServiceTest(unittest.TestCase):
                 list_create_time="",
                 list_update_time="2026-06-25 13:30:00",
                 list_comment_count=3,
-                db_comment_count=1,
+                db_comment_count=2,
                 reason="comment_changed",
             )
             self.assertEqual(update_only, "unchanged")
@@ -1607,7 +1639,7 @@ class CrawlerServiceTest(unittest.TestCase):
                 list_create_time="",
                 list_update_time="2026-06-25 14:00:00",
                 list_comment_count=4,
-                db_comment_count=1,
+                db_comment_count=2,
                 reason="comment_changed",
             )
             status = store.conn.execute(

@@ -159,7 +159,7 @@ class DeletedPostVisibilityTest(unittest.TestCase):
         self.assertEqual(
             dict(row),
             {
-                "crawl_status": "full",
+                "crawl_status": "partial",
                 "comment_count": 1,
                 "star_count": 7,
                 "trace_count": 4,

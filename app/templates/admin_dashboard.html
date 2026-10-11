@@ -730,8 +730,12 @@ function toggleContent(idx) {
   }
 }
 
-function renderComments(panel, comments) {
-  if (!comments || comments.length === 0) return '无评论';
+function renderComments(panel, comments, commentState) {
+  if (!comments || comments.length === 0) {
+    if (commentState === 'not_crawled') return '尚未爬取';
+    if (commentState === 'incomplete') return '评论尚未完整爬取';
+    return '暂无评论';
+  }
   var limit = uiSettings.commentLimit || 0;
   var hiddenTopLevel = limit > 0 && comments.length > limit ? comments.length - limit : 0;
   var visibleComments = hiddenTopLevel > 0 ? comments.slice(0, limit) : comments;
@@ -799,7 +803,7 @@ function toggleCmts(idx) {
   fetch('/api/comments?id=' + encodeURIComponent(p.id) + '&admin_required=1')
     .then(parseJsonResponse)
     .then(function(payload) {
-      panel.innerHTML = renderComments(panel, payload.comment_list || []);
+      panel.innerHTML = renderComments(panel, payload.comment_list || [], payload.comment_state);
       commentsLoaded[idx] = true;
     })
     .catch(function(err) {

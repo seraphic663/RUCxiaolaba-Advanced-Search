@@ -16,6 +16,7 @@ from pathlib import Path
 from crawler.client import MiniProgramClient
 from crawler.cookie_pool import CookiePoolClient
 from crawler.detail_pipeline import parse_detail_payload
+from crawler.normalizer import count_comment_nodes
 from crawler.id_ledger import (
     ledger_state,
     mark_detail_finished,
@@ -252,6 +253,7 @@ class CrawlerService:
             post,
             comments,
             preserve_existing_content=payload_error.endswith("empty_content"),
+            force_partial=payload_error.startswith("suspicious_payload:"),
             commit=False,
         )
 
@@ -868,6 +870,20 @@ class CrawlerService:
                             claim=claim,
                             commit=False,
                         )
+                    if (
+                        not error
+                        and parsed is not None
+                        and task_type == TASK_ID_FOLLOWUP
+                        and "comment_rows_incomplete"
+                        not in str(item["reason"] or "").split("|")
+                    ):
+                        expected_comments = safe_int(item["list_comment_count"])
+                        returned_comments = count_comment_nodes(parsed[1])
+                        if expected_comments > returned_comments:
+                            error = (
+                                "suspicious_payload:incomplete_comments:"
+                                f"list={expected_comments},returned={returned_comments}"
+                            )
                     if error:
                         if self.is_source_quota_stop(error):
                             stats["quota_stop"] = True

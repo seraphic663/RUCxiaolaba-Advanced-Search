@@ -605,7 +605,12 @@ function loadComments(index, postId) {
     .then(function(data) {
       var cmts = data.comment_list || [];
       if (cmts.length === 0) {
-        wrap.innerHTML = '<div style="color:#999;text-align:center;padding:20px;">暂无评论</div>';
+        var emptyLabel = data.comment_state === 'not_crawled'
+          ? '尚未爬取'
+          : data.comment_state === 'incomplete'
+            ? '评论尚未完整爬取'
+            : '暂无评论';
+        wrap.innerHTML = '<div style="color:#999;text-align:center;padding:20px;">' + emptyLabel + '</div>';
       } else {
         wrap.innerHTML = renderComments(cmts, currentQuery.split(/\s+/).filter(Boolean));
       }
