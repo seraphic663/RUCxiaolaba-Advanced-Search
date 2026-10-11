@@ -870,16 +870,24 @@ class CrawlerService:
                             claim=claim,
                             commit=False,
                         )
+                    reason_tokens = {
+                        token for token in str(item["reason"] or "").split("|") if token
+                    }
+                    live_gap_evidence = bool(
+                        reason_tokens
+                        & {"active_event", "active_missing", "comment_changed", "new_post"}
+                    )
                     if (
                         not error
                         and parsed is not None
                         and task_type == TASK_ID_FOLLOWUP
-                        and "comment_rows_incomplete"
-                        not in str(item["reason"] or "").split("|")
                     ):
                         expected_comments = safe_int(item["list_comment_count"])
                         returned_comments = count_comment_nodes(parsed[1])
-                        if expected_comments > returned_comments:
+                        if expected_comments > returned_comments and (
+                            "comment_rows_incomplete" not in reason_tokens
+                            or live_gap_evidence
+                        ):
                             error = (
                                 "suspicious_payload:incomplete_comments:"
                                 f"list={expected_comments},returned={returned_comments}"
@@ -1097,8 +1105,8 @@ class CrawlerService:
                             retry_delay_seconds=observation_retry_delay,
                             max_same_observation_attempts=max_observation_attempts,
                             accept_detail_count=(
-                                "comment_rows_incomplete"
-                                in str(item["reason"] or "").split("|")
+                                "comment_rows_incomplete" in reason_tokens
+                                and not live_gap_evidence
                             ),
                             claim=claim,
                             commit=False,

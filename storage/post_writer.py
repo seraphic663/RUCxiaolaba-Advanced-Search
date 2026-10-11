@@ -438,6 +438,14 @@ class SQLitePostStore:
             self.migrate_crawler_partial_payload_retries(commit=False)
         )
         comment_gap_migration = self.migrate_crawler_comment_row_gaps(commit=False)
+        full_comment_gap_migration = self.migrate_crawler_comment_row_gaps(
+            commit=False,
+            migration_key="crawler_full_comment_gap_v2",
+            mark_partial=True,
+        )
+        partial_comment_gap_migration = self.migrate_partial_comment_row_gaps(
+            commit=False
+        )
         comment_gap_priority_migration = (
             self.migrate_crawler_comment_row_gap_priorities(commit=False)
         )
@@ -474,6 +482,18 @@ class SQLitePostStore:
         if comment_gap_migration:
             print(
                 f"[queue] migrated comment row gaps {comment_gap_migration}",
+                flush=True,
+            )
+        if full_comment_gap_migration:
+            print(
+                "[queue] marked full posts with comment row gaps partial "
+                f"{full_comment_gap_migration}",
+                flush=True,
+            )
+        if partial_comment_gap_migration:
+            print(
+                "[queue] requeued partial comment row gaps "
+                f"{partial_comment_gap_migration}",
                 flush=True,
             )
         if comment_gap_priority_migration:
@@ -1047,8 +1067,14 @@ class SQLitePostStore:
             self.conn.commit()
         return result if any(result.values()) else {}
 
-    def migrate_crawler_comment_row_gaps(self, commit: bool = True) -> dict:
-        """Queue full posts whose declared comments exceed saved comment rows."""
+    def migrate_crawler_comment_row_gaps(
+        self,
+        commit: bool = True,
+        *,
+        migration_key: str = "crawler_comment_row_gap_v1",
+        mark_partial: bool = False,
+    ) -> dict:
+        """Queue posts whose declared comments exceed saved comment rows."""
         if not all(
             self._table_exists(name)
             for name in ("posts", "comments", "crawler_queue")
@@ -1063,7 +1089,6 @@ class SQLitePostStore:
             )
             """
         )
-        migration_key = "crawler_comment_row_gap_v1"
         if self.conn.execute(
             "select 1 from crawl_state where key=?",
             (migration_key,),
@@ -1088,13 +1113,31 @@ class SQLitePostStore:
             """
         ).fetchall()
         now = now_text()
-        inserted = requeued = 0
+        inserted = requeued = marked_partial = 0
         for row in rows:
+            if mark_partial:
+                marked_partial += max(
+                    0,
+                    int(
+                        self.conn.execute(
+                            """
+                            update posts
+                            set crawl_status='partial'
+                            where id=? and coalesce(crawl_status, 'full')='full'
+                            """,
+                            (str(row["id"]),),
+                        ).rowcount
+                        or 0
+                    ),
+                )
             existing = self.conn.execute(
-                "select source,reason,status from crawler_queue where post_id=?",
+                "select source,reason,status,task_type from crawler_queue where post_id=?",
                 (str(row["id"]),),
             ).fetchone()
             if existing is None:
+                task_type = self._queue_task_type_for_post(
+                    str(row["id"]), TASK_ID_FOLLOWUP, ""
+                )
                 self.conn.execute(
                     """
                     insert into crawler_queue(
@@ -1104,8 +1147,8 @@ class SQLitePostStore:
                         last_attempt_list_comment_count,
                         last_attempt_list_update_time, last_detail_comment_count,
                         same_observation_attempts, next_attempt_at,
-                        created_at, updated_at
-                    ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        task_type, created_at, updated_at
+                    ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         str(row["id"]),
@@ -1124,6 +1167,7 @@ class SQLitePostStore:
                         safe_int(row["actual_count"]),
                         0,
                         "",
+                        task_type,
                         now,
                         now,
                     ),
@@ -1134,6 +1178,11 @@ class SQLitePostStore:
             sources.add("local_audit")
             reasons = set(filter(None, str(existing["reason"] or "").split("|")))
             reasons.add("comment_rows_incomplete")
+            task_type = self._queue_task_type_for_post(
+                str(row["id"]),
+                TASK_ID_FOLLOWUP,
+                str(existing["task_type"] or ""),
+            )
             if str(existing["status"] or "") != "pending":
                 requeued += 1
             self.conn.execute(
@@ -1142,11 +1191,13 @@ class SQLitePostStore:
                 set source=?, priority=min(priority, 35),
                     list_create_time=?, list_update_time=?,
                     list_comment_count=?, db_comment_count=?,
-                    status='pending', reason=?, last_error='',
+                    status='pending', reason=?, task_type=?, last_error='',
                     last_attempt_list_comment_count=null,
                     last_attempt_list_update_time='',
                     last_detail_comment_count=?,
                     same_observation_attempts=0, next_attempt_at='',
+                    claim_owner='', claim_lane_id='', claim_token='',
+                    claim_started_at='', claim_until='',
                     updated_at=?
                 where post_id=?
                 """,
@@ -1157,6 +1208,7 @@ class SQLitePostStore:
                     safe_int(row["comment_count"]),
                     safe_int(row["actual_count"]),
                     "|".join(sorted(reasons)),
+                    task_type,
                     safe_int(row["actual_count"]),
                     now,
                     str(row["id"]),
@@ -1167,6 +1219,89 @@ class SQLitePostStore:
             "inserted": inserted,
             "requeued": requeued,
         }
+        if mark_partial:
+            result["marked_partial"] = marked_partial
+        self.conn.execute(
+            "insert into crawl_state(key,value,updated_at) values (?,?,?)",
+            (migration_key, "1", now),
+        )
+        if commit:
+            self.conn.commit()
+        return result if any(result.values()) else {}
+
+    def migrate_partial_comment_row_gaps(self, commit: bool = True) -> dict:
+        """Requeue partial posts still marked done while rows are missing."""
+        if not all(
+            self._table_exists(name)
+            for name in ("posts", "comments", "crawler_queue")
+        ):
+            return {}
+        migration_key = "crawler_partial_comment_gap_v3"
+        if self.conn.execute(
+            "select 1 from crawl_state where key=?",
+            (migration_key,),
+        ).fetchone():
+            return {}
+        rows = self.conn.execute(
+            """
+            with saved as (
+                select post_id, count(*) as actual_count
+                from comments
+                group by post_id
+            )
+            select p.id, p.create_time, p.list_update_time, p.comment_count,
+                   coalesce(saved.actual_count, 0) as actual_count,
+                   q.source, q.reason, q.task_type
+            from posts p
+            join crawler_queue q on q.post_id=p.id
+            left join saved on saved.post_id=p.id
+            where p.crawl_status='partial'
+              and q.status='done'
+              and coalesce(p.comment_count, 0)
+                  > coalesce(saved.actual_count, 0)
+            order by cast(p.id as integer)
+            """
+        ).fetchall()
+        now = now_text()
+        for row in rows:
+            sources = set(filter(None, str(row["source"] or "").split(",")))
+            sources.add("local_audit")
+            reasons = set(filter(None, str(row["reason"] or "").split("|")))
+            reasons.add("comment_rows_incomplete")
+            task_type = self._queue_task_type_for_post(
+                str(row["id"]),
+                TASK_ID_FOLLOWUP,
+                str(row["task_type"] or ""),
+            )
+            self.conn.execute(
+                """
+                update crawler_queue
+                set source=?, priority=min(priority, 35),
+                    list_create_time=?, list_update_time=?,
+                    list_comment_count=?, db_comment_count=?,
+                    status='pending', reason=?, task_type=?, last_error='',
+                    last_attempt_list_comment_count=null,
+                    last_attempt_list_update_time='',
+                    last_detail_comment_count=?,
+                    same_observation_attempts=0, next_attempt_at='',
+                    claim_owner='', claim_lane_id='', claim_token='',
+                    claim_started_at='', claim_until='', updated_at=?
+                where post_id=? and status='done'
+                """,
+                (
+                    ",".join(sorted(sources)),
+                    str(row["create_time"] or ""),
+                    str(row["list_update_time"] or row["create_time"] or ""),
+                    safe_int(row["comment_count"]),
+                    safe_int(row["actual_count"]),
+                    "|".join(sorted(reasons)),
+                    task_type,
+                    safe_int(row["actual_count"]),
+                    now,
+                    str(row["id"]),
+                ),
+            )
+        result = {"candidates": len(rows), "requeued": len(rows)}
         self.conn.execute(
             "insert into crawl_state(key,value,updated_at) values (?,?,?)",
             (migration_key, "1", now),
