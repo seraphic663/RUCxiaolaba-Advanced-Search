@@ -132,7 +132,6 @@ class MonitorCutoverTest(unittest.TestCase):
                     set(next_run),
                     {
                         "trickle_fill",
-                        "trickle_fill_history",
                         "discover_new",
                         "discover_active",
                     },
@@ -182,7 +181,6 @@ class MonitorCutoverTest(unittest.TestCase):
             set(next_run),
             {
                 "trickle_fill",
-                "trickle_fill_history",
                 "discover_new",
                 "discover_active",
             },

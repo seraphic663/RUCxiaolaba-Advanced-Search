@@ -80,7 +80,7 @@ class SchedulerPolicyTest(unittest.TestCase):
             scheduler.DAY_TRICKLE_INTERVAL,
         )
 
-    def test_new_and_old_detail_use_independent_release_profiles(self):
+    def test_legacy_id_release_profile_is_shared_for_compatibility(self):
         tz = timezone(timedelta(hours=8))
         night = datetime(2026, 8, 21, 4, 30, tzinfo=tz)
         self.assertEqual(
@@ -89,7 +89,41 @@ class SchedulerPolicyTest(unittest.TestCase):
         )
         self.assertEqual(
             scheduler.detail_quota_release_fraction(night, lane_id="old"),
-            0.05,
+            0.75,
+        )
+
+    def test_fixed_detail_windows_top_up_actual_lane_counters(self):
+        tz = timezone(timedelta(hours=8))
+        morning = datetime(2026, 8, 21, 4, 0, tzinfo=tz)
+        daytime = datetime(2026, 8, 21, 12, 0, tzinfo=tz)
+        evening = datetime(2026, 8, 21, 22, 0, tzinfo=tz)
+        self.assertEqual(scheduler.active_detail_window(morning)[0], "morning")
+        self.assertEqual(scheduler.active_detail_window(morning)[3], 250)
+        self.assertIsNone(scheduler.active_detail_window(daytime))
+        self.assertEqual(scheduler.active_detail_window(evening)[0], "evening")
+        self.assertEqual(scheduler.active_detail_window(evening)[3], 500)
+
+        quota = {
+            "cookie_lanes": {
+                "new": {"detail_calls": 25},
+                "old": {"detail_calls": 24},
+            }
+        }
+        self.assertEqual(
+            scheduler.detail_window_remaining(quota, "new", morning),
+            225,
+        )
+        self.assertEqual(
+            scheduler.detail_window_remaining(quota, "old", morning),
+            226,
+        )
+        self.assertEqual(
+            scheduler.detail_window_remaining(quota, "new", evening),
+            475,
+        )
+        self.assertEqual(
+            scheduler.next_detail_window_start(daytime),
+            daytime.replace(hour=22, minute=0, second=0, microsecond=0),
         )
 
 
