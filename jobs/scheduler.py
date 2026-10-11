@@ -142,6 +142,16 @@ DETAIL_NIGHT_START = os.environ.get("CRAWLER_DETAIL_NIGHT_START", "04:00")
 DETAIL_NIGHT_END = os.environ.get("CRAWLER_DETAIL_NIGHT_END", "06:00")
 TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 18)
 TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 18), TRICKLE_LIMIT_CAP)
+# Fixed two-window detail policy.  The old trickle/release settings remain
+# readable for deployment compatibility, but cookie-pool detail work uses only
+# these two targets and the actual per-lane counter for the current day.
+DETAIL_WINDOW_BATCH_LIMIT = 250
+DETAIL_MORNING_START = "04:00"
+DETAIL_MORNING_END = "06:00"
+DETAIL_MORNING_TARGET = 250
+DETAIL_EVENING_START = "22:00"
+DETAIL_EVENING_END = "24:00"
+DETAIL_DAILY_TARGET = 500
 HISTORY_TRICKLE_INTERVAL = env_int(
     "CRAWLER_HISTORY_TRICKLE_INTERVAL",
     30 * 60,
@@ -1753,11 +1763,8 @@ def enable_remaining_monitor_jobs(
         next_run["discover_new"] = now + 3 * 60
         intervals["discover_new"] = NEW_DISCOVER_INTERVAL
     if "trickle_fill" not in next_run:
-        next_run["trickle_fill"] = now + 90
-        intervals["trickle_fill"] = TRICKLE_INTERVAL
-    if "trickle_fill_history" not in next_run:
-        next_run["trickle_fill_history"] = now + 3 * 60
-        intervals["trickle_fill_history"] = HISTORY_TRICKLE_INTERVAL
+        next_run["trickle_fill"] = now + initial_detail_window_delay()
+        intervals["trickle_fill"] = 60.0
     if "discover_active" not in next_run:
         list1_start = next_run.get("discover_new", now + 3 * 60)
         next_run["discover_active"] = list1_start + ACTIVE_DISCOVER_OFFSET
@@ -1782,8 +1789,6 @@ def sync_pipeline_jobs(
             "discover_new",
             "discover_active",
         }
-        if not PARALLEL_LANES_ENABLED:
-            desired.add("trickle_fill_history")
         prepare_monitor_cutover()
     else:
         raise ValueError(f"unsupported pipeline phase: {phase}")
@@ -1811,7 +1816,7 @@ def sync_pipeline_jobs(
             + ACTIVE_DISCOVER_OFFSET,
             ACTIVE_DISCOVER_INTERVAL,
         ),
-        "trickle_fill": (90.0, detail_trickle_interval()),
+        "trickle_fill": (initial_detail_window_delay(), 60.0),
         "trickle_fill_history": (3 * 60, HISTORY_TRICKLE_INTERVAL),
     }
     for name in desired:
@@ -1910,33 +1915,103 @@ def detail_night_active(at: datetime | None = None) -> bool:
     return start <= minute < end
 
 
+def active_detail_window(
+    at: datetime | None = None,
+) -> tuple[str, int, int, int] | None:
+    """Return the active fixed detail window and its daily target.
+
+    The production policy intentionally has only two windows: top up each
+    cookie lane to 250 after 04:00, then top up each lane to 500 after 22:00.
+    """
+
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    minute = at.hour * 60 + at.minute
+    morning_start = 4 * 60
+    morning_end = 6 * 60
+    evening_start = 22 * 60
+    evening_end = 24 * 60
+    if morning_start <= minute < morning_end:
+        return "morning", morning_start, morning_end, DETAIL_MORNING_TARGET
+    if evening_start <= minute < evening_end:
+        return "evening", evening_start, evening_end, DETAIL_DAILY_TARGET
+    return None
+
+
+def next_detail_window_start(at: datetime | None = None) -> datetime:
+    """Return the next fixed detail window start in Beijing time."""
+
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    minute = at.hour * 60 + at.minute
+    if minute < 4 * 60:
+        return at.replace(hour=4, minute=0, second=0, microsecond=0)
+    if minute < 22 * 60:
+        return at.replace(hour=22, minute=0, second=0, microsecond=0)
+    tomorrow = at.date() + timedelta(days=1)
+    return datetime.combine(
+        tomorrow,
+        datetime.min.time(),
+        tzinfo=CHINA_TZ,
+    ).replace(hour=4)
+
+
+def detail_window_remaining(
+    quota: dict,
+    lane_id: str,
+    at: datetime | None = None,
+) -> int:
+    window = active_detail_window(at)
+    if window is None or not lane_id:
+        return 0
+    target = window[3]
+    return max(0, target - _lane_detail_calls(quota, lane_id))
+
+
+def any_detail_window_remaining(
+    quota: dict,
+    at: datetime | None = None,
+) -> bool:
+    window = active_detail_window(at)
+    if window is None:
+        return False
+    specs = cookie_pool_specs()
+    if not specs:
+        return False
+    return any(
+        detail_window_remaining(quota, spec.lane_id, at) > 0
+        for spec in specs
+        if spec.enabled and spec.supports_task(TASK_ID_FOLLOWUP)
+    )
+
+
 def detail_trickle_interval(at: datetime | None = None) -> int:
     return NIGHT_TRICKLE_INTERVAL if detail_night_active(at) else DAY_TRICKLE_INTERVAL
 
 
 def next_detail_trickle_run(finished_at: float) -> float:
-    """Schedule current-ID detail work across the configured night window."""
+    """Continue immediately inside a window; otherwise wait for the next one."""
 
     now = beijing_now()
-    start_minute, end_minute = detail_night_bounds()
-    today = now.date()
-    start_today = datetime.combine(today, datetime.min.time(), tzinfo=CHINA_TZ).replace(
-        hour=start_minute // 60,
-        minute=start_minute % 60,
-    )
-    end_today = datetime.combine(today, datetime.min.time(), tzinfo=CHINA_TZ).replace(
-        hour=end_minute // 60,
-        minute=end_minute % 60,
-    )
-    if detail_night_active(now):
-        target = now + timedelta(seconds=NIGHT_TRICKLE_INTERVAL)
-        if target >= end_today:
-            target = end_today
-    else:
-        target = now + timedelta(seconds=DAY_TRICKLE_INTERVAL)
-        if now < start_today <= target:
-            target = start_today
+    if active_detail_window(now):
+        return finished_at + 1.0
+    target = next_detail_window_start(now)
     return finished_at + max(1.0, (target - now).total_seconds())
+
+
+def initial_detail_window_delay() -> float:
+    """Delay the first detail attempt until a fixed window is open."""
+
+    now = beijing_now()
+    if active_detail_window(now):
+        return 90.0
+    return max(60.0, (next_detail_window_start(now) - now).total_seconds())
+
+
+def next_detail_window_after_no_work(finished_at: float) -> float:
+    """Do not spin inside a window when the queue has no eligible work."""
+
+    now = beijing_now()
+    target = next_detail_window_start(now)
+    return finished_at + max(60.0, (target - now).total_seconds())
 
 
 def replace_arg(args: list[str], flag: str, value: int) -> list[str]:
@@ -2137,8 +2212,23 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
             )
         quota = load_quota()
         lane_id = job_lane_id(name)
+        if name == "trickle_fill" and lane_id and cookie_pool_specs():
+            window = active_detail_window()
+            if window is None:
+                return None, (
+                    "quota_window_locked_until="
+                    f"{next_detail_window_start().isoformat()}"
+                )
         remaining = remaining_budget(kind, quota, lane_id=lane_id)
+        if name == "trickle_fill" and lane_id and cookie_pool_specs():
+            remaining = detail_window_remaining(quota, lane_id)
         if remaining <= 0:
+            if name == "trickle_fill" and lane_id and cookie_pool_specs():
+                if not any_detail_window_remaining(quota):
+                    return None, (
+                        "quota_window_locked_until="
+                        f"{next_detail_window_start().isoformat()}"
+                    )
             if quota_release_fraction_for_kind(kind, lane_id=lane_id) <= 0:
                 return None, (
                     f"{kind}_quota_window_locked_until="
@@ -2152,13 +2242,30 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
             )
             args = replace_arg(args, "--max-pages", max_pages)
         elif name in {"trickle_fill", "trickle_fill_history"}:
+            fixed_detail_window = (
+                name == "trickle_fill" and lane_id and cookie_pool_specs()
+            )
+            if fixed_detail_window:
+                remaining = min(remaining, DETAIL_WINDOW_BATCH_LIMIT)
+            requested_limit = (
+                DETAIL_WINDOW_BATCH_LIMIT
+                if fixed_detail_window
+                else int(args[args.index("--limit") + 1])
+            )
             args = replace_arg(
                 args,
                 "--limit",
-                max(1, min(int(args[args.index("--limit") + 1]), remaining)),
+                max(1, min(requested_limit, remaining)),
             )
         planned = planned_job_calls(name, args)
         lane_note = f" lane={lane_id}" if lane_id else ""
+        if name == "trickle_fill" and lane_id and cookie_pool_specs():
+            window = active_detail_window()
+            window_name = window[0] if window else "none"
+            return args, (
+                f"detail_window={window_name} calls_remaining={remaining}"
+                f"{lane_note} planned_max={planned}"
+            )
         return args, (
             f"{kind}_calls_available={remaining}{lane_note} planned_max={planned}"
         )
@@ -2323,9 +2430,7 @@ def main() -> int:
         startup_quota = refresh_runtime_state()
         print(
             "[scheduler] quota "
-            f"detail_target={startup_quota.get('detail_budget_target')} "
-            f"detail_effective={startup_quota.get('effective_detail_budget')} "
-            f"detail_decision={startup_quota.get('detail_budget_decision')} "
+            "detail_policy=04:00->250,22:00->500 lane_cap=500 "
             f"source_effective={startup_quota.get('effective_source_budget')} "
             f"source_ceiling={startup_quota.get('configured_source_budget')} "
             f"pacing_anchor={startup_quota.get('rate_limit_pacing_anchor')} "
@@ -2357,10 +2462,10 @@ def main() -> int:
             f"bootstrap_pages={BOOTSTRAP_PAGES} "
             f"since={TRICKLE_SINCE!r} list1={NEW_DISCOVER_INTERVAL}s "
             f"list2={ACTIVE_DISCOVER_INTERVAL}s "
-            f"detail_day={DAY_TRICKLE_INTERVAL}s "
-            f"detail_night={NIGHT_TRICKLE_INTERVAL}s "
-            f"night_window={DETAIL_NIGHT_START}-{DETAIL_NIGHT_END} "
-            f"limit={TRICKLE_LIMIT} parallel_lanes={PARALLEL_LANES_ENABLED} "
+            f"detail_windows={DETAIL_MORNING_START}->250,"
+            f"{DETAIL_EVENING_START}->500 "
+            f"detail_batch_limit={DETAIL_WINDOW_BATCH_LIMIT} "
+            f"parallel_lanes={PARALLEL_LANES_ENABLED} "
             f"list1_regular={DISCOVER_LATEST_REGULAR_PAGES} "
             f"list1_deep={DISCOVER_LATEST_PAGES} "
             f"list2_regular={DISCOVER_ACTIVE_REGULAR_PAGES} "
@@ -2562,7 +2667,11 @@ def main() -> int:
             continue
         finished_at = time.monotonic()
         if due == "trickle_fill" and result.succeeded:
-            next_run[due] = next_detail_trickle_run(finished_at)
+            next_run[due] = (
+                next_detail_window_after_no_work(finished_at)
+                if result.source_calls <= 0
+                else next_detail_trickle_run(finished_at)
+            )
         else:
             retry_delay = (
                 60 * 60
