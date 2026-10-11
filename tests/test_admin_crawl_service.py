@@ -142,6 +142,65 @@ def test_preview_then_immediate_crawl_saves_selected_post():
         ]
 
 
+def test_preview_and_smart_crawl_use_saved_comment_rows_for_incomplete_post():
+    class StaleDetailClient(FakeClient):
+        def search(self, keyword, page):
+            data, error = super().search(keyword, page)
+            data["list"][0]["count_comment"] = 7
+            return data, error
+
+        def article(self, post_id):
+            data, error = super().article(post_id)
+            data["count_comment"] = 1
+            return data, error
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        posts_db = root / "posts.db"
+        with SQLitePostStore(posts_db) as store:
+            store.init_schema()
+            store.upsert_post(
+                {
+                    "id": "901",
+                    "content": "已有正文",
+                    "create_time": "2026-07-11 12:00:00",
+                    "comment_count": 7,
+                    "crawl_status": "full",
+                },
+                [{"id": "c901", "detail": "唯一已保存评论"}],
+            )
+        quota = FakeQuota()
+        service = AdminCrawlService(
+            posts_db,
+            config_path=root / "config.txt",
+            control_db=root / "control.db",
+            quota=quota,
+            client_factory=StaleDetailClient,
+            min_delay=0,
+            max_delay=0,
+        )
+
+        preview = service.preview("search", "美女姐姐", 1)
+        candidate = preview["candidates"][0]
+        assert candidate["local_comment_count"] == 1
+        assert candidate["recommended"] is True
+
+        job = service.create_job(preview["preview_id"], ["901"], "smart")
+        job = wait_for_job(service, job["id"])
+        service.wait_for_idle()
+        assert job["items"][0]["status"] == "failed"
+        assert "7" in job["items"][0]["error"]
+        assert quota.calls == [
+            ("new_list", "preview", 1),
+            ("detail", "detail", 1),
+        ]
+        with SQLitePostStore(posts_db) as store:
+            rows = store.conn.execute(
+                "select detail from comments where post_id='901'"
+            ).fetchall()
+        assert [row["detail"] for row in rows] == ["唯一已保存评论"]
+
+
 def test_queue_strategy_does_not_call_detail_api():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)

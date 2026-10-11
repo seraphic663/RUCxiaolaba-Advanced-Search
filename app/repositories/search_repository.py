@@ -1000,8 +1000,13 @@ class SearchRepository:
                 if self._has_column(conn, "comments", "media_json")
                 else "'{}'"
             )
+            crawl_status_sql = (
+                "crawl_status"
+                if self._has_column(conn, "posts", "crawl_status")
+                else "'full'"
+            )
             post = conn.execute(
-                "select user_name, comment_count"
+                f"select user_name, comment_count, {crawl_status_sql} as crawl_status"
                 + (
                     ", source_state"
                     if self._has_column(conn, "posts", "source_state")
@@ -1027,6 +1032,12 @@ class SearchRepository:
                 """,
                 (post_id, limit * 3),
             ).fetchall()
+            saved_comment_count = _safe_int(
+                conn.execute(
+                    "select count(*) from comments where post_id=?",
+                    (post_id,),
+                ).fetchone()[0]
+            )
 
         top: list[dict] = []
         by_id: dict[str, dict] = {}
@@ -1072,9 +1083,21 @@ class SearchRepository:
             else:
                 parent["children"].append(item)
 
+        crawl_status = str(post["crawl_status"] or "full")
+        known_comment_count = _safe_int(post["comment_count"])
+        if crawl_status == "list_only":
+            comment_state = "not_crawled"
+        elif crawl_status != "full" or known_comment_count > saved_comment_count:
+            comment_state = "incomplete"
+        elif known_comment_count == 0 and saved_comment_count == 0:
+            comment_state = "empty"
+        else:
+            comment_state = "available"
+
         result = {
             "post_id": post_id,
             "comment_count": post["comment_count"],
+            "comment_state": comment_state,
             "comment_list": top[:limit],
         }
         if admin:

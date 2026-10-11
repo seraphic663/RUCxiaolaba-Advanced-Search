@@ -15,6 +15,7 @@ from crawler.client import MiniProgramClient, load_cookie
 from crawler.detail_pipeline import parse_detail_payload
 from crawler.lock import database_write_lock
 from crawler.manual_quota import ManualQuota, ManualQuotaError
+from crawler.normalizer import count_comment_nodes
 from storage.post_writer import SQLitePostStore, safe_int
 
 
@@ -115,14 +116,16 @@ class AdminCrawlService:
             ids = [item["id"] for item in candidates]
             placeholders = ",".join("?" for _ in ids)
             rows = conn.execute(
-                f"select id, comment_count, {status_sql} as crawl_status "
+                f"select id, comment_count, {status_sql} as crawl_status, "
+                "(select count(*) from comments c where c.post_id=posts.id) "
+                "as saved_comment_count "
                 f"from posts where id in ({placeholders})",
                 ids,
             ).fetchall()
             local = {str(row["id"]): row for row in rows}
             for item in candidates:
                 row = local.get(item["id"])
-                local_count = safe_int(row["comment_count"]) if row else 0
+                local_count = safe_int(row["saved_comment_count"]) if row else 0
                 status = str(row["crawl_status"] or "full") if row else "missing"
                 item.update(
                     local_exists=row is not None,
@@ -243,19 +246,20 @@ class AdminCrawlService:
         if not self.posts_db.exists():
             return "missing", 0, 0
         conn = sqlite3.connect(f"file:{self.posts_db.as_posix()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
         try:
             columns = {row[1] for row in conn.execute("pragma table_info(posts)")}
             status_sql = "crawl_status" if "crawl_status" in columns else "'full'"
             row = conn.execute(
-                f"select comment_count, {status_sql} from posts where id=?",
+                f"select {status_sql} as crawl_status from posts where id=?",
                 (post_id,),
             ).fetchone()
             comments = conn.execute(
                 "select count(*) from comments where post_id=?", (post_id,)
             ).fetchone()[0]
             return (
-                str(row[1] or "full") if row else "missing",
-                safe_int(row[0]) if row else 0,
+                str(row["crawl_status"] or "full") if row else "missing",
+                safe_int(comments),
                 safe_int(comments),
             )
         finally:
@@ -335,6 +339,20 @@ class AdminCrawlService:
             raise AdminCrawlError("suspicious_payload", "上游正文为空，已保留旧数据", 502)
         if payload_error == "suspicious_payload:empty_comments":
             raise AdminCrawlError("suspicious_payload", "上游评论异常为空，已保留旧数据", 502)
+        returned_comments = count_comment_nodes(comments)
+        expected_comments = max(
+            safe_int(item["upstream_comment_count"]),
+            safe_int(post.get("comment_count")),
+        )
+        if payload_error or expected_comments > returned_comments:
+            raise AdminCrawlError(
+                "suspicious_payload",
+                (
+                    f"上游显示 {expected_comments} 条评论，但详情只返回 "
+                    f"{returned_comments} 条，已保留旧数据"
+                ),
+                502,
+            )
         self._update_item(item["job_id"], post_id, status="waiting_write")
         with database_write_lock(self.posts_db, timeout=180):
             with SQLitePostStore(self.posts_db, self.bigram_db, self.symbol_db) as store:
