@@ -184,20 +184,37 @@ TRICKLE_FRESH_COVERAGE_HOURS = env_int(
     "CRAWLER_TRICKLE_FRESH_COVERAGE_HOURS",
     72,
 )
+TRICKLE_NEW_LOOKBACK_HOURS = max(
+    1,
+    env_int("CRAWLER_TRICKLE_NEW_LOOKBACK_HOURS", 24),
+)
+LIST_OLD_PAGE_THRESHOLD = max(
+    1,
+    env_int("CRAWLER_LIST_OLD_PAGE_THRESHOLD", 1),
+)
 TRICKLE_MIN_DELAY = env_float("CRAWLER_TRICKLE_MIN_DELAY", 8.0)
 TRICKLE_MAX_DELAY = max(
     TRICKLE_MIN_DELAY,
     env_float("CRAWLER_TRICKLE_MAX_DELAY", 14.0),
 )
-DISCOVER_LATEST_PAGES = env_int("CRAWLER_DISCOVER_LATEST_PAGES", 5)
-DISCOVER_ACTIVE_PAGES = env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", 5)
+DISCOVER_LATEST_PAGES = max(1, env_int("CRAWLER_DISCOVER_LATEST_PAGES", 5))
+DISCOVER_ACTIVE_PAGES = max(1, env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", 5))
+REGULAR_LIST_PAGE_CAP = 3
 DISCOVER_LATEST_REGULAR_PAGES = max(
     1,
-    env_int("CRAWLER_DISCOVER_LATEST_REGULAR_PAGES", 3),
+    min(
+        env_int("CRAWLER_DISCOVER_LATEST_REGULAR_PAGES", 3),
+        REGULAR_LIST_PAGE_CAP,
+        DISCOVER_LATEST_PAGES,
+    ),
 )
 DISCOVER_ACTIVE_REGULAR_PAGES = max(
     1,
-    env_int("CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES", 3),
+    min(
+        env_int("CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES", 3),
+        REGULAR_LIST_PAGE_CAP,
+        DISCOVER_ACTIVE_PAGES,
+    ),
 )
 LIST_DEEP_SCAN_START = os.environ.get(
     "CRAWLER_LIST_DEEP_SCAN_START",
@@ -2024,6 +2041,29 @@ def replace_arg(args: list[str], flag: str, value: int) -> list[str]:
     return updated
 
 
+def monitoring_since(
+    name: str,
+    *,
+    at: datetime | None = None,
+) -> str:
+    """Return a rolling source-time boundary for a monitoring list job.
+
+    ``CRAWLER_TRICKLE_SINCE`` was a historical bootstrap cutoff.  Reusing it
+    for daily monitoring made every page since June look fresh and defeated
+    the old-page stop.  Monitoring now uses a small rolling window instead:
+    new-post discovery covers one day, while the active feed keeps three days
+    because its update stream is less stable.
+    """
+
+    at = at.astimezone(CHINA_TZ) if at else beijing_now()
+    hours = (
+        TRICKLE_NEW_LOOKBACK_HOURS
+        if name == "discover_new"
+        else TRICKLE_FRESH_COVERAGE_HOURS
+    )
+    return (at - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def monitoring_list_args(
     name: str,
     *,
@@ -2056,8 +2096,11 @@ def monitoring_list_args(
         max_pages = DISCOVER_ACTIVE_PAGES if deep else DISCOVER_ACTIVE_REGULAR_PAGES
         min_pages = max_pages if deep else 2
     threshold = 0 if deep else 1
+    old_page_threshold = max_pages if deep else LIST_OLD_PAGE_THRESHOLD
+    args = replace_arg(args, "--since", monitoring_since(name, at=at))
     args = replace_arg(args, "--max-pages", max_pages)
     args = replace_arg(args, "--min-pages", min_pages)
+    args = replace_arg(args, "--old-page-threshold", old_page_threshold)
     return replace_arg(args, "--no-action-page-threshold", threshold)
 
 
@@ -2460,7 +2503,9 @@ def main() -> int:
             f"bootstrap={'pending' if bootstrap_pending else 'complete'} "
             f"phase={phase} "
             f"bootstrap_pages={BOOTSTRAP_PAGES} "
-            f"since={TRICKLE_SINCE!r} list1={NEW_DISCOVER_INTERVAL}s "
+            f"since=dynamic(new={TRICKLE_NEW_LOOKBACK_HOURS}h,"
+            f"active={TRICKLE_FRESH_COVERAGE_HOURS}h) "
+            f"list1={NEW_DISCOVER_INTERVAL}s "
             f"list2={ACTIVE_DISCOVER_INTERVAL}s "
             f"detail_windows={DETAIL_MORNING_START}->250,"
             f"{DETAIL_EVENING_START}->500 "

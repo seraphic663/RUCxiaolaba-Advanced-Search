@@ -54,6 +54,33 @@ class SchedulerPolicyTest(unittest.TestCase):
                 0,
             )
 
+    def test_monitoring_list_jobs_use_rolling_cutoffs_and_stop_after_old_page(self):
+        tz = timezone(timedelta(hours=8))
+        at = datetime(2026, 8, 21, 12, 0, tzinfo=tz)
+        latest = scheduler.monitoring_list_args("discover_new", at=at)
+        active = scheduler.monitoring_list_args("discover_active", at=at)
+
+        self.assertEqual(
+            latest[latest.index("--since") + 1],
+            (
+                at - timedelta(hours=scheduler.TRICKLE_NEW_LOOKBACK_HOURS)
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        self.assertEqual(
+            active[active.index("--since") + 1],
+            (
+                at - timedelta(hours=scheduler.TRICKLE_FRESH_COVERAGE_HOURS)
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        self.assertEqual(
+            int(latest[latest.index("--old-page-threshold") + 1]),
+            scheduler.LIST_OLD_PAGE_THRESHOLD,
+        )
+        self.assertEqual(
+            int(active[active.index("--old-page-threshold") + 1]),
+            scheduler.LIST_OLD_PAGE_THRESHOLD,
+        )
+
     def test_list1_and_list2_share_hourly_cadence(self):
         self.assertEqual(scheduler.NEW_DISCOVER_INTERVAL, 3600)
         self.assertEqual(scheduler.ACTIVE_DISCOVER_INTERVAL, 3600)

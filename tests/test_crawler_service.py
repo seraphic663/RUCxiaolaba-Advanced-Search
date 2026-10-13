@@ -1473,6 +1473,48 @@ class CrawlerServiceTest(unittest.TestCase):
                 store.conn.execute("select 1 from crawler_queue where post_id='999'").fetchone()
             )
 
+    def test_discover_active_stops_at_rolling_update_boundary(self):
+        def article(post_id, update_time):
+            return {
+                "id": str(post_id),
+                "create_time": "2026-06-01 10:00:00",
+                "update_time": update_time,
+                "count_comment": 0,
+            }
+
+        pages = {
+            1: [article("230", "2026-06-24 23:59:59")],
+            2: [article("231", "2026-06-24 23:58:00")],
+            3: [article("232", "2026-06-25 00:01:00")],
+        }
+        stats = self.service(FakeClient(pages, {})).discover_queue(
+            command="discover-active",
+            endpoint="lists2",
+            since="2026-06-25 00:00:00",
+            max_pages=10,
+            old_page_threshold=1,
+            stop_on_repeat=False,
+            min_pages=1,
+            no_action_page_threshold=0,
+            dry_run=False,
+            write_stubs=True,
+            min_delay=0,
+            max_delay=0,
+        )
+        self.assertTrue(stats["old_page_stop"])
+        self.assertEqual(stats["pages"], 1)
+        with SQLitePostStore(self.db) as store:
+            self.assertIsNotNone(
+                store.conn.execute(
+                    "select 1 from post_id_ledger where post_id='230'"
+                ).fetchone()
+            )
+            self.assertIsNone(
+                store.conn.execute(
+                    "select 1 from post_id_ledger where post_id='232'"
+                ).fetchone()
+            )
+
     def test_queue_prioritizes_new_comment_delta_before_plain_new_posts(self):
         with SQLitePostStore(self.db) as store:
             store.enqueue_crawler_candidate(
