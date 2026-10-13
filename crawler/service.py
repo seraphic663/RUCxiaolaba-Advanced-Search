@@ -496,7 +496,17 @@ class CrawlerService:
                         needs_detail = missing or crawl_status != "full"
                         create_after_since = create_time >= since
                         update_after_since = update_time >= since
-                        if create_after_since or update_after_since:
+                        # ``lists`` is ordered by creation time; ``lists2`` is
+                        # an activity feed and must use its update time.  The
+                        # monitoring scheduler supplies a rolling cutoff, so
+                        # this page-level signal can stop at the time boundary
+                        # instead of treating every page since a historical
+                        # bootstrap date as fresh.
+                        if (
+                            create_after_since
+                            if endpoint == "lists"
+                            else update_after_since
+                        ):
                             page_has_since = True
                         reason = ""
                         priority = 99
@@ -597,7 +607,7 @@ class CrawlerService:
                         no_action_pages += 1
                     else:
                         no_action_pages = 0
-                    if endpoint == "lists" and not page_has_since:
+                    if endpoint in {"lists", "lists2"} and not page_has_since:
                         old_pages += 1
                     else:
                         old_pages = 0
@@ -611,7 +621,10 @@ class CrawlerService:
                         f"ledger_events={safe_int(ledger_page.get('new_events'))}",
                         flush=True,
                     )
-                    if endpoint == "lists" and old_pages >= old_page_threshold:
+                    if (
+                        endpoint in {"lists", "lists2"}
+                        and old_pages >= old_page_threshold
+                    ):
                         stats["old_page_stop"] = True
                         print(
                             f"[{command}] stop old_pages={old_pages}",

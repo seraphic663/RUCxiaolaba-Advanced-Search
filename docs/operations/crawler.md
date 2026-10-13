@@ -110,14 +110,14 @@ priority 大于 0 的 coverage 任务还按 `crawler_queue.queue_order` 升序�
 `discover-latest`：
 
 - bootstrap 模式固定完成 `--min-pages=--max-pages=20`；不使用连续无收益页或重复页提前停止，也不写 list stub。每成功提交一页就更新 `ledger_state.lists_bootstrap_next_page`，若额度停止或进程重启，下一轮从该游标续扫；旧状态没有游标时从台账最大 `first_seen_page` 推断。
-- 常规监视把“有效信号”定义为新 ID、源端时间/评论数真实变化或新的 list2 事件；仅更新已有 pending 队列的元数据不算有效信号。达到 `--min-pages` 后，连续 `--no-action-page-threshold` 个无有效信号页即可停止。
-- 连续多页都早于 `--since` 时停止。
+- 常规监视使用滚动时间边界：`lists` 默认观察最近 24 小时，`lists2` 默认观察最近 72 小时；达到 `--min-pages` 后，连续 `--old-page-threshold` 个边界外页面即可停止。
+- 常规监视把“有效信号”定义为新 ID、源端时间/评论数真实变化或新的 list2 事件；仅更新已有 pending 队列的元数据不算有效信号。有效信号不足时仍可提前停止。
 - 非 bootstrap 模式页面 ID 签名重复时停止；bootstrap 必须完成目标页数，重复页仍记录但不会重复入队。
 - `--max-pages` 是硬上限。
 
 `discover-active`：
 
-- 页面 ID 签名重复时停止，避免上游窗口循环。
+- 页面 ID 签名重复或连续页面越过滚动更新时间边界时停止，避免上游窗口循环和历史页无限扩展。
 - 只把新的事件键、真实字段变化和新 ID 视为有效信号；已有任务的重复更新不延长扫描。
 - 至少扫描 `--min-pages` 后，连续无有效信号页达到阈值时停止。
 - `--max-pages` 是硬上限。
@@ -179,14 +179,17 @@ CRAWLER_ACTIVE_DISCOVER_INTERVAL=10800
 CRAWLER_ACTIVE_DISCOVER_OFFSET=3600
 CRAWLER_DISCOVER_LATEST_PAGES=5              # 保留的列表深扫上限
 CRAWLER_DISCOVER_ACTIVE_PAGES=5              # 保留的列表深扫上限
-CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=10     # 常规最多 10 页，有效信号不足时提前停
-CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=10     # 常规最多 10 页，有效信号不足时提前停
+CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=3     # 常规页上限；滚动时间边界会更早停止
+CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=3     # 常规页上限；滚动时间边界会更早停止
+CRAWLER_TRICKLE_NEW_LOOKBACK_HOURS=24      # list1 滚动观察窗口
+CRAWLER_TRICKLE_FRESH_COVERAGE_HOURS=72    # list2 滚动观察窗口
+CRAWLER_LIST_OLD_PAGE_THRESHOLD=1          # 连续 1 个边界外页面即停
 CRAWLER_LIST_DEEP_SCAN_START=04:00
 CRAWLER_LIST_DEEP_SCAN_END=06:00
 # ID 详情窗口由 scheduler 固定为 04:00->250、22:00->500
 ```
 
-首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；生产 monitoring 阶段不再启动 `history_detail` 低速任务。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段 list1/list2 常规最多 10 页，并依据有效信号不足提前停止；04:00–06:00 两类列表各做一次最多 5 页的深扫。list1 和 list2 都是每 3 小时一次，并固定错开 1 小时；有效信号只包括新 ID、源端更新时间/评论数变化或新的 `lists2` 事件。ID 详情只在 04:00 和 22:00 两个固定窗口执行；`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
+首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；生产 monitoring 阶段不再启动 `history_detail` 低速任务。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段 list1/list2 使用滚动时间边界，常规最多 3 页并在越过边界后停止；04:00–06:00 两类列表各做一次最多 5 页的深扫。list1 和 list2 都是每 3 小时一次，并固定错开 1 小时；有效信号只包括新 ID、源端更新时间/评论数变化或新的 `lists2` 事件。ID 详情只在 04:00 和 22:00 两个固定窗口执行；`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
 
 
 ## 限流、Cookie 失效与暂停
