@@ -4,7 +4,12 @@
       "id": "new",
       "config": "config_small.txt",
       "enabled": true,
-      "task_types": ["list_new", "list_active", "id_followup"],
+      "task_types": [
+        "list_new",
+        "list_active",
+        "id_followup",
+        "history_detail"
+      ],
       "daily_budgets": {
         "new_list": 0,
         "active_list": 0,
@@ -15,7 +20,12 @@
       "id": "old",
       "config": "config.txt",
       "enabled": true,
-      "task_types": ["id_followup", "history_detail"],
+      "task_types": [
+        "list_new",
+        "list_active",
+        "id_followup",
+        "history_detail"
+      ],
       "daily_budgets": {
         "detail": 500
       }
