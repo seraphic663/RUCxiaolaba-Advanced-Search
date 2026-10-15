@@ -138,19 +138,19 @@ NIGHT_TRICKLE_INTERVAL = env_int(
     "CRAWLER_NIGHT_TRICKLE_INTERVAL",
     TRICKLE_INTERVAL,
 )
-DETAIL_NIGHT_START = os.environ.get("CRAWLER_DETAIL_NIGHT_START", "04:00")
+DETAIL_NIGHT_START = os.environ.get("CRAWLER_DETAIL_NIGHT_START", "03:00")
 DETAIL_NIGHT_END = os.environ.get("CRAWLER_DETAIL_NIGHT_END", "06:00")
 TRICKLE_LIMIT_CAP = env_int("CRAWLER_TRICKLE_LIMIT_CAP", 18)
 TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 18), TRICKLE_LIMIT_CAP)
 # Fixed two-window detail policy.  The old trickle/release settings remain
 # readable for deployment compatibility, but cookie-pool detail work uses only
 # these two targets and the actual per-lane counter for the current day.
-DETAIL_WINDOW_BATCH_LIMIT = 250
-DETAIL_MORNING_START = "04:00"
-DETAIL_MORNING_END = "06:00"
+DETAIL_WINDOW_BATCH_LIMIT = env_int("CRAWLER_DETAIL_WINDOW_BATCH_LIMIT", 25)
+DETAIL_MORNING_START = os.environ.get("CRAWLER_DETAIL_MORNING_START", "03:00")
+DETAIL_MORNING_END = os.environ.get("CRAWLER_DETAIL_MORNING_END", "20:00")
 DETAIL_MORNING_TARGET = 250
-DETAIL_EVENING_START = "22:00"
-DETAIL_EVENING_END = "24:00"
+DETAIL_EVENING_START = os.environ.get("CRAWLER_DETAIL_EVENING_START", "20:00")
+DETAIL_EVENING_END = os.environ.get("CRAWLER_DETAIL_EVENING_END", "24:00")
 DETAIL_DAILY_TARGET = 500
 HISTORY_TRICKLE_INTERVAL = env_int(
     "CRAWLER_HISTORY_TRICKLE_INTERVAL",
@@ -218,7 +218,7 @@ DISCOVER_ACTIVE_REGULAR_PAGES = max(
 )
 LIST_DEEP_SCAN_START = os.environ.get(
     "CRAWLER_LIST_DEEP_SCAN_START",
-    "04:00",
+    "03:00",
 )
 LIST_DEEP_SCAN_END = os.environ.get(
     "CRAWLER_LIST_DEEP_SCAN_END",
@@ -337,6 +337,16 @@ def _lane_detail_calls(quota: dict, lane_id: str) -> int:
         return 0
 
 
+def _lane_counter(quota: dict, lane_id: str, key: str) -> int:
+    lane = (quota.get("cookie_lanes") or {}).get(str(lane_id))
+    if not isinstance(lane, dict):
+        return 0
+    try:
+        return max(0, int(lane.get(key, 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _lane_is_paused(lane_id: str) -> bool:
     document = load_pause()
     lanes = document.get("lanes")
@@ -351,8 +361,9 @@ def job_lane_id(name: str) -> str:
     """Choose one fixed cookie lane for the whole scheduler job.
 
     A unique task route is pinned directly.  When a task is valid on more than
-    one lane, sequential mode chooses the lane with the lower persisted detail
-    utilization and prefers ``new`` on ties.  This keeps one scheduler process
+    one lane, list observations choose the lane with fewer same-kind list calls;
+    detail tasks choose the lane with lower persisted detail utilization.  Both
+    choices prefer ``new`` on ties.  This keeps one scheduler process
     responsible for one queue claim at a time; the old parallel worker remains
     available only for explicitly enabled legacy deployments.
     """
@@ -380,12 +391,17 @@ def job_lane_id(name: str) -> str:
         return ""
 
     quota = load_quota()
-    available = [
-        spec
-        for spec in matches
-        if spec.budget("detail") <= 0
-        or _lane_detail_calls(quota, spec.lane_id) < spec.budget("detail")
-    ]
+    list_task = task_type in {TASK_LIST_NEW, TASK_LIST_ACTIVE}
+    available = (
+        list(matches)
+        if list_task
+        else [
+            spec
+            for spec in matches
+            if spec.budget("detail") <= 0
+            or _lane_detail_calls(quota, spec.lane_id) < spec.budget("detail")
+        ]
+    )
     if available:
         matches = available
     healthy = [spec for spec in matches if not _lane_is_paused(spec.lane_id)]
@@ -393,6 +409,15 @@ def job_lane_id(name: str) -> str:
         matches = healthy
 
     def lane_key(spec: CookieLaneSpec) -> tuple[float, int, int]:
+        if list_task:
+            counter_key = (
+                "new_list_calls"
+                if task_type == TASK_LIST_NEW
+                else "active_list_calls"
+            )
+            calls = _lane_counter(quota, spec.lane_id, counter_key)
+            new_preference = 0 if spec.lane_id.casefold() == "new" else 1
+            return float(calls), new_preference, specs.index(spec)
         budget = max(1, spec.budget("detail"))
         utilization = _lane_detail_calls(quota, spec.lane_id) / budget
         new_preference = 0 if spec.lane_id.casefold() == "new" else 1
@@ -1902,6 +1927,15 @@ def _clock_minute(value: str, default: int) -> int:
     return max(0, min(23 * 60 + 59, result))
 
 
+def _clock_window_minute(value: str, default: int) -> int:
+    """Parse a window boundary, allowing ``24:00`` as the day end."""
+
+    text = str(value or "").strip()
+    if text in {"24", "24:00"}:
+        return 24 * 60
+    return _clock_minute(text, default)
+
+
 def list_deep_scan_bounds() -> tuple[int, int]:
     start = _clock_minute(LIST_DEEP_SCAN_START, 4 * 60)
     end = _clock_minute(LIST_DEEP_SCAN_END, 6 * 60)
@@ -1938,15 +1972,15 @@ def active_detail_window(
     """Return the active fixed detail window and its daily target.
 
     The production policy intentionally has only two windows: top up each
-    cookie lane to 250 after 04:00, then top up each lane to 500 after 22:00.
+    cookie lane to 250 after 03:00, then top up each lane to 500 after 20:00.
     """
 
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
     minute = at.hour * 60 + at.minute
-    morning_start = 4 * 60
-    morning_end = 6 * 60
-    evening_start = 22 * 60
-    evening_end = 24 * 60
+    morning_start = _clock_window_minute(DETAIL_MORNING_START, 3 * 60)
+    morning_end = _clock_window_minute(DETAIL_MORNING_END, 20 * 60)
+    evening_start = _clock_window_minute(DETAIL_EVENING_START, 20 * 60)
+    evening_end = _clock_window_minute(DETAIL_EVENING_END, 24 * 60)
     if morning_start <= minute < morning_end:
         return "morning", morning_start, morning_end, DETAIL_MORNING_TARGET
     if evening_start <= minute < evening_end:
@@ -1959,16 +1993,31 @@ def next_detail_window_start(at: datetime | None = None) -> datetime:
 
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
     minute = at.hour * 60 + at.minute
-    if minute < 4 * 60:
-        return at.replace(hour=4, minute=0, second=0, microsecond=0)
-    if minute < 22 * 60:
-        return at.replace(hour=22, minute=0, second=0, microsecond=0)
+    morning_start = _clock_window_minute(DETAIL_MORNING_START, 3 * 60)
+    evening_start = _clock_window_minute(DETAIL_EVENING_START, 20 * 60)
+    if minute < morning_start:
+        return at.replace(
+            hour=morning_start // 60,
+            minute=morning_start % 60,
+            second=0,
+            microsecond=0,
+        )
+    if minute < evening_start:
+        return at.replace(
+            hour=evening_start // 60,
+            minute=evening_start % 60,
+            second=0,
+            microsecond=0,
+        )
     tomorrow = at.date() + timedelta(days=1)
     return datetime.combine(
         tomorrow,
         datetime.min.time(),
         tzinfo=CHINA_TZ,
-    ).replace(hour=4)
+    ).replace(
+        hour=morning_start // 60,
+        minute=morning_start % 60,
+    )
 
 
 def detail_window_remaining(
@@ -2135,6 +2184,18 @@ def remaining_budget(
     # can still return rate_limited, which the scheduler handles separately.
     if kind in UNMETERED_LIST_KINDS:
         return 2**31 - 1
+    if kind == "detail" and lane_id and cookie_pool_specs():
+        # The current ID-followup route is governed by the explicit 03:00 and
+        # 20:00 windows.  Do not let the legacy release profile stop the first
+        # 250 calls at the old 04:00 release step.
+        window = active_detail_window()
+        if window is not None:
+            hard_remaining = max(
+                0,
+                daily_budget("detail", quota, lane_id=lane_id)
+                - _lane_detail_calls(quota, lane_id),
+            )
+            return min(detail_window_remaining(quota, lane_id), hard_remaining)
     fraction = (
         detail_quota_release_fraction(lane_id=lane_id)
         if kind == "detail"
@@ -2473,7 +2534,8 @@ def main() -> int:
         startup_quota = refresh_runtime_state()
         print(
             "[scheduler] quota "
-            "detail_policy=04:00->250,22:00->500 lane_cap=500 "
+            f"detail_policy={DETAIL_MORNING_START}->250,"
+            f"{DETAIL_EVENING_START}->500 lane_cap=500 "
             f"source_effective={startup_quota.get('effective_source_budget')} "
             f"source_ceiling={startup_quota.get('configured_source_budget')} "
             f"pacing_anchor={startup_quota.get('rate_limit_pacing_anchor')} "

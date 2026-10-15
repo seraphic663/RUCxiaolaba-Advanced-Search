@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
+from crawler.cookie_pool import CookieLaneSpec
 from jobs import scheduler
 
 
@@ -87,12 +89,12 @@ class SchedulerPolicyTest(unittest.TestCase):
         self.assertEqual(scheduler.ACTIVE_DISCOVER_OFFSET, 1800)
         self.assertFalse(
             scheduler.list_deep_scan_active(
-                datetime(2026, 8, 21, 3, 59, tzinfo=timezone(timedelta(hours=8)))
+                datetime(2026, 8, 21, 2, 59, tzinfo=timezone(timedelta(hours=8)))
             )
         )
         self.assertTrue(
             scheduler.list_deep_scan_active(
-                datetime(2026, 8, 21, 4, 0, tzinfo=timezone(timedelta(hours=8)))
+                datetime(2026, 8, 21, 3, 0, tzinfo=timezone(timedelta(hours=8)))
             )
         )
 
@@ -121,12 +123,14 @@ class SchedulerPolicyTest(unittest.TestCase):
 
     def test_fixed_detail_windows_top_up_actual_lane_counters(self):
         tz = timezone(timedelta(hours=8))
-        morning = datetime(2026, 8, 21, 4, 0, tzinfo=tz)
+        before = datetime(2026, 8, 21, 2, 59, tzinfo=tz)
+        morning = datetime(2026, 8, 21, 3, 0, tzinfo=tz)
         daytime = datetime(2026, 8, 21, 12, 0, tzinfo=tz)
-        evening = datetime(2026, 8, 21, 22, 0, tzinfo=tz)
+        evening = datetime(2026, 8, 21, 20, 0, tzinfo=tz)
+        self.assertIsNone(scheduler.active_detail_window(before))
         self.assertEqual(scheduler.active_detail_window(morning)[0], "morning")
         self.assertEqual(scheduler.active_detail_window(morning)[3], 250)
-        self.assertIsNone(scheduler.active_detail_window(daytime))
+        self.assertEqual(scheduler.active_detail_window(daytime)[0], "morning")
         self.assertEqual(scheduler.active_detail_window(evening)[0], "evening")
         self.assertEqual(scheduler.active_detail_window(evening)[3], 500)
 
@@ -150,8 +154,68 @@ class SchedulerPolicyTest(unittest.TestCase):
         )
         self.assertEqual(
             scheduler.next_detail_window_start(daytime),
-            daytime.replace(hour=22, minute=0, second=0, microsecond=0),
+            daytime.replace(hour=20, minute=0, second=0, microsecond=0),
         )
+        self.assertEqual(
+            scheduler.next_detail_window_start(before),
+            morning.replace(second=0, microsecond=0),
+        )
+
+    def test_fixed_detail_window_ignores_legacy_release_gate_at_three(self):
+        tz = timezone(timedelta(hours=8))
+        morning = datetime(2026, 8, 21, 3, 0, tzinfo=tz)
+        specs = (
+            CookieLaneSpec(
+                "new",
+                Path("new.txt"),
+                {"new_list": 0, "active_list": 0, "detail": 500},
+                task_types=("list_new", "list_active", "id_followup"),
+            ),
+            CookieLaneSpec(
+                "old",
+                Path("old.txt"),
+                {"new_list": 0, "active_list": 0, "detail": 500},
+                task_types=("list_new", "list_active", "id_followup"),
+            ),
+        )
+        quota = {"cookie_lanes": {"new": {"detail_calls": 0}}}
+        with (
+            patch.object(scheduler, "cookie_pool_specs", return_value=specs),
+            patch.object(scheduler, "beijing_now", return_value=morning),
+        ):
+            self.assertEqual(
+                scheduler.remaining_budget("detail", quota, lane_id="new"),
+                250,
+            )
+
+    def test_equal_lanes_rotate_list_observations_by_same_kind_usage(self):
+        specs = (
+            CookieLaneSpec(
+                "new",
+                Path("new.txt"),
+                {"new_list": 0, "active_list": 0, "detail": 500},
+                task_types=("list_new", "list_active", "id_followup"),
+            ),
+            CookieLaneSpec(
+                "old",
+                Path("old.txt"),
+                {"new_list": 0, "active_list": 0, "detail": 500},
+                task_types=("list_new", "list_active", "id_followup"),
+            ),
+        )
+        quota = {
+            "cookie_lanes": {
+                "new": {"new_list_calls": 3, "active_list_calls": 0},
+                "old": {"new_list_calls": 0, "active_list_calls": 3},
+            }
+        }
+        with (
+            patch.object(scheduler, "cookie_pool_specs", return_value=specs),
+            patch.object(scheduler, "load_quota", return_value=quota),
+            patch.object(scheduler, "_lane_is_paused", return_value=False),
+        ):
+            self.assertEqual(scheduler.job_lane_id("discover_new"), "old")
+            self.assertEqual(scheduler.job_lane_id("discover_active"), "new")
 
 
 if __name__ == "__main__":

@@ -59,13 +59,13 @@ CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json
 `CRAWLER_ENABLED=1` 让 `start.sh` 启动后台 scheduler；当前线上推荐同时设置 `CRAWLER_TRICKLE_ENABLED=1`，启用 quota-friendly 模式：
 
 ```text
-discover-latest  默认每 60 分钟，常规最多 3 页、有效信号不足时提前停；04:00–06:00 深扫最多 5 页
+discover-latest  默认每 60 分钟，常规最多 3 页、有效信号不足时提前停；03:00–06:00 深扫最多 5 页
 discover-active  默认每 60 分钟，和 discover-latest 错开 30 分钟；常规最多 3 页、深扫最多 5 页
-trickle-fill     新 cookie 默认每 10 分钟，每轮最多 18 条详情
+trickle-fill     03:00 起每批最多 25 条，两个 cookie lane 按实际调用数轮换；20:00 起补到各 500
 trickle-fill-history  默认每 30 分钟，每轮最多 12 条历史详情；与当前 ID 表共用去重队列但走独立任务路由
 ```
 
-调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 队列 worker 另外用 owner/token 认领围栏防止租约过期后的旧 worker 覆盖新 worker。trickle 模式启动后首轮新帖发现约等 1 分钟、活跃发现约等 3 分钟、详情补全约等 5 分钟。列表请求按列表 lane 的 release window 控制；普通详情从 00:00 起按详情曲线释放，新详情 lane 还在 04:00–06:00 有额外释放，不应笼统写成“11:00 前所有 crawler 都不运行”。更新完成后 Web 无需重启。
+调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 队列 worker 另外用 owner/token 认领围栏防止租约过期后的旧 worker 覆盖新 worker。trickle 模式启动后首轮新帖发现约等 1 分钟、活跃发现约等 3 分钟；详情只在 03:00 和 20:00 固定窗口运行，两个等价 cookie lane 以 25 条小批次轮换，直到各自达到当天目标。更新完成后 Web 无需重启。
 
 主要间隔变量，单位为秒：
 
@@ -77,7 +77,7 @@ CRAWLER_DISCOVER_LATEST_PAGES=5
 CRAWLER_DISCOVER_ACTIVE_PAGES=5
 CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=3
 CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=3
-CRAWLER_LIST_DEEP_SCAN_START=04:00
+CRAWLER_LIST_DEEP_SCAN_START=03:00
 CRAWLER_LIST_DEEP_SCAN_END=06:00
 CRAWLER_TRICKLE_NEW_LOOKBACK_HOURS=24
 CRAWLER_TRICKLE_FRESH_COVERAGE_HOURS=72
@@ -86,7 +86,7 @@ CRAWLER_TRICKLE_INTERVAL=600
 CRAWLER_HISTORY_TRICKLE_INTERVAL=1800
 ```
 
-完整请求成本、队列优先级、每日预算、阶梯释放、自适应缩放和暂停语义统一见 [爬虫运行与调度](crawler.md)，本页不再复制完整参数表。
+完整请求成本、队列优先级、每日预算、固定详情窗口、lane 轮换和暂停语义统一见 [爬虫运行与调度](crawler.md)，本页不再复制完整参数表。
 
 如果没有设置 `CRAWLER_TRICKLE_ENABLED=1`，scheduler 仍会运行兼容的 `sync-latest`、`sync-active`、`scan-history` 和每周 `scan-id-range`。该分支用于保持旧部署兼容，不是当前推荐配置；旧分支的自动配额语义和详情上限应视为待收紧的兼容面，不能在没有额外人工确认时作为日常生产模式。
 
