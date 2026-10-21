@@ -135,10 +135,11 @@ class ManualQuota:
                     f"爬虫已暂停到 {pause.get('until_text') or '稍后'}",
                 )
             quota = self._load_quota(scheduler)
+            # Keep the configured values as an accounting reference, but do
+            # not reject an explicitly requested manual operation here. The
+            # source client still reports and handles real upstream limits.
             manual_allowed = cap
             manual_used = int(quota.get(manual_key, 0) or 0)
-            if manual_used + count > manual_allowed:
-                raise ManualQuotaError("manual_budget_exhausted", "后台人工额度已用完")
             quota[manual_key] = manual_used + count
             if manual_kind == "preview":
                 breakdown_key = f"admin_preview_{kind}_calls"
@@ -198,8 +199,10 @@ class ManualQuota:
             "paused": self._active_pause(),
             "preview_used": preview_used,
             "preview_allowed": preview_allowed,
-            "preview_remaining": max(0, preview_allowed - preview_used),
+            "preview_remaining": None,
+            "preview_enforced": False,
             "detail_used": detail_used,
             "detail_allowed": detail_allowed,
-            "detail_remaining": max(0, detail_allowed - detail_used),
+            "detail_remaining": None,
+            "detail_enforced": False,
         }

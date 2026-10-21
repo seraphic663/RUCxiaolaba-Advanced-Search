@@ -32,7 +32,7 @@ def _authenticate(handler) -> bool:
 
 def _json_body(handler) -> dict:
     try:
-        payload = json.loads(handler.read_body(max_bytes=16_384).decode("utf-8"))
+        payload = json.loads(handler.read_body().decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
         raise AdminCrawlError("invalid_json", "请求内容不是有效 JSON") from exc
     if not isinstance(payload, dict):
