@@ -7,8 +7,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from app.services.admin_crawl_service import AdminCrawlError, AdminCrawlService
 from app.services.admin_service import AdminService
 from crawler.client import MiniProgramClient
@@ -140,6 +138,79 @@ def test_preview_then_immediate_crawl_saves_selected_post():
             ("new_list", "preview", 1),
             ("detail", "detail", 1),
         ]
+
+
+def test_preview_accepts_custom_page_count_without_fixed_cap():
+    class CountingClient(FakeClient):
+        def __init__(self):
+            self.pages = []
+
+        def search(self, keyword, page):
+            self.pages.append(page)
+            return super().search(keyword, page)
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        posts_db = root / "posts.db"
+        with SQLitePostStore(posts_db) as store:
+            store.init_schema()
+        client = CountingClient()
+        service = AdminCrawlService(
+            posts_db,
+            config_path=root / "config.txt",
+            control_db=root / "control.db",
+            quota=FakeQuota(),
+            client_factory=lambda: client,
+            min_delay=0,
+            max_delay=0,
+        )
+
+        preview = service.preview("search", "立即", 5)
+
+        assert preview["calls"] == 5
+        assert client.pages == [1, 2, 3, 4, 5]
+
+
+def test_single_manual_job_accepts_more_than_ten_selected_posts():
+    class BulkClient(FakeClient):
+        def search(self, keyword, page):
+            return {
+                "list": [
+                    {
+                        "id": str(900 + index),
+                        "title": keyword,
+                        "detail": "候选正文",
+                        "count_comment": 0,
+                        "create_time": "2026-07-11 12:00:00",
+                    }
+                    for index in range(11)
+                ]
+            }, None
+
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        posts_db = root / "posts.db"
+        with SQLitePostStore(posts_db) as store:
+            store.init_schema()
+        service = AdminCrawlService(
+            posts_db,
+            config_path=root / "config.txt",
+            control_db=root / "control.db",
+            quota=FakeQuota(),
+            client_factory=BulkClient,
+            min_delay=0,
+            max_delay=0,
+        )
+
+        preview = service.preview("search", "批量", 1)
+        selected = [item["id"] for item in preview["candidates"]]
+        job = service.create_job(preview["preview_id"], selected, "queue")
+        job = wait_for_job(service, job["id"])
+        service.wait_for_idle()
+
+        assert len(selected) == 11
+        assert job["status"] == "completed"
+        assert job["total"] == 11
 
 
 def test_preview_and_smart_crawl_use_saved_comment_rows_for_incomplete_post():
@@ -288,7 +359,7 @@ def test_detail_upsert_incrementally_refreshes_symbol_sidecar():
         assert set(rows) == {("♀", "post"), ("😀", "comment")}
 
 
-def test_immediate_batch_is_rejected_before_start_when_quota_is_insufficient():
+def test_immediate_batch_runs_when_reference_quota_is_exhausted():
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
         posts_db = root / "posts.db"
@@ -305,8 +376,11 @@ def test_immediate_batch_is_rejected_before_start_when_quota_is_insufficient():
             max_delay=0,
         )
         preview = service.preview("lists", "", 1)
-        with pytest.raises(AdminCrawlError, match="当前只剩 0 次"):
-            service.create_job(preview["preview_id"], ["901"], "force")
+        job = service.create_job(preview["preview_id"], ["901"], "force")
+        job = wait_for_job(service, job["id"])
+        service.wait_for_idle()
+        assert job["status"] == "completed"
+        assert job["written"] == 1
 
 
 def test_manual_quota_is_extra_and_does_not_consume_main_counters():
@@ -341,15 +415,20 @@ def test_manual_quota_is_extra_and_does_not_consume_main_counters():
         with patch.object(ManualQuota, "_scheduler", return_value=FakeScheduler):
             quota.reserve("new_list", "preview", 1)
             quota.reserve("detail", "detail", 1)
+            for _ in range(10):
+                quota.reserve("detail", "detail", 1)
             status = quota.status()
         saved = json.loads(posts_db.with_name(".crawler_quota.json").read_text(encoding="utf-8"))
         assert saved["new_list_calls"] == 0
         assert saved["detail_calls"] == 0
         assert saved["admin_preview_calls"] == 1
-        assert saved["admin_detail_calls"] == 1
+        assert saved["admin_detail_calls"] == 11
         assert saved["configured_total_budget"] == 720
         assert status["preview_allowed"] == 20
         assert status["detail_allowed"] == 10
+        assert status["preview_enforced"] is False
+        assert status["detail_enforced"] is False
+        assert status["detail_remaining"] is None
 
 
 def test_manual_quota_preserves_previous_day_history_on_first_new_day_call():

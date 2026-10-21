@@ -312,7 +312,7 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
       <option value="lists2">活跃帖子</option>
     </select>
     <input id="live-query" type="text" placeholder="搜索至少两个字符；列表来源可留空">
-    <select id="live-pages" aria-label="预览页数"><option value="1">1页</option><option value="2">2页</option><option value="3">3页</option></select>
+    <input id="live-pages" type="number" min="1" step="1" value="3" inputmode="numeric" aria-label="预览页数" title="输入要预览的页数">
     <button type="button" id="live-preview-button" onclick="loadUpstreamPreview()">获取候选</button>
   </div>
   <div class="live-summary" id="live-summary">每个预览页消耗1次源 API；候选未经勾选不会写入数据库。</div>
@@ -420,10 +420,20 @@ function adminPost(url, payload) {
   });
 }
 
+function liveQuotaText(quota) {
+  quota = quota || {};
+  return '人工预览已用 ' + (quota.preview_used || 0) + ' 次（不设限），人工详情已用 ' +
+    (quota.detail_used || 0) + ' 次（不设限）。';
+}
+
 function loadUpstreamPreview() {
   var source = document.getElementById('live-source').value;
   var query = document.getElementById('live-query').value.trim();
-  var pages = Number(document.getElementById('live-pages').value || 1);
+  var pages = Math.floor(Number(document.getElementById('live-pages').value || 1));
+  if (!Number.isFinite(pages) || pages < 1) {
+    document.getElementById('live-summary').textContent = '页数必须是正整数。';
+    return;
+  }
   var button = document.getElementById('live-preview-button');
   button.disabled = true;
   document.getElementById('live-summary').textContent = '正在请求上游候选……';
@@ -436,8 +446,8 @@ function loadUpstreamPreview() {
       document.getElementById('live-actions').hidden = false;
       var q = data.quota || {};
       document.getElementById('live-summary').textContent =
-        '预览消耗 ' + data.calls + ' 次 API；去重后 ' + data.candidates.length + ' 条。人工预览额度 ' +
-        q.preview_used + '/' + q.preview_allowed + '，人工详情额度 ' + q.detail_used + '/' + q.detail_allowed + '。';
+        '预览消耗 ' + data.calls + ' 次 API；去重后 ' + data.candidates.length + ' 条。' +
+        liveQuotaText(q);
     })
     .catch(function(error) {
       document.getElementById('live-summary').textContent = '获取失败：' + error.message;
@@ -469,10 +479,15 @@ function startLiveCrawl() {
   if (!livePreview) return;
   var ids = Object.keys(liveSelected).filter(function(id){ return liveSelected[id]; });
   if (!ids.length) { alert('请先勾选帖子'); return; }
-  if (ids.length > 10) { alert('一次最多选择10个帖子'); return; }
   var strategy = document.getElementById('live-strategy').value;
-  var estimate = strategy === 'queue' ? 0 : ids.length;
-  if (!confirm('已选择 ' + ids.length + ' 条，预计最多消耗 ' + estimate + ' 次详情 API。确认执行？')) return;
+  var selected = {};
+  (livePreview.candidates || []).forEach(function(item){ selected[item.id] = item; });
+  var estimate = strategy === 'queue' ? 0 : ids.filter(function(id){
+    return strategy === 'force' || (selected[id] && selected[id].recommended);
+  }).length;
+  var quotaText = liveQuotaText(livePreview.quota || {});
+  if (!confirm('已选择 ' + ids.length + ' 条，预计最多消耗 ' + estimate + ' 次详情 API。' +
+    quotaText + '本地不设单次数量或额度上限，确认执行？')) return;
   var jobBox = document.getElementById('live-job');
   jobBox.hidden = false;
   jobBox.textContent = '正在创建人工任务……';
@@ -483,6 +498,7 @@ function startLiveCrawl() {
 
 function renderLiveJob(job) {
   var lines = ['任务 ' + job.id.slice(0,8) + '：' + job.status + '（' + job.completed + '/' + job.total + '）'];
+  if (job.quota) lines.push(liveQuotaText(job.quota));
   (job.items || []).forEach(function(item){ lines.push(item.position + '. #' + item.post_id + ' ' + item.status + (item.result ? '：'+item.result : '') + (item.error ? '：'+item.error : '')); });
   document.getElementById('live-job').textContent = lines.join('\n');
 }

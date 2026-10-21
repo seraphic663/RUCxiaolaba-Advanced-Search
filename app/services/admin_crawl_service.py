@@ -141,7 +141,10 @@ class AdminCrawlService:
     def preview(self, source: str, query: str, pages: int) -> dict:
         source = str(source or "").strip()
         query = str(query or "").strip()
-        pages = max(1, min(int(pages), 3))
+        try:
+            pages = max(1, int(pages))
+        except (TypeError, ValueError) as exc:
+            raise AdminCrawlError("invalid_pages", "预览页数必须是正整数") from exc
         if source not in self.SOURCES:
             raise AdminCrawlError("invalid_source", "不支持的上游来源")
         if source == "search" and len(query) < 2:
@@ -194,28 +197,14 @@ class AdminCrawlService:
         if strategy not in self.STRATEGIES:
             raise AdminCrawlError("invalid_strategy", "不支持的爬取方案")
         selected = list(dict.fromkeys(str(value).strip() for value in selected_ids))
-        if not selected or len(selected) > 10 or any(not value.isdigit() for value in selected):
-            raise AdminCrawlError("invalid_selection", "请选择1至10个有效帖子")
+        if not selected or any(not value.isdigit() for value in selected):
+            raise AdminCrawlError("invalid_selection", "请选择至少一个有效帖子")
         preview = self.repository.get_preview(preview_id)
         if preview is None:
             raise AdminCrawlError("preview_expired", "候选预览已过期，请重新获取")
         candidates = {item["id"]: item for item in preview["candidates"]}
         if any(post_id not in candidates for post_id in selected):
             raise AdminCrawlError("invalid_selection", "选择中包含非本次预览帖子")
-        estimated_details = 0
-        if strategy == "force":
-            estimated_details = len(selected)
-        elif strategy == "smart":
-            estimated_details = sum(1 for post_id in selected if candidates[post_id]["recommended"])
-        quota_status = self.quota.status()
-        detail_remaining = int(quota_status.get("detail_remaining", 0) or 0)
-        if estimated_details > detail_remaining:
-            raise AdminCrawlError(
-                "manual_budget_exhausted",
-                f"本批预计需要 {estimated_details} 次详情 API，当前只剩 "
-                f"{detail_remaining} 次人工额度",
-                429,
-            )
         job_id = uuid.uuid4().hex
         active = self.repository.create_job(job_id, preview_id, strategy, selected, candidates)
         if active:
