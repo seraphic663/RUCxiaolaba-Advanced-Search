@@ -146,9 +146,9 @@ TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 18), TRICKLE_LIMIT_CAP)
 # readable for deployment compatibility, but cookie-pool detail work uses only
 # these two targets and the actual per-lane counter for the current day.
 DETAIL_WINDOW_BATCH_LIMIT = env_int("CRAWLER_DETAIL_WINDOW_BATCH_LIMIT", 25)
-DETAIL_MORNING_START = os.environ.get("CRAWLER_DETAIL_MORNING_START", "03:00")
+DETAIL_MORNING_START = os.environ.get("CRAWLER_DETAIL_MORNING_START", "02:00")
 DETAIL_MORNING_END = os.environ.get("CRAWLER_DETAIL_MORNING_END", "20:00")
-DETAIL_MORNING_TARGET = 250
+DETAIL_MORNING_TARGET = 300
 DETAIL_EVENING_START = os.environ.get("CRAWLER_DETAIL_EVENING_START", "20:00")
 DETAIL_EVENING_END = os.environ.get("CRAWLER_DETAIL_EVENING_END", "24:00")
 DETAIL_DAILY_TARGET = 500
@@ -197,22 +197,26 @@ TRICKLE_MAX_DELAY = max(
     TRICKLE_MIN_DELAY,
     env_float("CRAWLER_TRICKLE_MAX_DELAY", 14.0),
 )
-DISCOVER_LATEST_PAGES = max(1, env_int("CRAWLER_DISCOVER_LATEST_PAGES", 5))
-DISCOVER_ACTIVE_PAGES = max(1, env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", 5))
-REGULAR_LIST_PAGE_CAP = 3
+LIST_PAGE_CAP = 10
+DISCOVER_LATEST_PAGES = max(
+    1, min(env_int("CRAWLER_DISCOVER_LATEST_PAGES", LIST_PAGE_CAP), LIST_PAGE_CAP)
+)
+DISCOVER_ACTIVE_PAGES = max(
+    1, min(env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", LIST_PAGE_CAP), LIST_PAGE_CAP)
+)
 DISCOVER_LATEST_REGULAR_PAGES = max(
     1,
     min(
-        env_int("CRAWLER_DISCOVER_LATEST_REGULAR_PAGES", 3),
-        REGULAR_LIST_PAGE_CAP,
+        env_int("CRAWLER_DISCOVER_LATEST_REGULAR_PAGES", LIST_PAGE_CAP),
+        LIST_PAGE_CAP,
         DISCOVER_LATEST_PAGES,
     ),
 )
 DISCOVER_ACTIVE_REGULAR_PAGES = max(
     1,
     min(
-        env_int("CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES", 3),
-        REGULAR_LIST_PAGE_CAP,
+        env_int("CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES", LIST_PAGE_CAP),
+        LIST_PAGE_CAP,
         DISCOVER_ACTIVE_PAGES,
     ),
 )
@@ -1972,7 +1976,7 @@ def active_detail_window(
     """Return the active fixed detail window and its daily target.
 
     The production policy intentionally has only two windows: top up each
-    cookie lane to 250 after 03:00, then top up each lane to 500 after 20:00.
+    cookie lane to 300 after 02:00, then top up each lane to 500 after 20:00.
     """
 
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
@@ -2185,9 +2189,9 @@ def remaining_budget(
     if kind in UNMETERED_LIST_KINDS:
         return 2**31 - 1
     if kind == "detail" and lane_id and cookie_pool_specs():
-        # The current ID-followup route is governed by the explicit 03:00 and
+        # The current ID-followup route is governed by the explicit 02:00 and
         # 20:00 windows.  Do not let the legacy release profile stop the first
-        # 250 calls at the old 04:00 release step.
+        # 300 calls at the old 04:00 release step.
         window = active_detail_window()
         if window is not None:
             hard_remaining = max(
@@ -2534,8 +2538,8 @@ def main() -> int:
         startup_quota = refresh_runtime_state()
         print(
             "[scheduler] quota "
-            f"detail_policy={DETAIL_MORNING_START}->250,"
-            f"{DETAIL_EVENING_START}->500 lane_cap=500 "
+            f"detail_policy={DETAIL_MORNING_START}->{DETAIL_MORNING_TARGET},"
+            f"{DETAIL_EVENING_START}->{DETAIL_DAILY_TARGET} "
             f"source_effective={startup_quota.get('effective_source_budget')} "
             f"source_ceiling={startup_quota.get('configured_source_budget')} "
             f"pacing_anchor={startup_quota.get('rate_limit_pacing_anchor')} "
@@ -2569,8 +2573,8 @@ def main() -> int:
             f"active={TRICKLE_FRESH_COVERAGE_HOURS}h) "
             f"list1={NEW_DISCOVER_INTERVAL}s "
             f"list2={ACTIVE_DISCOVER_INTERVAL}s "
-            f"detail_windows={DETAIL_MORNING_START}->250,"
-            f"{DETAIL_EVENING_START}->500 "
+            f"detail_windows={DETAIL_MORNING_START}->{DETAIL_MORNING_TARGET},"
+            f"{DETAIL_EVENING_START}->{DETAIL_DAILY_TARGET} "
             f"detail_batch_limit={DETAIL_WINDOW_BATCH_LIMIT} "
             f"parallel_lanes={PARALLEL_LANES_ENABLED} "
             f"list1_regular={DISCOVER_LATEST_REGULAR_PAGES} "

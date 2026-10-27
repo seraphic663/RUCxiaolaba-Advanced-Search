@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import unittest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -28,11 +32,11 @@ class SchedulerPolicyTest(unittest.TestCase):
         active = scheduler.job_args("discover_active")
         self.assertEqual(
             int(latest[latest.index("--max-pages") + 1]),
-            3,
+            10,
         )
         self.assertEqual(
             int(active[active.index("--max-pages") + 1]),
-            3,
+            10,
         )
         self.assertEqual(int(latest[latest.index("--min-pages") + 1]), 1)
         self.assertEqual(int(active[active.index("--min-pages") + 1]), 2)
@@ -49,8 +53,8 @@ class SchedulerPolicyTest(unittest.TestCase):
             latest = scheduler.monitoring_list_args("discover_new")
             active = scheduler.monitoring_list_args("discover_active")
         for args in (latest, active):
-            self.assertEqual(int(args[args.index("--max-pages") + 1]), 5)
-            self.assertEqual(int(args[args.index("--min-pages") + 1]), 5)
+            self.assertEqual(int(args[args.index("--max-pages") + 1]), 10)
+            self.assertEqual(int(args[args.index("--min-pages") + 1]), 10)
             self.assertEqual(
                 int(args[args.index("--no-action-page-threshold") + 1]),
                 0,
@@ -123,13 +127,13 @@ class SchedulerPolicyTest(unittest.TestCase):
 
     def test_fixed_detail_windows_top_up_actual_lane_counters(self):
         tz = timezone(timedelta(hours=8))
-        before = datetime(2026, 8, 21, 2, 59, tzinfo=tz)
-        morning = datetime(2026, 8, 21, 3, 0, tzinfo=tz)
+        before = datetime(2026, 8, 21, 1, 59, tzinfo=tz)
+        morning = datetime(2026, 8, 21, 2, 0, tzinfo=tz)
         daytime = datetime(2026, 8, 21, 12, 0, tzinfo=tz)
         evening = datetime(2026, 8, 21, 20, 0, tzinfo=tz)
         self.assertIsNone(scheduler.active_detail_window(before))
         self.assertEqual(scheduler.active_detail_window(morning)[0], "morning")
-        self.assertEqual(scheduler.active_detail_window(morning)[3], 250)
+        self.assertEqual(scheduler.active_detail_window(morning)[3], 300)
         self.assertEqual(scheduler.active_detail_window(daytime)[0], "morning")
         self.assertEqual(scheduler.active_detail_window(evening)[0], "evening")
         self.assertEqual(scheduler.active_detail_window(evening)[3], 500)
@@ -142,11 +146,11 @@ class SchedulerPolicyTest(unittest.TestCase):
         }
         self.assertEqual(
             scheduler.detail_window_remaining(quota, "new", morning),
-            225,
+            275,
         )
         self.assertEqual(
             scheduler.detail_window_remaining(quota, "old", morning),
-            226,
+            276,
         )
         self.assertEqual(
             scheduler.detail_window_remaining(quota, "new", evening),
@@ -161,9 +165,9 @@ class SchedulerPolicyTest(unittest.TestCase):
             morning.replace(second=0, microsecond=0),
         )
 
-    def test_fixed_detail_window_ignores_legacy_release_gate_at_three(self):
+    def test_fixed_detail_window_ignores_legacy_release_gate_at_two(self):
         tz = timezone(timedelta(hours=8))
-        morning = datetime(2026, 8, 21, 3, 0, tzinfo=tz)
+        morning = datetime(2026, 8, 21, 2, 0, tzinfo=tz)
         specs = (
             CookieLaneSpec(
                 "new",
@@ -185,7 +189,59 @@ class SchedulerPolicyTest(unittest.TestCase):
         ):
             self.assertEqual(
                 scheduler.remaining_budget("detail", quota, lane_id="new"),
-                250,
+                300,
+            )
+
+    def test_list_page_configuration_reaches_ten_and_stops_at_ten(self):
+        code = """
+import json
+from datetime import datetime
+from jobs import scheduler as s
+regular = s.monitoring_list_args('discover_new', at=datetime.fromisoformat('2026-10-27T12:00:00+08:00'))
+deep = s.monitoring_list_args('discover_active', at=datetime.fromisoformat('2026-10-27T05:00:00+08:00'))
+print(json.dumps([int(regular[regular.index('--max-pages')+1]), int(deep[deep.index('--max-pages')+1]), int(regular[regular.index('--no-action-page-threshold')+1])]))
+"""
+        for configured in (10, 20):
+            with self.subTest(configured=configured):
+                env = os.environ.copy()
+                for name in (
+                    "CRAWLER_DISCOVER_LATEST_PAGES",
+                    "CRAWLER_DISCOVER_ACTIVE_PAGES",
+                    "CRAWLER_DISCOVER_LATEST_REGULAR_PAGES",
+                    "CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES",
+                ):
+                    env[name] = str(configured)
+                result = subprocess.run(
+                    [sys.executable, "-B", "-c", code], env=env,
+                    cwd=Path(__file__).resolve().parents[1],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertEqual(json.loads(result.stdout), [10, 10, 1])
+
+    def test_new_windows_top_up_persisted_counts_without_resetting_them(self):
+        tz = timezone(timedelta(hours=8))
+        quota = {
+            "cookie_lanes": {
+                "new": {"detail_calls": 250},
+                "old": {"detail_calls": 250},
+            }
+        }
+        before_evening = datetime(2026, 10, 27, 19, 59, tzinfo=tz)
+        evening = datetime(2026, 10, 27, 20, 0, tzinfo=tz)
+        midnight = datetime(2026, 10, 28, 0, 0, tzinfo=tz)
+        for lane in ("new", "old"):
+            self.assertEqual(
+                scheduler.detail_window_remaining(quota, lane, before_evening), 50
+            )
+            self.assertEqual(
+                scheduler.detail_window_remaining(quota, lane, evening), 250
+            )
+            quota["cookie_lanes"][lane]["detail_calls"] = 300
+            self.assertEqual(
+                scheduler.detail_window_remaining(quota, lane, evening), 200
+            )
+            self.assertEqual(
+                scheduler.detail_window_remaining(quota, lane, midnight), 0
             )
 
     def test_equal_lanes_rotate_list_observations_by_same_kind_usage(self):
