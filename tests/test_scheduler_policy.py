@@ -46,19 +46,17 @@ class SchedulerPolicyTest(unittest.TestCase):
                 1,
             )
 
-    def test_deep_list_window_reads_the_full_bounded_page_range(self):
+    def test_list_jobs_keep_early_stops_throughout_the_day(self):
         tz = timezone(timedelta(hours=8))
-        deep = datetime(2026, 8, 21, 5, 0, tzinfo=tz)
-        with patch.object(scheduler, "beijing_now", return_value=deep):
-            latest = scheduler.monitoring_list_args("discover_new")
-            active = scheduler.monitoring_list_args("discover_active")
-        for args in (latest, active):
-            self.assertEqual(int(args[args.index("--max-pages") + 1]), 10)
-            self.assertEqual(int(args[args.index("--min-pages") + 1]), 10)
-            self.assertEqual(
-                int(args[args.index("--no-action-page-threshold") + 1]),
-                0,
-            )
+        for hour in (0, 2, 3, 5, 6, 12, 23):
+            at = datetime(2026, 8, 21, hour, 0, tzinfo=tz)
+            for job, maximum, minimum in (("discover_new", 20, 1), ("discover_active", 10, 2)):
+                with self.subTest(hour=hour, job=job):
+                    args = scheduler.monitoring_list_args(job, at=at)
+                    self.assertEqual(int(args[args.index("--max-pages") + 1]), maximum)
+                    self.assertEqual(int(args[args.index("--min-pages") + 1]), minimum)
+                    self.assertEqual(int(args[args.index("--no-action-page-threshold") + 1]), 1)
+                    self.assertEqual(int(args[args.index("--old-page-threshold") + 1]), scheduler.LIST_OLD_PAGE_THRESHOLD)
 
     def test_monitoring_list_jobs_use_rolling_cutoffs_and_stop_after_old_page(self):
         tz = timezone(timedelta(hours=8))
@@ -91,16 +89,6 @@ class SchedulerPolicyTest(unittest.TestCase):
         self.assertEqual(scheduler.NEW_DISCOVER_INTERVAL, 3600)
         self.assertEqual(scheduler.ACTIVE_DISCOVER_INTERVAL, 3600)
         self.assertEqual(scheduler.ACTIVE_DISCOVER_OFFSET, 1800)
-        self.assertFalse(
-            scheduler.list_deep_scan_active(
-                datetime(2026, 8, 21, 2, 59, tzinfo=timezone(timedelta(hours=8)))
-            )
-        )
-        self.assertTrue(
-            scheduler.list_deep_scan_active(
-                datetime(2026, 8, 21, 3, 0, tzinfo=timezone(timedelta(hours=8)))
-            )
-        )
 
     def test_new_detail_has_day_and_night_cadence(self):
         tz = timezone(timedelta(hours=8))
@@ -192,26 +180,30 @@ class SchedulerPolicyTest(unittest.TestCase):
                 300,
             )
 
-    def test_regular_list1_ceiling_is_independent_of_deep_scans_and_list2(self):
+    def test_list_page_caps_ignore_removed_deep_scan_configuration(self):
         code = """
 import json
 from datetime import datetime
 from jobs import scheduler as s
 regular = s.monitoring_list_args('discover_new', at=datetime.fromisoformat('2026-10-27T12:00:00+08:00'))
 active = s.monitoring_list_args('discover_active', at=datetime.fromisoformat('2026-10-27T12:00:00+08:00'))
-deep_new = s.monitoring_list_args('discover_new', at=datetime.fromisoformat('2026-10-27T05:00:00+08:00'))
-deep_active = s.monitoring_list_args('discover_active', at=datetime.fromisoformat('2026-10-27T05:00:00+08:00'))
+night_new = s.monitoring_list_args('discover_new', at=datetime.fromisoformat('2026-10-27T05:00:00+08:00'))
+night_active = s.monitoring_list_args('discover_active', at=datetime.fromisoformat('2026-10-27T05:00:00+08:00'))
 def arg(args, name):
     return int(args[args.index(name)+1])
-pages = [arg(a, '--max-pages') for a in (regular, active, deep_new, deep_active)]
+pages = [arg(a, '--max-pages') for a in (regular, active, night_new, night_active)]
 print(json.dumps(pages + [arg(regular, '--no-action-page-threshold')]))
 """
         for configured in (0, 10, 20, 50):
             with self.subTest(configured=configured):
                 env = os.environ.copy()
+                env.update({
+                    "CRAWLER_DISCOVER_LATEST_PAGES": "1",
+                    "CRAWLER_DISCOVER_ACTIVE_PAGES": "1",
+                    "CRAWLER_LIST_DEEP_SCAN_START": "03:00",
+                    "CRAWLER_LIST_DEEP_SCAN_END": "06:00",
+                })
                 for name in (
-                    "CRAWLER_DISCOVER_LATEST_PAGES",
-                    "CRAWLER_DISCOVER_ACTIVE_PAGES",
                     "CRAWLER_DISCOVER_LATEST_REGULAR_PAGES",
                     "CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES",
                 ):
@@ -224,7 +216,7 @@ print(json.dumps(pages + [arg(regular, '--no-action-page-threshold')]))
                 bounded = max(1, configured)
                 self.assertEqual(
                     json.loads(result.stdout),
-                    [min(bounded, 20), min(bounded, 10), min(bounded, 10),
+                    [min(bounded, 20), min(bounded, 10), min(bounded, 20),
                      min(bounded, 10), 1],
                 )
 
