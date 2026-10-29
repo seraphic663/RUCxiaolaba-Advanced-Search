@@ -199,12 +199,6 @@ TRICKLE_MAX_DELAY = max(
 )
 LIST_PAGE_CAP = 10
 LATEST_REGULAR_PAGE_CAP = 20
-DISCOVER_LATEST_PAGES = max(
-    1, min(env_int("CRAWLER_DISCOVER_LATEST_PAGES", LIST_PAGE_CAP), LIST_PAGE_CAP)
-)
-DISCOVER_ACTIVE_PAGES = max(
-    1, min(env_int("CRAWLER_DISCOVER_ACTIVE_PAGES", LIST_PAGE_CAP), LIST_PAGE_CAP)
-)
 DISCOVER_LATEST_REGULAR_PAGES = max(
     1,
     min(
@@ -217,16 +211,7 @@ DISCOVER_ACTIVE_REGULAR_PAGES = max(
     min(
         env_int("CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES", LIST_PAGE_CAP),
         LIST_PAGE_CAP,
-        DISCOVER_ACTIVE_PAGES,
     ),
-)
-LIST_DEEP_SCAN_START = os.environ.get(
-    "CRAWLER_LIST_DEEP_SCAN_START",
-    "03:00",
-)
-LIST_DEEP_SCAN_END = os.environ.get(
-    "CRAWLER_LIST_DEEP_SCAN_END",
-    "06:00",
 )
 COOKIE_ERROR_COOLDOWN = env_int("CRAWLER_COOKIE_ERROR_COOLDOWN", 6 * 60 * 60)
 DAILY_LIST_BUDGET = env_int("CRAWLER_DAILY_LIST_BUDGET", 240)
@@ -1940,21 +1925,6 @@ def _clock_window_minute(value: str, default: int) -> int:
     return _clock_minute(text, default)
 
 
-def list_deep_scan_bounds() -> tuple[int, int]:
-    start = _clock_minute(LIST_DEEP_SCAN_START, 4 * 60)
-    end = _clock_minute(LIST_DEEP_SCAN_END, 6 * 60)
-    if end <= start:
-        return 4 * 60, 6 * 60
-    return start, end
-
-
-def list_deep_scan_active(at: datetime | None = None) -> bool:
-    at = at.astimezone(CHINA_TZ) if at else beijing_now()
-    start, end = list_deep_scan_bounds()
-    minute = at.hour * 60 + at.minute
-    return start <= minute < end
-
-
 def detail_night_bounds() -> tuple[int, int]:
     start = _clock_minute(DETAIL_NIGHT_START, 4 * 60)
     end = _clock_minute(DETAIL_NIGHT_END, 6 * 60)
@@ -2141,20 +2111,17 @@ def monitoring_list_args(
     ):
         return args
 
-    deep = list_deep_scan_active(at)
     if name == "discover_new":
-        max_pages = DISCOVER_LATEST_PAGES if deep else DISCOVER_LATEST_REGULAR_PAGES
-        min_pages = max_pages if deep else 1
+        max_pages = DISCOVER_LATEST_REGULAR_PAGES
+        min_pages = 1
     else:
-        max_pages = DISCOVER_ACTIVE_PAGES if deep else DISCOVER_ACTIVE_REGULAR_PAGES
-        min_pages = max_pages if deep else 2
-    threshold = 0 if deep else 1
-    old_page_threshold = max_pages if deep else LIST_OLD_PAGE_THRESHOLD
+        max_pages = DISCOVER_ACTIVE_REGULAR_PAGES
+        min_pages = 2
     args = replace_arg(args, "--since", monitoring_since(name, at=at))
     args = replace_arg(args, "--max-pages", max_pages)
     args = replace_arg(args, "--min-pages", min_pages)
-    args = replace_arg(args, "--old-page-threshold", old_page_threshold)
-    return replace_arg(args, "--no-action-page-threshold", threshold)
+    args = replace_arg(args, "--old-page-threshold", LIST_OLD_PAGE_THRESHOLD)
+    return replace_arg(args, "--no-action-page-threshold", 1)
 
 
 def job_budget_kind(name: str) -> str:
@@ -2578,9 +2545,7 @@ def main() -> int:
             f"detail_batch_limit={DETAIL_WINDOW_BATCH_LIMIT} "
             f"parallel_lanes={PARALLEL_LANES_ENABLED} "
             f"list1_regular={DISCOVER_LATEST_REGULAR_PAGES} "
-            f"list1_deep={DISCOVER_LATEST_PAGES} "
             f"list2_regular={DISCOVER_ACTIVE_REGULAR_PAGES} "
-            f"list2_deep={DISCOVER_ACTIVE_PAGES} "
             f"refresh_limit={TRICKLE_REFRESH_LIMIT} "
             f"fresh_hours={TRICKLE_FRESH_COVERAGE_HOURS} ",
             flush=True,
