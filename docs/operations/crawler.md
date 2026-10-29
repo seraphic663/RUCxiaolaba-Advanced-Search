@@ -179,7 +179,7 @@ CRAWLER_ACTIVE_DISCOVER_INTERVAL=10800
 CRAWLER_ACTIVE_DISCOVER_OFFSET=3600
 CRAWLER_DISCOVER_LATEST_PAGES=10            # 列表深扫上限，最多 10 页
 CRAWLER_DISCOVER_ACTIVE_PAGES=10            # 列表深扫上限，最多 10 页
-CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=10   # 常规页上限；滚动时间边界会更早停止
+CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=20   # list1 常规页上限，独立于凌晨深扫；可提前停止
 CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=10   # 常规页上限；滚动时间边界会更早停止
 CRAWLER_TRICKLE_NEW_LOOKBACK_HOURS=24      # list1 滚动观察窗口
 CRAWLER_TRICKLE_FRESH_COVERAGE_HOURS=72    # list2 滚动观察窗口
@@ -192,7 +192,7 @@ CRAWLER_DETAIL_EVENING_START=20:00
 # ID 详情窗口目标为 02:00->300、20:00->500；每轮最多 25
 ```
 
-首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；生产 monitoring 阶段不再启动 `history_detail` 低速任务。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段 list1/list2 使用滚动时间边界，常规最多 10 页，保留连续无收益、重复页和时间边界停止；03:00–06:00 两类列表各做一次最多 10 页的深扫。10 页是监视任务的上限，不影响首次 bootstrap 的固定 20 页。list1 和 list2 都是每 3 小时一次，并固定错开 1 小时；有效信号只包括新 ID、源端更新时间/评论数变化或新的 `lists2` 事件。ID 详情只在 02:00 和 20:00 两个固定窗口执行，窗口内每批最多 25 条并轮换 lane；`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
+首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；生产 monitoring 阶段不再启动 `history_detail` 低速任务。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段 list1/list2 使用滚动时间边界，常规 list1 最多 20 页、list2 最多 10 页，保留连续无收益、重复页和时间边界停止；03:00–06:00 两类列表各做一次最多 10 页的深扫。常规 list1 的页数独立配置，不受凌晨深扫页数裁剪；首次 bootstrap 仍固定 20 页。list1 和 list2 都是每 3 小时一次，并固定错开 1 小时；有效信号只包括新 ID、源端更新时间/评论数变化或新的 `lists2` 事件。ID 详情只在 02:00 和 20:00 两个固定窗口执行，窗口内每批最多 25 条并轮换 lane；`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
 
 
 ## 限流、Cookie 失效与暂停
