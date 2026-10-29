@@ -32,7 +32,7 @@ class SchedulerPolicyTest(unittest.TestCase):
         active = scheduler.job_args("discover_active")
         self.assertEqual(
             int(latest[latest.index("--max-pages") + 1]),
-            10,
+            20,
         )
         self.assertEqual(
             int(active[active.index("--max-pages") + 1]),
@@ -192,16 +192,21 @@ class SchedulerPolicyTest(unittest.TestCase):
                 300,
             )
 
-    def test_list_page_configuration_reaches_ten_and_stops_at_ten(self):
+    def test_regular_list1_ceiling_is_independent_of_deep_scans_and_list2(self):
         code = """
 import json
 from datetime import datetime
 from jobs import scheduler as s
 regular = s.monitoring_list_args('discover_new', at=datetime.fromisoformat('2026-10-27T12:00:00+08:00'))
-deep = s.monitoring_list_args('discover_active', at=datetime.fromisoformat('2026-10-27T05:00:00+08:00'))
-print(json.dumps([int(regular[regular.index('--max-pages')+1]), int(deep[deep.index('--max-pages')+1]), int(regular[regular.index('--no-action-page-threshold')+1])]))
+active = s.monitoring_list_args('discover_active', at=datetime.fromisoformat('2026-10-27T12:00:00+08:00'))
+deep_new = s.monitoring_list_args('discover_new', at=datetime.fromisoformat('2026-10-27T05:00:00+08:00'))
+deep_active = s.monitoring_list_args('discover_active', at=datetime.fromisoformat('2026-10-27T05:00:00+08:00'))
+def arg(args, name):
+    return int(args[args.index(name)+1])
+pages = [arg(a, '--max-pages') for a in (regular, active, deep_new, deep_active)]
+print(json.dumps(pages + [arg(regular, '--no-action-page-threshold')]))
 """
-        for configured in (10, 20):
+        for configured in (0, 10, 20, 50):
             with self.subTest(configured=configured):
                 env = os.environ.copy()
                 for name in (
@@ -216,7 +221,12 @@ print(json.dumps([int(regular[regular.index('--max-pages')+1]), int(deep[deep.in
                     cwd=Path(__file__).resolve().parents[1],
                     capture_output=True, text=True, check=True,
                 )
-                self.assertEqual(json.loads(result.stdout), [10, 10, 1])
+                bounded = max(1, configured)
+                self.assertEqual(
+                    json.loads(result.stdout),
+                    [min(bounded, 20), min(bounded, 10), min(bounded, 10),
+                     min(bounded, 10), 1],
+                )
 
     def test_new_windows_top_up_persisted_counts_without_resetting_them(self):
         tz = timezone(timedelta(hours=8))
