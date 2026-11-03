@@ -6,6 +6,7 @@ from app.http.routes import admin, admin_crawl, public
 
 GET_ROUTES = {
     "/": public.main_page,
+    "/favicon.svg": public.favicon,
     "/api/search": public.search,
     "/api/comments": public.comments,
     "/api/categories": public.categories,

@@ -3,6 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
+from pathlib import Path
+
+
+def favicon(handler):
+    content = (Path(__file__).resolve().parents[2] / "static" / "favicon.svg").read_bytes()
+    handler.send_response(200)
+    handler.send_header("Content-Type", "image/svg+xml")
+    handler.send_header("Content-Length", str(len(content)))
+    handler.send_header("Cache-Control", "public, max-age=86400")
+    handler.end_headers()
+    handler.wfile.write(content)
 
 
 def _parse_search_date(raw_value: str, *, is_end: bool = False) -> datetime:
