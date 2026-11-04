@@ -64,3 +64,35 @@ def dashboard(handler):
         ADMIN_CSRF_TOKEN=csrf,
     )
     handler.serve_html(content)
+
+
+def crawl_page(handler):
+    tool_page(handler, "admin_crawl.html")
+
+
+def reports_page(handler):
+    tool_page(handler, "admin_reports.html")
+
+
+def tool_page(handler, template):
+    if not handler.is_admin():
+        handler.send_response(302)
+        handler.send_header("Location", "/admin")
+        handler.end_headers()
+        return
+    handler.serve_html(handler.context.templates.render(
+        template, ADMIN_CSRF_TOKEN=handler.context.auth.create_csrf_token()
+    ))
+
+
+def report_data(handler):
+    if not handler.is_admin():
+        handler.serve_json({"ok": False, "error": "管理员登录已失效，请重新登录"}, 401)
+        return
+    params, _ = handler.parse_query()
+    try:
+        result = handler.context.admin.reports.report(params.get("from", [""])[0], params.get("to", [""])[0])
+    except ValueError as exc:
+        handler.serve_json({"ok": False, "error": str(exc)}, 400)
+        return
+    handler.serve_json(result)

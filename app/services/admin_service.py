@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 
 from app.repositories.connections import connect_readonly
+from app.services.crawler_report_service import CrawlerReportService
 
 
 class AdminService:
     def __init__(self, posts_db: str | Path):
         self.posts_db = Path(posts_db)
+        self.reports = CrawlerReportService(self.posts_db)
 
     def dashboard(self, limit: int = 40) -> dict:
         """Return the total shown in the current admin dashboard.

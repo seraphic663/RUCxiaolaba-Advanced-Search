@@ -342,16 +342,45 @@ class HTTPContractTest(unittest.TestCase):
         self.assertIn("SQLite", dashboard)
         self.assertNotIn("__SHARED_UI_", dashboard)
         self.assertEqual(dashboard.count("function updateThemeButton()"), 1)
-        self.assertIn("上游候选与人工现爬", dashboard)
+        self.assertNotIn('id="live-source"', dashboard)
+        self.assertNotIn("function loadUpstreamPreview", dashboard)
+        self.assertIn('href="/admin/reports"', dashboard)
+        self.assertIn('href="/admin/crawl"', dashboard)
         self.assertIn('id="date-range-panel"', dashboard)
         self.assertIn('type="date" id="date-to"', dashboard)
         self.assertIn('id="date-filter" data-preset="1d"', dashboard)
         self.assertIn('<span id="date-filter-summary">今天</span>', dashboard)
         self.assertNotIn("__ADMIN_CSRF_TOKEN__", dashboard)
+        with opener.open(self.base + "/admin/crawl", timeout=5) as response:
+            crawl_page = response.read().decode("utf-8")
+        self.assertIn('id="live-source"', crawl_page)
+        self.assertIn('type="number" min="1" step="1"', crawl_page)
+        self.assertNotIn('id="q"', crawl_page)
+        self.assertNotIn("doSearch()", crawl_page)
+        self.assertNotIn("__ADMIN_", crawl_page)
+        with opener.open(self.base + "/admin/reports", timeout=5) as response:
+            reports_page = response.read().decode("utf-8")
+        self.assertIn('id="pending-chart"', reports_page)
+        self.assertIn('type="datetime-local"', reports_page)
+        self.assertNotIn("__ADMIN_", reports_page)
+        with opener.open(self.base + "/api/admin/crawler-report?from=2026-11-02&to=2026-11-04", timeout=5) as response:
+            self.assertTrue(json.loads(response.read())["ok"])
         with opener.open(self.base + "/api/admin/crawl-status", timeout=5) as response:
             crawler_status = json.loads(response.read())
         self.assertTrue(crawler_status["ok"])
         self.assertEqual(crawler_status["posts"]["total"], 1)
+
+    def test_crawler_report_requires_admin_and_rejects_reversed_dates(self):
+        with self.assertRaises(HTTPError) as error:
+            urlopen(self.base + "/api/admin/crawler-report", timeout=5)
+        self.assertEqual(error.exception.code, 401)
+        with urlopen(self.base + "/admin/reports", timeout=5) as response:
+            self.assertIn('name="password"', response.read().decode("utf-8"))
+        token = self.server.RequestHandlerClass.context.auth.create_session()
+        request = Request(self.base + "/api/admin/crawler-report?from=2026-11-04&to=2026-11-02", headers={"Cookie": "admin_token=" + token})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request, timeout=5)
+        self.assertEqual(error.exception.code, 400)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>运行汇报 — RUC小喇叭</title><link rel="icon" href="/favicon.svg">
+<script>document.documentElement.dataset.theme=localStorage.getItem('rucxlb-theme')==='dark'?'dark':'light';</script><style>__ADMIN_TOOLS_CSS__</style></head><body>
+<header class="tool-header"><a class="brand" href="/admin">RUC 小喇叭 · 管理</a><nav aria-label="管理功能"><a href="/admin">搜索</a><a href="/admin/reports">运行汇报</a><a href="/admin/crawl">人工补爬</a><button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="切换深色模式"><span class="theme-icon">☾</span></button><a href="/admin?logout=1">退出</a></nav></header>
+<main class="tool-main">
+<h1>爬虫运行汇报</h1><p class="muted" id="freshness" aria-live="polite">正在读取已有记录…</p>
+<div class="range-panel">
+<div class="presets" aria-label="快捷时间范围"><button data-hours="24">24 小时</button><button data-hours="48">48 小时</button><button data-hours="72" class="active">72 小时</button><button data-hours="168">7 天</button><button data-hours="720">30 天</button><button data-hours="all">全部记录</button></div>
+<div class="date-inputs"><label>开始 · 北京时间<input id="report-from" type="datetime-local" step="60" title="留空从最早记录开始"></label><label>结束 · 北京时间<input id="report-to" type="datetime-local" step="60" title="留空表示到现在，随时间自动延伸"></label></div>
+<div class="refresh-controls"><label><input id="auto-refresh" type="checkbox" checked> 每分钟自动更新</label><button class="refresh-button" id="refresh-now">刷新</button></div>
+</div>
+<p id="report-error" class="error" role="alert" hidden></p>
+<div class="cards" id="report-cards"></div>
+<section class="chart-section" aria-labelledby="chart-title">
+<div class="chart-heading"><h2 id="chart-title">ID 待查积存</h2><div class="legend"><span><i></i>精确观测</span><label><input id="include-legacy" type="checkbox" checked><i class="estimated"></i>旧报告记录</label></div></div>
+<div class="chart-wrap"><svg id="pending-chart" role="img" tabindex="0" aria-label="ID 待查积存随时间变化，左右方向键查看逐条观测"></svg><div id="chart-tooltip" class="chart-tooltip" hidden></div></div>
+<p class="note" id="chart-caption"></p>
+<p class="note">数量为 id_followup / pending。使用实际观测时间；缺少记录的间隔超过 6 小时会断开。纵轴聚焦变化范围。移动鼠标或使用左右方向键查看每个点。</p>
+<details><summary>查看当前范围的全部观测与来源</summary><div class="table-wrap"><table><thead><tr><th>观测时间（北京时间）</th><th>待查数量</th><th>记录性质</th><th>来源</th></tr></thead><tbody id="observation-rows"></tbody></table></div></details>
+</section>
+<section class="table-section"><h2>每日流入与处理</h2><p class="note">所选时间范围内的运行，按北京时间结束日期汇总。新增与重开增加待查；移出 pending 包括成功、不可获取及暂缓。失败轮缺失的结果会明确标注。</p>
+<div class="table-wrap"><table><thead><tr><th>日期</th><th>list1 新增</th><th>list2 新增</th><th>list1 / list2 重开</th><th>总流入</th><th>ID 详情请求</th><th>移出 pending</th><th>净变化</th></tr></thead><tbody id="flow-rows"></tbody></table></div>
+<details><summary>详情结果与完整度</summary><div class="table-wrap"><table><thead><tr><th>日期</th><th>补齐完整详情</th><th>刷新已有完整详情</th><th>正常成功</th><th>异常返回（含不完整）</th><th>不完整响应</th><th>留待重试</th><th>转暂缓</th><th>新增评论行</th><th>认领冲突</th></tr></thead><tbody id="detail-rows"></tbody></table></div><p class="note">补齐完整详情含部分响应经合并补齐的情况，不能与“不完整响应”相加。新增评论行为每次写入的正增量，含部分保存。</p></details>
+</section>
+<section class="table-section"><h2>新旧 cookie 请求日账</h2><p class="note">所选范围涉及日期的整日日账，今天为累计；与上表的首尾不满整天区间不同。列表请求另行记账，仍消耗上游 session；这里不包含个人小程序使用量。</p>
+<div class="table-wrap"><table><thead><tr><th>日期</th><th>Cookie</th><th>详情</th><th>list1</th><th>list2</th><th>总请求</th><th>上游限流</th></tr></thead><tbody id="quota-rows"></tbody></table></div>
+</section>
+<p class="note" id="source-note"></p>
+</main><script>__SHARED_UI_JS__
+updateThemeButton();
+document.querySelector('a[href="/admin/reports"]').setAttribute('aria-current','page');
+__ADMIN_REPORTS_JS__
+</script></body></html>
