@@ -21,6 +21,8 @@ class TemplateService:
         shared_assets = {
             "__SHARED_UI_CSS__": "shared_ui.css",
             "__SHARED_UI_JS__": "shared_ui.js",
+            "__ADMIN_TOOLS_CSS__": "admin_tools.css",
+            "__ADMIN_REPORTS_JS__": "admin_reports.js",
         }
         for token, shared_name in shared_assets.items():
             if token in content:

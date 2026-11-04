@@ -12,6 +12,9 @@ GET_ROUTES = {
     "/api/categories": public.categories,
     "/healthz": public.health,
     "/admin": admin.get,
+    "/admin/reports": admin.reports_page,
+    "/admin/crawl": admin.crawl_page,
+    "/api/admin/crawler-report": admin.report_data,
     "/api/admin/live-crawl": admin_crawl.status,
     "/api/admin/crawl-status": admin_crawl.overview,
 }
