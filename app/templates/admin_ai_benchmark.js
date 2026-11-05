@@ -68,7 +68,7 @@ function benchRenderSummary(summary) {
   target.append(benchNode('p', '进度 ' + summary.completed + ' / ' + summary.total + ' · 失败 ' + summary.failed + ' · 并发 ' + summary.concurrency + ' · AI 请求 ' + summary.ai_calls + ' 次'));
   var duration = summary.wall_elapsed_ms !== null ? '整轮已用 ' + (summary.wall_elapsed_ms / 1000).toFixed(1) + ' 秒' : '逐条耗时累计 ' + (summary.query_elapsed_ms / 1000).toFixed(1) + ' 秒（旧轮次未记录整轮墙钟）';
   target.append(benchNode('p', duration + ' · 按已返回 token 折算 ' + aiCostText(summary.cost)));
-  target.append(benchNode('p', '输入 ' + (summary.usage.prompt_tokens || 0) + ' / 输出 ' + (summary.usage.completion_tokens || 0) + ' tokens · 本地最新帖子 ' + (summary.source.latest_post_time || '未知'), 'note'));
+  target.append(benchNode('p', '输入 ' + (summary.usage.prompt_tokens || 0) + ' / 输出 ' + (summary.usage.completion_tokens || 0) + ' tokens · 本轮检索库最新帖子 ' + (summary.source.latest_post_time || '未知'), 'note'));
   if (!summary.manifest_matches) target.append(benchNode('p', '该轮使用其他版本的用例清单，请独立解读分数。', 'ai-warning'));
   if (summary.estimate) target.append(benchNode('p', '启动前预估：' + aiEstimateText(summary.estimate), 'note'));
   if (summary.error_code) target.append(benchNode('p', '运行器异常：' + summary.error_code + '；已完成的结果已保留。', 'ai-warning'));

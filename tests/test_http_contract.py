@@ -346,6 +346,10 @@ class HTTPContractTest(unittest.TestCase):
         self.assertNotIn("function loadUpstreamPreview", dashboard)
         self.assertIn('href="/admin/reports"', dashboard)
         self.assertIn('href="/admin/crawl"', dashboard)
+        self.assertIn('href="/admin/ai-search"', dashboard)
+        self.assertIn('href="/admin/ai-search/bench"', dashboard)
+        self.assertIn('保留管理员登录">公开搜索</a>', dashboard)
+        self.assertIn('注销管理员登录">退出登录</a>', dashboard)
         self.assertIn('id="date-range-panel"', dashboard)
         self.assertIn('type="date" id="date-to"', dashboard)
         self.assertIn('id="date-filter" data-preset="1d"', dashboard)
@@ -369,6 +373,19 @@ class HTTPContractTest(unittest.TestCase):
             crawler_status = json.loads(response.read())
         self.assertTrue(crawler_status["ok"])
         self.assertEqual(crawler_status["posts"]["total"], 1)
+
+        # Opening the public page preserves the authenticated administrator
+        # session; the separate logout action clears it in the browser.
+        with opener.open(self.base + "/", timeout=5) as response:
+            self.assertEqual(response.status, 200)
+        with opener.open(self.base + "/api/search?q=" + quote("食堂") + "&admin_required=1", timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertIn("results", json.loads(response.read()))
+        with opener.open(self.base + "/admin?logout=1", timeout=5) as response:
+            self.assertIn('name="password"', response.read().decode("utf-8"))
+        with self.assertRaises(HTTPError) as error:
+            opener.open(self.base + "/api/search?q=test&admin_required=1", timeout=5)
+        self.assertEqual(error.exception.code, 401)
 
     def test_crawler_report_requires_admin_and_rejects_reversed_dates(self):
         with self.assertRaises(HTTPError) as error:

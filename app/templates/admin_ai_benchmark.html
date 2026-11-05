@@ -9,7 +9,7 @@ __ADMIN_AI_SEARCH_CSS__
 __ADMIN_AI_BENCHMARK_CSS__</style>
 </head>
 <body>
-<header class="tool-header"><a class="brand" href="/admin">RUC 小喇叭 · 管理</a><nav aria-label="管理功能"><a href="/admin">搜索</a><a href="/admin/ai-search" aria-current="page">AI 检索</a><a href="/admin/reports">运行汇报</a><a href="/admin/crawl">人工补爬</a><button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="切换深色模式"><span class="theme-icon">☾</span></button><a href="/admin?logout=1">退出</a></nav></header>
+<header class="tool-header"><a class="brand" href="/admin">RUC 小喇叭 · 管理</a><nav aria-label="管理功能"><a href="/admin">管理搜索</a><a href="/admin/ai-search">AI 检索</a><a href="/admin/ai-search/bench" aria-current="page">Bench 评测</a><a href="/admin/reports">运行汇报</a><a href="/admin/crawl">人工补爬</a><button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="切换深色模式"><span class="theme-icon">☾</span></button><a href="/" title="打开公开搜索页，保留管理员登录">公开搜索</a><a href="/admin?logout=1" title="注销管理员登录">退出登录</a></nav></header>
 <main class="tool-main ai-main">
   <nav class="ai-tabs" aria-label="AI 功能"><a href="/admin/ai-search">自然语言检索</a><a href="/admin/ai-search/bench" aria-current="page">Bench 评测</a></nav>
   <div class="ai-heading"><div><p class="eyebrow">有证据才回答</p><h1>检索 Bench</h1><p class="muted" id="bench-description">正在加载固定用例与历史结果…</p></div><span class="connection-badge" id="bench-model"></span></div>
