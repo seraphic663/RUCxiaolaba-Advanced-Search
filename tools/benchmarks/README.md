@@ -1,5 +1,7 @@
 # Benchmark 指南
 
+AI 检索的有答案/无答案 query、参考答案、反编造门槛和真实 API 运行顺序见 [AI_SEARCH_BENCHMARK.md](AI_SEARCH_BENCHMARK.md)。先运行 `python -B -m tools.benchmarks.benchmark_ai_search --validate-only`，设计核查通过后再运行显式 `--live` 测试（默认 18 条 query 并发，`--concurrency 1` 可顺序运行）。Admin 的 `/admin/ai-search/bench` 可查看历史、预估金额/时间并全量或单条重测；新结果位于 Git-ignored 的 `data/ai-search-bench/`，CLI 历史仍位于 `reports/generated/ai-search/`。
+
 本目录中的脚本用于手动验证搜索正确性、首屏延迟和 Bigram 索引体积，不属于普通 `pytest` 流程。演示数据库太小，不适合得出性能结论。
 
 ## 前置条件

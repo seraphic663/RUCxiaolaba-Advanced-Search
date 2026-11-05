@@ -180,6 +180,16 @@ def test_unsupported_claim_or_missing_personal_context_never_becomes_answer(tmp_
     assert client.calls == {"quote": 3, "semantic": 4, "clarification": 2}[reject_stage]
 
 
+def test_failed_or_blocked_request_is_not_a_successful_negative_benchmark():
+    from tools.benchmarks.benchmark_ai_search import evaluate
+
+    case = {"answerable": False}
+    for status in ("error", "failed", "unverified", "not_configured"):
+        assert not evaluate(case, {"answer_status": status, "answer": ""})["passed"]
+    assert evaluate(case, {"answer_status": "no_answer", "answer": ""})["passed"]
+    assert not evaluate(case, {"answer_status": "no_answer", "answer": "编造的答案"})["passed"]
+
+
 def test_unsegmented_question_recovers_existing_entity_without_answer_hints(tmp_path):
     db = tmp_path / "posts.db"
     sidecar = tmp_path / "bigram.db"
