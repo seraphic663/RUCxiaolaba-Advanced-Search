@@ -164,7 +164,7 @@ function renderAiResult(data) {
   data.queries.forEach(function(query) { aiElement('query-chips').append(aiNode('span', query, 'query-chip')); });
   aiElement('search-stages').textContent = data.stats.stages.map(function(stage) { return stage.name + ' ' + (stage.ms / 1000).toFixed(1) + 's'; }).join(' · ');
   if (data.dataset && data.dataset.latest_post_time) {
-    aiElement('search-stages').append(aiNode('p', '本地最新帖子：' + data.dataset.latest_post_time + '；历史用户陈述不等于当前官方信息。'));
+    aiElement('search-stages').append(aiNode('p', '检索库最新帖子：' + data.dataset.latest_post_time + '；历史用户陈述不等于当前官方信息。'));
   }
 }
 aiElement('query-form').addEventListener('submit', async function(event) {
