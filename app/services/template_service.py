@@ -23,6 +23,9 @@ class TemplateService:
             "__SHARED_UI_JS__": "shared_ui.js",
             "__ADMIN_TOOLS_CSS__": "admin_tools.css",
             "__ADMIN_REPORTS_JS__": "admin_reports.js",
+            "__ADMIN_AI_SEARCH_CSS__": "admin_ai_search.css",
+            "__ADMIN_AI_SEARCH_JS__": "admin_ai_search.js",
+            "__ADMIN_AI_COMMON_JS__": "admin_ai_common.js",
         }
         for token, shared_name in shared_assets.items():
             if token in content:

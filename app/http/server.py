@@ -20,6 +20,8 @@ from app.repositories.post_repository import PostRepository
 from app.repositories.search_repository import bigram_query, fts_query
 from app.services.admin_crawl_service import AdminCrawlService
 from app.services.admin_service import AdminService
+from app.services.ai_search_config import AiSearchConfigStore
+from app.services.ai_search_service import AiSearchService
 from app.services.auth_service import AdminAuthService
 from app.services.search_service import SearchService
 from app.services.template_service import TemplateService
@@ -172,6 +174,7 @@ class ApplicationContext:
     admin_crawl: AdminCrawlService
     auth: AdminAuthService
     templates: TemplateService
+    ai_search: AiSearchService | None = None
 
 
 def build_context() -> ApplicationContext:
@@ -192,6 +195,12 @@ def build_context() -> ApplicationContext:
         ),
         auth=AdminAuthService(SESSION_TTL, CSRF_TTL),
         templates=TemplateService(TEMPLATES_DIR),
+        ai_search=AiSearchService(
+            SearchService(SQLITE_DB, BIGRAM_DB or None, SYMBOL_DB or None),
+            AiSearchConfigStore(os.environ.get(
+                "AI_SEARCH_CONFIG", str(APP_CONFIG.data_dir / ".admin_ai_search.json")
+            )),
+        ),
     )
 
 
@@ -219,15 +228,19 @@ class Handler(BaseHTTPRequestHandler):
         forwarded = (self.headers.get("X-Forwarded-For") or "").split(",", 1)[0]
         return forwarded.strip() or self.client_address[0]
 
-    def serve_html(self, content, code=200):
+    def serve_html(self, content, code=200, *, no_store=False):
         self.send_response(code)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(content.encode("utf-8"))
 
-    def serve_json(self, data, code=200):
+    def serve_json(self, data, code=200, *, no_store=False):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
 

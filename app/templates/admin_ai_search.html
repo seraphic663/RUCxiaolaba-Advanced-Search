@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 检索 — RUC小喇叭</title><link rel="icon" href="/favicon.svg">
+<script>document.documentElement.dataset.theme=localStorage.getItem('rucxlb-theme')==='dark'?'dark':'light';</script>
+<style>__ADMIN_TOOLS_CSS__
+__ADMIN_AI_SEARCH_CSS__</style>
+</head>
+<body>
+<header class="tool-header">
+  <a class="brand" href="/admin">RUC 小喇叭 · 管理</a>
+  <nav aria-label="管理功能"><a href="/admin">搜索</a><a href="/admin/ai-search" aria-current="page">AI 检索</a><a href="/admin/reports">运行汇报</a><a href="/admin/crawl">人工补爬</a><button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="切换深色模式"><span class="theme-icon">☾</span></button><a href="/admin?logout=1">退出</a></nav>
+</header>
+<main class="tool-main ai-main">
+  <div class="ai-heading"><div><p class="eyebrow">从问题，找到原帖</p><h1>AI 检索</h1><p class="muted">用自然语言搜索已保存的帖子与评论，查看有来源的回答。</p></div><span class="connection-badge" id="connection-status" role="status">正在读取接口配置…</span></div>
+  <details class="ai-settings" id="ai-settings">
+    <summary>接口设置 <span id="model-label"></span></summary>
+    <form id="settings-form" autocomplete="off">
+      <div class="settings-grid">
+        <label>AI 接口地址<input id="ai-base-url" type="url" required placeholder="https://api.deepseek.com" spellcheck="false"></label>
+        <label>模型名<input id="ai-model" required placeholder="deepseek-flash" spellcheck="false"></label>
+        <label class="key-field">AI API Key<input id="ai-api-key" type="password" autocomplete="new-password" placeholder="填写 Key；留空保留已保存的值" spellcheck="false"><span class="note" id="key-status"></span></label>
+        <label class="clear-key"><input id="clear-api-key" type="checkbox"> 清除已保存的 AI Key</label>
+      </div>
+      <details class="retrieval-settings"><summary>独立检索接口（可选）</summary>
+        <p class="note">默认复用本站 /api/search 的检索服务。独立接口需兼容 GET q、limit、scope、from、to 参数，并返回 results 数组。</p>
+        <div class="settings-grid"><label>检索 API 完整地址<input id="search-url" type="url" placeholder="留空使用本站检索" spellcheck="false"></label><label>检索 API Key（可选 Bearer）<input id="search-api-key" type="password" autocomplete="new-password" placeholder="留空保留已保存的值" spellcheck="false"></label><label class="clear-key"><input id="clear-search-api-key" type="checkbox"> 清除已保存的检索 Key</label></div>
+      </details>
+      <p class="note">Key 仅保存在服务器配置中，保存后不会回显。AI 会收到你的问题及命中的正文、评论节选。</p>
+      <div class="settings-actions"><button class="primary" type="submit">保存设置</button><button id="test-connection" type="button">测试已保存的 AI 接口</button><span id="settings-status" role="status"></span></div>
+    </form>
+  </details>
+  <form class="ai-query-panel" id="query-form">
+    <label class="query-label" for="ai-query">想找什么？</label>
+    <textarea id="ai-query" rows="3" maxlength="500" required placeholder="例如：图书馆什么时候开放？有没有同学分享过使用体验？"></textarea>
+    <div class="query-controls">
+      <label>范围<select id="ai-scope"><option value="all">正文 + 评论</option><option value="content">仅正文</option></select></label>
+      <label>来源数<select id="ai-top-k"><option value="4">4 篇</option><option value="6" selected>6 篇</option><option value="10">10 篇</option></select></label>
+      <label>模式<select id="ai-mode"><option value="answer">AI 检索并回答</option><option value="retrieve">仅关键词检索</option></select></label>
+      <button class="primary search-button" type="submit" id="search-button">开始检索 <span aria-hidden="true">↗</span></button>
+    </div>
+    <details class="query-dates"><summary>限定帖子发布时间</summary><div class="date-fields"><label>开始日期<input id="ai-date-from" type="date"></label><label>结束日期<input id="ai-date-to" type="date"></label></div></details>
+    <p class="note" id="query-estimate" aria-live="polite">正在加载费用与时间估算…</p>
+    <p class="note">金额按 <a href="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/" target="_blank" rel="noopener">DeepSeek 官方价格</a>（2026-11-05 核对）估算，区间覆盖空闲/高峰时段；运行前还预留 token 波动。不含独立检索 API 费用，以服务商账单为准。</p>
+  </form>
+  <p class="search-progress muted" id="search-progress" role="status" aria-live="polite"></p>
+  <p class="ai-error" id="search-error" role="alert" hidden></p>
+  <div id="search-warnings" role="status"></div>
+  <div class="ai-empty" id="ai-empty"><span class="empty-symbol" aria-hidden="true">⌕</span><h2>先提一个问题</h2><p>回答与检索来源会一起出现，点击引用即可核对。</p><p class="note">仅关键词检索无需 AI Key。结果受已抓取范围和更新时间限制。</p></div>
+  <section id="ai-results" hidden aria-label="检索结果">
+    <div class="result-summary" id="result-summary"></div>
+    <div class="ai-result-grid">
+      <section class="answer-panel" aria-labelledby="answer-heading"><div class="section-title"><h2 id="answer-heading">回答</h2><span class="note">AI 整理 · 请对照原帖</span></div><div id="ai-answer" class="answer-content"></div><div class="query-chips" id="query-chips" aria-label="实际检索词"></div><div id="search-stages" class="note"></div></section>
+      <section class="sources-panel" aria-labelledby="sources-heading"><h2 id="sources-heading">检索来源 <span id="source-count"></span></h2><div id="ai-sources"></div></section>
+    </div>
+  </section>
+</main>
+<script>__SHARED_UI_JS__
+var adminCsrfToken = '__ADMIN_CSRF_TOKEN__';
+__ADMIN_AI_COMMON_JS__
+__ADMIN_AI_SEARCH_JS__</script>
+</body></html>
