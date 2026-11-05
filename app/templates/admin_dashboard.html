@@ -255,6 +255,7 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
     <span style="color:rgba(255,255,255,.72);font-size:0.8em;" id="db-info">__CSV_SOURCE__ · __TOTAL__帖</span>
     <button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="切换深色模式" title="切换深色模式"><span class="theme-icon">☾</span></button>
     <button class="settings-toggle" type="button" onclick="openSettings()" aria-label="界面设置" title="界面设置">⚙</button>
+    <a href="/admin/ai-search">AI 检索</a>
     <a href="/admin/reports">运行汇报</a>
     <a href="/admin/crawl">人工补爬</a>
     <a href="/">返回搜索</a>
@@ -766,6 +767,10 @@ document.getElementById('category').addEventListener('input', function() {
   categoryTimer = setTimeout(startSearch, 350);
 });
 updateSearchMode();
+var linkedPost = new URLSearchParams(window.location.search).get('post');
+if (linkedPost && linkedPost.length <= 128) {
+  document.getElementById('date-filter').dataset.preset = '';
+}
 setupDateFilter(startSearch);
 
 fetch('/api/categories')
@@ -782,6 +787,13 @@ fetch('/api/categories')
   })
   .catch(function() {});
 
+if (linkedPost && linkedPost.length <= 128) {
+  document.getElementById('q').value = linkedPost;
+  ['body', 'cmt', 'uid', 'post', 'name'].forEach(function(field) {
+    document.getElementById('sc-' + field).checked = field === 'body' || field === 'post';
+  });
+  startSearch();
+}
 </script>
 </body>
 </html>

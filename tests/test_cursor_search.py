@@ -77,11 +77,16 @@ class CursorSearchTest(unittest.TestCase):
         self.assertEqual(second["total"], 3)
 
     def test_cursor_pages_preserve_star_order_and_comment_matches(self) -> None:
-        request = SearchQuery(text="猫", sort_by="stars", limit=3, scope="all")
+        request = SearchQuery(
+            text="猫", sort_by="stars", limit=3, scope="all", admin=True,
+            admin_fields=frozenset({"body", "cmt"}),
+        )
         first = self.repository.search_cursor(request)
         self.assertEqual([row["id"] for row in first["results"]], ["2", "4", "3"])
         self.assertEqual(first["candidate_total"], 5)
-        self.assertEqual(first["scanned"], 3)
+        # Admin single-character queries use exact matched-row pagination.
+        self.assertEqual(first["pagination_mode"], "numbered")
+        self.assertEqual(first["scanned"], 5)
 
     def test_cursor_results_match_conventional_search(self) -> None:
         conventional = self.repository.search(
