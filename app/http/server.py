@@ -20,6 +20,7 @@ from app.repositories.post_repository import PostRepository
 from app.repositories.search_repository import bigram_query, fts_query
 from app.services.admin_crawl_service import AdminCrawlService
 from app.services.admin_service import AdminService
+from app.services.ai_search_benchmark_service import AiSearchBenchmarkService
 from app.services.ai_search_config import AiSearchConfigStore
 from app.services.ai_search_service import AiSearchService
 from app.services.auth_service import AdminAuthService
@@ -175,6 +176,13 @@ class ApplicationContext:
     auth: AdminAuthService
     templates: TemplateService
     ai_search: AiSearchService | None = None
+    ai_benchmark: AiSearchBenchmarkService | None = None
+
+    def __post_init__(self):
+        if self.ai_search is not None and self.ai_benchmark is None:
+            self.ai_benchmark = AiSearchBenchmarkService(
+                self.ai_search, self.ai_search.config.path.parent / "ai-search-bench"
+            )
 
 
 def build_context() -> ApplicationContext:

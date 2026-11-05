@@ -1,0 +1,314 @@
+{
+  "version": 3,
+  "scope": "Local posts.db snapshot; source-checked development expectations, not human-annotated gold or current official information.",
+  "cases": [
+    {
+      "id": "001",
+      "query": "图书馆开放时间",
+      "answerable": true,
+      "reference_answer": "历史用户记录指向早7点开门、晚10点左右闭馆；有人晚于闭馆时间离开，不能混同正式开放时段，也不能作为当前官方通知。",
+      "evidence_post_ids": [
+        "3812081",
+        "3867914",
+        "3895104",
+        "4302707"
+      ],
+      "required_patterns": [
+        "7[:：]00|早[上晨]?\\s*[7七]|[7七]点|早7晚",
+        "22[:：]00|晚[上间]?\\s*(?:10|十)|(?:10|十)点|早7晚10"
+      ],
+      "exclude_post_ids": [
+        "4707726",
+        "4401418",
+        "4117274"
+      ],
+      "domain": "library",
+      "intent": "historical_summary",
+      "reference_policy": "answer_and_scope",
+      "source_scope_patterns": [
+        "图书馆",
+        "开放|开门|关门|闭馆|开馆|几点"
+      ]
+    },
+    {
+      "id": "002",
+      "query": "图书馆早上几点开门？",
+      "answerable": true,
+      "reference_answer": "2025年的开门时间回复有7:00，也有6:50等不同说法，应标明历史用户陈述。",
+      "evidence_post_ids": [
+        "3867914",
+        "3895104"
+      ],
+      "required_patterns": [
+        "7[:：]00|早[上晨]?\\s*[7七]|[7七]点|早7晚"
+      ],
+      "domain": "library",
+      "intent": "short_reply",
+      "reference_policy": "answer_and_scope",
+      "source_scope_patterns": [
+        "图书馆",
+        "开门|开馆|早上|七点|7点|几点"
+      ]
+    },
+    {
+      "id": "003",
+      "query": "图书馆密排库的书怎么借阅？",
+      "answerable": true,
+      "reference_answer": "有跟帖称密排一、三可自己拿；密排二不外借，找密一值班老师押证提书馆内看。",
+      "evidence_post_ids": [
+        "4285314"
+      ],
+      "required_patterns": [
+        "密排|密一|密二",
+        "押证|不外借"
+      ],
+      "domain": "borrowing",
+      "intent": "procedure",
+      "reference_policy": "answer_and_scope",
+      "source_scope_patterns": [
+        "密排",
+        "借|押证|流通|馆内"
+      ]
+    },
+    {
+      "id": "004",
+      "query": "学校哪里可以买花？",
+      "answerable": true,
+      "reference_answer": "已核对的历史来源提到品园超市/品超、求是文创及求是楼旁礼品店、图书馆到东区食堂之间礼品花店、东风对面紫藤园旁花店等线索。允许引用其他核对过的同等有效来源，不保证今天营业。",
+      "evidence_post_ids": [
+        "4401418",
+        "4887127",
+        "3382242",
+        "3814505",
+        "4987361"
+      ],
+      "required_patterns": [
+        "品园|品超|求是|紫藤园|图书馆到东区食堂|纪念品店"
+      ],
+      "domain": "shopping",
+      "intent": "location",
+      "reference_policy": "answer_and_scope",
+      "source_scope_patterns": [
+        "花",
+        "买|卖|花店|纪念品"
+      ]
+    },
+    {
+      "id": "005",
+      "query": "2025年5月底图书馆古籍特藏馆周末开放安排是什么？",
+      "answerable": true,
+      "reference_answer": "2025年5月30日的回复称明天不开，周日周一8:00-17:00；仅限该帖当时的安排。",
+      "evidence_post_ids": [
+        "3823198"
+      ],
+      "required_patterns": [
+        "8|八",
+        "17|五点|5点"
+      ],
+      "domain": "library",
+      "intent": "dated_schedule",
+      "reference_policy": "required",
+      "source_scope_patterns": [
+        "古籍|特藏",
+        "周末|周日|周一"
+      ]
+    },
+    {
+      "id": "006",
+      "query": "法学院图书馆具体几点开门、几点关门？",
+      "answerable": false,
+      "reference_answer": "已核对的法学院图书馆开放时间问帖和开到几点问帖均无回复；其他直接提及该馆的记录也未提供开放时段。不能用学校总图书馆时间代答。",
+      "related_post_ids": [
+        "3887644",
+        "3739636"
+      ],
+      "scope_note": "Reviewed the seven literal-entity body posts and three literal-entity comments plus their actual threads; opening/closing questions have no replies.",
+      "domain": "library",
+      "intent": "specific_entity",
+      "negative_kind": "related_question_only"
+    },
+    {
+      "id": "007",
+      "query": "2026年11月5日图书馆官方公布的准确开放时间是什么？",
+      "answerable": false,
+      "reference_answer": "本地库最新帖子为2026-08-12，无该日官方通知；历史用户经验不能作为该日官方安排。",
+      "domain": "library",
+      "intent": "official_current",
+      "negative_kind": "outdated_information"
+    },
+    {
+      "id": "008",
+      "query": "图书馆早上几点开门？",
+      "date_from": "2026-11-01",
+      "answerable": false,
+      "reference_answer": "指定时间窗口晚于本地库最新帖子，不存在该窗口内的证据。",
+      "domain": "library",
+      "intent": "date_filter",
+      "negative_kind": "empty_time_window"
+    },
+    {
+      "id": "009",
+      "query": "玄霄图书馆星际分馆周末几点开放？",
+      "answerable": false,
+      "reference_answer": "虚构实体负例；不得删除实体约束后套用人大图书馆的时间。",
+      "domain": "adversarial",
+      "intent": "entity_constraint",
+      "negative_kind": "nonexistent_entity"
+    },
+    {
+      "id": "010",
+      "query": "图书馆门口自助机的管理员维护口令 RUC-NO-EVIDENCE-7F29 是什么？",
+      "answerable": false,
+      "reference_answer": "无该口令证据；不得编造或从无关帖子推测。",
+      "domain": "adversarial",
+      "intent": "exact_identifier",
+      "negative_kind": "missing_identifier_evidence"
+    },
+    {
+      "id": "011",
+      "query": "实体校园卡丢了，到哪里补办？",
+      "answerable": true,
+      "reference_answer": "历史回复指向综合服务中心、cici旁边的小门内自助机；先区分挂失与补办，不编造费用。",
+      "evidence_post_ids": [
+        "5032647",
+        "5009946"
+      ],
+      "required_patterns": [
+        "综合|cici|自助"
+      ],
+      "domain": "campus_card",
+      "intent": "service_location",
+      "reference_policy": "answer_and_scope",
+      "source_scope_patterns": [
+        "校园卡|一卡通|补卡",
+        "补办|补卡|服务中心"
+      ]
+    },
+    {
+      "id": "012",
+      "query": "2026年3月学校游泳馆课外游泳多少钱一次，评论有没有更正？",
+      "answerable": true,
+      "reference_answer": "该问帖先出现20的回复，后有更正10r、两小时，应保留是历史跟帖而非现行官方收费。",
+      "evidence_post_ids": [
+        "4331236"
+      ],
+      "required_patterns": [
+        "10|十",
+        "更正|纠正|记错|20|二十|不一致"
+      ],
+      "domain": "sports",
+      "intent": "price_correction",
+      "reference_policy": "answer_and_scope",
+      "source_scope_patterns": [
+        "游泳",
+        "价格|多少钱|收费|20|10|两小时"
+      ]
+    },
+    {
+      "id": "013",
+      "query": "晚上打印店关门后，校内哪里还能自助打印？",
+      "answerable": true,
+      "reference_answer": "已核对的历史来源提到世纪馆自助服务区、明德楼24小时自助机、立德楼高层电梯入口处自助打印等线索；不能保证设备当前可用。",
+      "evidence_post_ids": [
+        "4860631",
+        "4074529",
+        "4210356",
+        "4759903"
+      ],
+      "required_patterns": [
+        "世纪馆|明德|立德"
+      ],
+      "domain": "printing",
+      "intent": "conditional_location",
+      "reference_policy": "answer_and_scope",
+      "source_scope_patterns": [
+        "打印",
+        "自助|24|夜|晚上|关门"
+      ]
+    },
+    {
+      "id": "014",
+      "query": "2026年5月底校园网连着却微人大404，当时别人也遇到了吗？",
+      "answerable": true,
+      "reference_answer": "2026-05-30的对应问帖有微人大崩了、大伙都这样的回复；不能据此诊断现在的个人电脑。",
+      "evidence_post_ids": [
+        "4996465"
+      ],
+      "required_patterns": [
+        "崩|都这样|故障|其他"
+      ],
+      "domain": "network",
+      "intent": "dated_incident",
+      "reference_policy": "required",
+      "source_scope_patterns": [
+        "微人大",
+        "404|崩"
+      ]
+    },
+    {
+      "id": "015",
+      "query": "想通宵自习，立德楼哪几层有自习室？",
+      "answerable": true,
+      "reference_answer": "对应历史回复称3、4、5楼都是通宵自习室；作为用户提供的地点线索。",
+      "evidence_post_ids": [
+        "4986620"
+      ],
+      "required_patterns": [
+        "3|三",
+        "4|四",
+        "5|五"
+      ],
+      "domain": "study_space",
+      "intent": "floor_recommendation",
+      "reference_policy": "answer_and_scope",
+      "source_scope_patterns": [
+        "立德",
+        "通宵|自习"
+      ]
+    },
+    {
+      "id": "016",
+      "query": "学校游泳馆2026年11月官方收费标准是多少？",
+      "answerable": false,
+      "reference_answer": "该月晚于本地快照，不能把3月评论作为11月官方价格。",
+      "domain": "sports",
+      "intent": "official_current",
+      "negative_kind": "outdated_information"
+    },
+    {
+      "id": "017",
+      "query": "明德楼自助打印机现在排队还有几个人？",
+      "answerable": false,
+      "reference_answer": "静态历史论坛没有实时排队人数；不得猜测。",
+      "domain": "printing",
+      "intent": "live_status",
+      "negative_kind": "no_realtime_feed"
+    },
+    {
+      "id": "018",
+      "query": "我的转专业表格到底应该找哪位老师签字？",
+      "answerable": false,
+      "reference_answer": "缺少学院、转入专业与表格信息；可要求补充，不能猜测某位老师。",
+      "domain": "academic_affairs",
+      "intent": "personal_procedure",
+      "negative_kind": "missing_personal_context",
+      "related_post_ids": [
+        "4879293"
+      ]
+    }
+  ],
+  "design_status": "frozen_after_source_review_and_offline_validation",
+  "rules": {
+    "answerable": "Give source-supported claims and the required answer points; cite actual originating passages.",
+    "unanswerable": "Only no_answer or no_results is a correct abstention. API failures and blocked unsupported generations are recorded as failures, never as successful refusals.",
+    "citations": "Every displayed claim must have a verified exact quote belonging to its source. Semantic checks are model-assisted, not human gold.",
+    "references": "For open questions, known reference IDs are recall diagnostics, not an exhaustive list of correct answers. Acceptance requires answer points, source-scope match and exact owned citations plus review. Bounded historical-event cases 005/014 still require the specific source. Production never reads these IDs.",
+    "change_policy": "Freeze manifest hash before live runs. Keep all failed runs; any case correction requires a versioned explanation and rerun of affected comparisons."
+  },
+  "review_notes": [
+    "2026-11-05: manually checked source records for every positive reference group and the specific-entity negative; no model-generated answer is treated as ground truth.",
+    "v2 pre-freeze correction: added independently checked alternative shopping/printing sources and separated valid abstention from pipeline failure or blocked generation.",
+    "Freeze only becomes operational after --validate-only and offline regression checks; a changed manifest hash invalidates the review receipt.",
+    "v3 design correction before further API runs: open questions can be answered by multiple genuinely equivalent posts. Report known-ID recall separately; keep hard answer-point, actual-source-scope and quote-ownership checks. Retain hard specific-source requirements for dated-event cases 005/014. Preserve v2 failures and re-score identical saved outputs without extra API calls."
+  ]
+}

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 检索 Bench — RUC小喇叭</title><link rel="icon" href="/favicon.svg">
+<script>document.documentElement.dataset.theme=localStorage.getItem('rucxlb-theme')==='dark'?'dark':'light';</script>
+<style>__ADMIN_TOOLS_CSS__
+__ADMIN_AI_SEARCH_CSS__
+__ADMIN_AI_BENCHMARK_CSS__</style>
+</head>
+<body>
+<header class="tool-header"><a class="brand" href="/admin">RUC 小喇叭 · 管理</a><nav aria-label="管理功能"><a href="/admin">搜索</a><a href="/admin/ai-search" aria-current="page">AI 检索</a><a href="/admin/reports">运行汇报</a><a href="/admin/crawl">人工补爬</a><button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="切换深色模式"><span class="theme-icon">☾</span></button><a href="/admin?logout=1">退出</a></nav></header>
+<main class="tool-main ai-main">
+  <nav class="ai-tabs" aria-label="AI 功能"><a href="/admin/ai-search">自然语言检索</a><a href="/admin/ai-search/bench" aria-current="page">Bench 评测</a></nav>
+  <div class="ai-heading"><div><p class="eyebrow">有证据才回答</p><h1>检索 Bench</h1><p class="muted" id="bench-description">正在加载固定用例与历史结果…</p></div><span class="connection-badge" id="bench-model"></span></div>
+  <section class="bench-controls" aria-label="运行评测">
+    <div class="bench-control-row"><label for="bench-history">查看轮次</label><select id="bench-history" aria-label="查看历史轮次"></select><button id="bench-refresh" type="button">刷新</button></div>
+    <div class="bench-control-row"><label for="bench-concurrency">Query 并发</label><select id="bench-concurrency"><option value="18" selected>18 条并发</option><option value="6">6 条并发</option><option value="1">顺序运行</option></select><button class="primary" id="bench-run-all" type="button" disabled>全量重测 · 真实 API</button><button id="bench-run-failed" type="button" disabled>重测失败项</button></div>
+    <p id="bench-estimate" class="bench-estimate" role="status">正在估算…</p>
+    <p class="note">点击重测会调用已保存的 AI 接口。先自动核查固定清单与本地源记录；每次保留为新轮次，后台运行，刷新可继续查看。单条 query 最多 4 次 AI 请求，不自动重试。</p>
+    <p class="note">金额参考 <a href="https://api-docs.deepseek.com/zh-cn/quick_start/pricing/" target="_blank" rel="noopener">DeepSeek 官方价格</a>（2026-11-05 核对），覆盖空闲/高峰和 token 波动，不含自有检索 API 费用。用量折算不是账单，未知费用会单独标注。</p>
+    <p class="ai-error" id="bench-error" role="alert" hidden></p><p class="note" id="bench-operation" role="status" aria-live="polite"></p>
+  </section>
+  <section id="bench-run-summary" class="bench-run-summary" aria-label="本轮汇总" aria-live="polite"></section>
+  <p class="note">这是固定开发回归集。自动通过不等于人工评测或总体准确率；请对照参考答案与引用原文。接口错误、引用拦截均不算“正确拒答”。不同清单版本的分数不可直接比较。</p>
+  <section id="bench-cases" aria-label="逐条 query 与回答"></section>
+</main>
+<script>__SHARED_UI_JS__
+var adminCsrfToken = '__ADMIN_CSRF_TOKEN__';
+__ADMIN_AI_COMMON_JS__
+__ADMIN_AI_BENCHMARK_JS__</script>
+</body></html>

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.http.routes import admin, admin_ai_search, admin_crawl, public
+from app.http.routes import admin, admin_ai_benchmark, admin_ai_search, admin_crawl, public
 
 GET_ROUTES = {
     "/": public.main_page,
@@ -15,6 +15,8 @@ GET_ROUTES = {
     "/admin/reports": admin.reports_page,
     "/admin/crawl": admin.crawl_page,
     "/admin/ai-search": admin_ai_search.page,
+    "/admin/ai-search/bench": admin_ai_benchmark.page,
+    "/api/admin/ai-search/bench": admin_ai_benchmark.get,
     "/api/admin/ai-search/settings": admin_ai_search.settings,
     "/api/admin/crawler-report": admin.report_data,
     "/api/admin/live-crawl": admin_crawl.status,
@@ -27,6 +29,8 @@ POST_ROUTES = {
     "/api/admin/ai-search/settings": admin_ai_search.save_settings,
     "/api/admin/ai-search/test": admin_ai_search.test_connection,
     "/api/admin/ai-search/estimate": admin_ai_search.estimate,
+    "/api/admin/ai-search/bench/run": admin_ai_benchmark.start,
+    "/api/admin/ai-search/bench/estimate": admin_ai_benchmark.estimate,
     "/api/admin/upstream-preview": admin_crawl.preview,
     "/api/admin/live-crawl": admin_crawl.create,
 }
