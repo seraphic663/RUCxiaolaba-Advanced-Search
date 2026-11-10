@@ -49,6 +49,7 @@
         document.getElementById('freshness').textContent = '最近观测 ' + (data.latest ? stamp(data.latest) : '暂无') + ' · 页面更新 ' + stamp(data.generated_at) + '（北京时间）';
         render();
         renderDaily();
+        renderOmissions();
         document.getElementById('source-note').textContent = '来源：爬虫指标 CSV、运行历史与配额日结。已有 ' + number(data.total_observations) + ' 条 ID 数量记录；精确观测与旧报告按性质区分。每轮结束及空闲时定期记录，页面每分钟读取新记录。';
       }).catch(function (error) {
         if (error.name === 'AbortError') return;
@@ -62,6 +63,7 @@
     rows('flow-rows', report.daily, [date,
       function(r){return number(r.list1_queue_inserted);}, function(r){return number(r.list2_queue_inserted);},
       function(r){return number(r.list1_queue_reopened)+' / '+number(r.list2_queue_reopened);},
+      function(r){return number(r.omission_restored);},
       function(r){return measured(r,'inflow');}, function(r){return number(r.detail_calls)+(r.unrouted_detail_calls?'（另 '+number(r.unrouted_detail_calls)+' 次未分路由）':'');},
       function(r){return measured(r,'removed_pending');}, function(r){return r.incomplete_runs ? '无法完整对账' : sign(r.net);}
     ]);
@@ -79,6 +81,14 @@
       function(r){return number(r.active_list_calls);}, function(r){return number(r.total);},
       function(r){return number(r.rate_limited);}
     ], '这个范围没有配额日结记录');
+  }
+  function renderOmissions() {
+    var data=report.omissions || {}, box=document.getElementById('omission-cards');
+    if (!data.available) {
+      box.innerHTML='';document.getElementById('omission-note').textContent='本次遗漏检查尚未完成，不能按 0 条理解。';return;
+    }
+    box.innerHTML=[['整帖缺失且无任务',data.missing_post],['不完整且无任务',data.missing_detail],['新增评论未重开',data.missing_refresh],['合计漏排',data.total]].map(function(c){return '<div class="card"><small>'+escape(c[0])+'</small><strong>'+number(c[1])+'</strong></div>';}).join('');
+    document.getElementById('omission-note').textContent='检查时间 '+stamp(data.checked_at)+' · 列表完成边界 '+stamp(data.completed_list_at)+'。新增评论须高于已尝试的观测和实际保存数量，保持原有重试规则。';
   }
   var chart = null;
   function draw() {

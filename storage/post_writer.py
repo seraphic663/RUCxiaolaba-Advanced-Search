@@ -2295,6 +2295,7 @@ class SQLitePostStore:
                    list_update_time, list_comment_count, db_comment_count,
                    last_attempt_list_comment_count,
                    last_attempt_list_update_time,
+                   last_detail_comment_count,
                    same_observation_attempts, next_attempt_at, task_type
             from crawler_queue where post_id=?
             """,
@@ -2373,8 +2374,13 @@ class SQLitePostStore:
                 if snapshot is not None
                 else safe_int(existing["db_comment_count"])
             )
+            if not is_full and existing["last_detail_comment_count"] is not None:
+                # A list stub's counter is not the number of comments saved by
+                # the last detail attempt. Keep same-observation retry limits.
+                current_db_count = safe_int(existing["last_detail_comment_count"])
+            observed_count = old_list_count if attempted_count is None else safe_int(attempted_count)
             count_growth = (
-                list_comment_count > old_list_count
+                list_comment_count > observed_count
                 and list_comment_count > current_db_count
             )
             never_attempted = attempted_count is None and not attempted_update
