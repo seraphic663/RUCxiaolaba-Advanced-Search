@@ -510,17 +510,19 @@ class CrawlerService:
                             page_has_since = True
                         reason = ""
                         priority = 99
-                        if endpoint == "lists":
+                        # Compare with the saved detail before list metadata is
+                        # written. Comment growth needs a refresh on either feed.
+                        if db_comment_count is not None and comment_count > db_comment_count:
+                            reason = "comment_changed"
+                            priority = 0
+                            stats["comment_changed"] += 1
+                            page_changed += 1
+                        elif endpoint == "lists":
                             if needs_detail and create_after_since:
                                 reason = "new_post"
                                 priority = 10 if comment_count > 0 else 40
                         else:
-                            if db_comment_count is not None and comment_count > db_comment_count:
-                                reason = "comment_changed"
-                                priority = 0
-                                stats["comment_changed"] += 1
-                                page_changed += 1
-                            elif post_id in ledger_actionable_ids:
+                            if post_id in ledger_actionable_ids:
                                 reason = "active_event"
                                 priority = 0
                                 page_changed += 1
@@ -537,15 +539,6 @@ class CrawlerService:
                             observed_missing_ids.add(post_id)
                             stats["observed_missing_queued"] = len(
                                 observed_missing_ids
-                            )
-                        if not dry_run and write_stubs and not bootstrap:
-                            # The paid list response already contains current
-                            # counters. Refresh them for full posts too without
-                            # spending an additional detail request.
-                            store.upsert_list_stub(
-                                article,
-                                source=endpoint,
-                                commit=False,
                             )
                         if reason:
                             page_queued += 1
@@ -575,6 +568,12 @@ class CrawlerService:
                         else:
                             stats["existing"] += 1
                             page_existing += 1
+                        if not dry_run and write_stubs and not bootstrap:
+                            store.upsert_list_stub(
+                                article,
+                                source=endpoint,
+                                commit=False,
+                            )
                         if not dry_run:
                             # Existing posts are already durable; incomplete
                             # posts are now durable in posts and/or the queue.

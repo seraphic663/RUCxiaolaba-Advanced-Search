@@ -6,10 +6,13 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from collections import defaultdict
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from storage.crawler_omissions import crawler_omission_snapshot
 
 CHINA_TZ = timezone(timedelta(hours=8))
 LEGACY_HISTORY = Path(__file__).resolve().parents[1] / "static" / "crawler_legacy.json"
@@ -27,6 +30,25 @@ class CrawlerReportService:
         self._lock = threading.Lock()
         self._stamp = None
         self._points: list[dict] = []
+        self._omissions = None
+        self._omissions_at = 0.0
+
+    def _current_omissions(self):
+        with self._lock:
+            if self._omissions is not None and time.monotonic() - self._omissions_at < 60:
+                return self._omissions
+            if not self.posts_db.exists():
+                return {"available": False}
+            with closing(sqlite3.connect(f"file:{self.posts_db.resolve().as_posix()}?mode=ro", uri=True, timeout=3)) as conn:
+                conn.row_factory = sqlite3.Row
+                started = time.monotonic()
+                conn.set_progress_handler(lambda: int(time.monotonic() - started > 10), 10000)
+                try:
+                    result = crawler_omission_snapshot(conn)
+                except sqlite3.OperationalError:
+                    return {"available": False}
+            self._omissions, self._omissions_at = result, time.monotonic()
+            return result
 
     def _observations(self) -> list[dict]:
         # Cache only the small ID time series, not the CSV's other metrics/raw payloads.
@@ -93,7 +115,7 @@ class CrawlerReportService:
         groups = defaultdict(lambda: defaultdict(int))
         for command, finished, calls, raw in rows:
             stats = json.loads(raw)
-            if command not in {"discover-latest", "discover-active", "trickle-fill"}:
+            if command not in {"discover-latest", "discover-active", "trickle-fill", "repair-omissions"}:
                 continue
             if command == "trickle-fill" and (stats.get("task_type") == "history_detail" or stats.get("scheduler_job") == "trickle_fill_history"):
                 continue
@@ -105,7 +127,10 @@ class CrawlerReportService:
                 g["incomplete_runs"] += 1
                 continue
             g["incomplete_runs"] += int(bool(stats.get("scheduler_failed")) or "queue_delta_total" not in stats)
-            if command in {"discover-latest", "discover-active"}:
+            if command == "repair-omissions":
+                g["omission_restored"] += int(stats.get("queue_inserted", 0)) + int(stats.get("queue_reopened", 0))
+                g["inflow"] += int(stats.get("queue_delta_total", 0))
+            elif command in {"discover-latest", "discover-active"}:
                 prefix = "list1" if command == "discover-latest" else "list2"
                 g[prefix + "_runs"] += 1
                 g[prefix + "_calls"] += calls
@@ -139,4 +164,5 @@ class CrawlerReportService:
                 "earliest": all_points[0]["at"] if all_points else None,
                 "latest": all_points[-1]["at"] if all_points else None,
                 "daily": self._daily_runs(start, end), "quota_days": self._quota_days(start, end),
+                "omissions": self._current_omissions(),
                 "definition": "crawler_queue.task_type=id_followup AND status=pending"}

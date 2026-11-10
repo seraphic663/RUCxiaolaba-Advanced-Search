@@ -88,6 +88,12 @@ class CrawlerReportsTest(unittest.TestCase):
         self.assertEqual(d.get('detail_calls',0),0)
         self.assertEqual(d['incomplete_runs'],1)
 
+    def test_omission_recovery_is_local_inflow_without_detail_requests(self):
+        self.run_row('repair-omissions',0,{'queue_inserted':4,'queue_reopened':558,'queue_delta_total':562})
+        d=self.service.report('2026-11-02','2026-11-03')['daily'][0]
+        self.assertEqual((d['inflow'],d['net'],d['omission_restored']),(562,562,562))
+        self.assertEqual(d.get('detail_calls',0),0)
+
     def test_quota_is_grouped_by_request_date_not_rollover_timestamp(self):
         history = {'date':'2026-11-02','recorded_at':'2026-11-03T00:00:00+08:00','reason':'day_rollover',
             'cookie_lanes':{'old':{'detail_calls':500,'new_list_calls':54,'active_list_calls':36,'rate_limited':0}}}

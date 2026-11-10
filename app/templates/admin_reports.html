@@ -18,8 +18,9 @@
 <p class="note">数量为 id_followup / pending。使用实际观测时间；缺少记录的间隔超过 6 小时会断开。纵轴聚焦变化范围。移动鼠标或使用左右方向键查看每个点。</p>
 <details><summary>查看当前范围的全部观测与来源</summary><div class="table-wrap"><table><thead><tr><th>观测时间（北京时间）</th><th>待查数量</th><th>记录性质</th><th>来源</th></tr></thead><tbody id="observation-rows"></tbody></table></div></details>
 </section>
+<section class="table-section"><h2>遗漏检查</h2><p class="note">当前已知 ID 的漏排情况，不随上方时间范围筛选。以最近完成的列表轮次为界，排除正在落库的记录；已在待爬、暂缓或不可获取的任务不计入。</p><div id="omission-cards" class="cards"></div><p id="omission-note" class="note" aria-live="polite"></p></section>
 <section class="table-section"><h2>每日流入与处理</h2><p class="note">所选时间范围内的运行，按北京时间结束日期汇总。新增与重开增加待查；移出 pending 包括成功、不可获取及暂缓。失败轮缺失的结果会明确标注。</p>
-<div class="table-wrap"><table><thead><tr><th>日期</th><th>list1 新增</th><th>list2 新增</th><th>list1 / list2 重开</th><th>总流入</th><th>ID 详情请求</th><th>移出 pending</th><th>净变化</th></tr></thead><tbody id="flow-rows"></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>日期</th><th>list1 新增</th><th>list2 新增</th><th>list1 / list2 重开</th><th>遗漏补回</th><th>总流入</th><th>ID 详情请求</th><th>移出 pending</th><th>净变化</th></tr></thead><tbody id="flow-rows"></tbody></table></div>
 <details><summary>详情结果与完整度</summary><div class="table-wrap"><table><thead><tr><th>日期</th><th>补齐完整详情</th><th>刷新已有完整详情</th><th>正常成功</th><th>异常返回（含不完整）</th><th>不完整响应</th><th>留待重试</th><th>转暂缓</th><th>新增评论行</th><th>认领冲突</th></tr></thead><tbody id="detail-rows"></tbody></table></div><p class="note">补齐完整详情含部分响应经合并补齐的情况，不能与“不完整响应”相加。新增评论行为每次写入的正增量，含部分保存。</p></details>
 </section>
 <section class="table-section"><h2>新旧 cookie 请求日账</h2><p class="note">所选范围涉及日期的整日日账，今天为累计；与上表的首尾不满整天区间不同。列表请求另行记账，仍消耗上游 session；这里不包含个人小程序使用量。</p>
