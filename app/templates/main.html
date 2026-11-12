@@ -12,22 +12,13 @@
 })();
 </script>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f5f5f5; min-height: 100vh; }
-.header { background: #8b0012; color: #fff; padding: 20px 16px; text-align: center; position: relative; }
-.header h1 { font-size: 1.5em; }
+.header { padding: 20px 16px; text-align: center; position: relative; }
 .header p { opacity: 0.8; margin-top: 4px; font-size: 0.85em; }
-.header .github-link { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 6px; color: rgba(255,255,255,0.78); text-decoration: none; font-size: 0.9em; font-weight: 500; }
-.header .github-link:hover { color: #fff; }
+.header .github-link { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; gap: 6px; text-decoration: none; font-size: 0.9em; font-weight: 500; }
 .header .github-link svg { width: 18px; height: 18px; fill: currentColor; flex-shrink: 0; }
-.header .admin-link { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: rgba(255,255,255,0.4); text-decoration: none; font-size: 0.85em; }
-.header .admin-link:hover { color: #fff; }
+.header .admin-link { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); text-decoration: none; font-size: 0.85em; }
 .header-actions { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 10px; }
 .header-actions .admin-link { position: static; transform: none; }
-.theme-toggle { width: 32px; height: 32px; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; background: transparent; color: rgba(255,255,255,.82); cursor: pointer; font-size: 18px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
-.theme-toggle:hover { color: #fff; border-color: rgba(255,255,255,.65); }
-.settings-toggle { width: 32px; height: 32px; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; background: transparent; color: rgba(255,255,255,.82); cursor: pointer; font-size: 17px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
-.settings-toggle:hover { color: #fff; border-color: rgba(255,255,255,.65); }
 __SHARED_UI_CSS__
 html.compact-mode .post { padding: 12px 14px; margin-bottom: 7px; }
 html.compact-mode .post .post-content { line-height: 1.62; }
@@ -36,22 +27,12 @@ html.hide-stats .post-stats-inline { display: none; }
 /* Search */
 .search-wrap { max-width: 760px; margin: 14px auto 10px; padding: 0 16px; }
 .search-wrap input { width: 100%; padding: 12px 16px; font-size: 16px; border: 2px solid #ddd; border-radius: 12px; outline: none; transition: border-color .2s; }
-.search-wrap input:focus { border-color: #8b0012; }
-.search-scope-switch { display: flex; align-items: center; gap: 5px; margin-top: 8px; }
-.search-scope-switch button { padding: 5px 11px; border: 1px solid #ddd7ca; border-radius: 999px; background: #fffdf8; color: #70695f; cursor: pointer; font-size: .8em; transition: all .15s; }
-.search-scope-switch button:hover { border-color: #8b0012; color: #8b0012; }
-.search-scope-switch button.active { border-color: #8b0012; background: #8b0012; color: #fff; }
-.search-scope-hint { margin-left: 4px; color: #999187; font-size: .75em; }
-html[data-theme="dark"] .search-scope-switch button { border-color: #45423b; background: #252521; color: #c7c1b6; }
-html[data-theme="dark"] .search-scope-switch button.active { border-color: #8b0012; background: #8b0012; color: #fff; }
-html[data-theme="dark"] .search-scope-hint { color: #a49e93; }
+.search-scope-switch { gap: 5px; margin-top: 8px; }
+.search-scope-hint { margin-left: 4px; font-size: .75em; white-space: nowrap; }
 
 /* Sort bar */
-.sort-bar { max-width: 760px; margin: 0 auto 8px; padding: 0 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.sort-bar button { padding: 6px 14px; border: 1px solid #ddd; border-radius: 16px; background: #fff; cursor: pointer; font-size: 0.85em; color: #666; transition: all .2s; }
-.sort-bar button:hover { border-color: #8b0012; color: #8b0012; }
-.sort-bar button.active { background: #8b0012; color: #fff; border-color: #8b0012; }
-.sort-bar .count-text { margin-left: auto; color: #999; font-size: 0.8em; }
+.sort-bar { max-width: 760px; margin: 0 auto 8px; padding: 0 16px; gap: 6px; }
+.sort-bar .count-text { margin-left: auto; font-size: 0.8em; white-space: nowrap; }
 .identity-pill { display: inline-flex; align-items: center; margin-left: 4px; padding: 1px 6px; border: 1px solid #d8d3c8; border-radius: 10px; color: #746d62; background: #f7f4ec; font-size: .74em; white-space: nowrap; }
 .identity-pill.real { border-color: #b8d9c0; color: #2b7541; background: #f0faf2; }
 .identity-pill.anonymous { border-color: #d9d3c9; color: #857e73; background: #f5f2ec; }
@@ -105,22 +86,18 @@ html[data-theme="dark"] .search-scope-hint { color: #a49e93; }
 /* Pagination */
 .pagination { max-width: 760px; margin: 20px auto; padding: 0 16px; display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap; }
 .pagination button { padding: 8px 16px; border: 1px solid #ddd; border-radius: 8px; background: #fff; cursor: pointer; font-size: 0.9em; color: #333; transition: all .2s; }
-.pagination button:hover:not(:disabled) { border-color: #8b0012; color: #8b0012; }
 .pagination button:disabled { opacity: 0.4; cursor: default; }
 .pagination .page-info { color: #666; font-size: 0.9em; margin: 0 4px; }
 .pagination .page-input { width: 50px; padding: 7px 4px; text-align: center; border: 1px solid #ddd; border-radius: 8px; font-size: 0.9em; outline: none; }
-.pagination .page-input:focus { border-color: #8b0012; }
 .pagination .total-pages { color: #999; font-size: 0.85em; }
 
 /* Filter bar */
-.filter-bar { max-width: 760px; margin: 0 auto 12px; padding: 0 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.filter-bar label { font-size: 0.8em; color: #888; white-space: nowrap; }
+.filter-bar { max-width: 760px; margin: 0 auto 12px; padding: 0 16px; gap: 8px; }
+.filter-bar label { font-size: 0.8em; white-space: nowrap; }
 .filter-bar select,
-.filter-bar input { padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; background: #fff; font-size: 0.82em; color: #333; outline: none; }
+.filter-bar input { padding: 5px 8px; border: 1px solid #ddd; border-radius: 6px; font-size: var(--ui-font-control); outline: none; }
 .filter-bar select { cursor: pointer; }
-.filter-bar input { width: 150px; }
-.filter-bar select:focus,
-.filter-bar input:focus { border-color: #8b0012; }
+.filter-bar input { width: 150px; min-width: 110px; flex: 1 1 150px; }
 
 /* Empty state */
 .empty { text-align: center; color: #999; padding: 60px 20px; }
@@ -134,159 +111,22 @@ html[data-theme="dark"] .search-scope-hint { color: #a49e93; }
 
 /* Mobile */
 @media (max-width: 600px) {
-  .header { padding: 14px 12px; }
-  .header h1 { font-size: 1.2em; }
-  .header p { font-size: 0.75em; }
-  .header .github-link { position: static; justify-content: center; margin-bottom: 6px; transform: none; }
-  .header-actions { position: static; transform: none; justify-content: center; margin-top: 6px; }
-  .header .admin-link { position: static; display: block; margin-top: 0; transform: none; }
+  .header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: auto auto; align-items: center; gap: 0 8px; padding: 9px 12px; text-align: left; }
+  .header .github-link { position: static; grid-column: 1; grid-row: 1 / span 2; transform: none; justify-self: start; }
+  .header h1 { grid-column: 2; grid-row: 1; text-align: center; }
+  .header p { grid-column: 2; grid-row: 2; margin-top: 0; text-align: center; font-size: 0.75em; }
+  .header-actions { position: static; grid-column: 3; grid-row: 1 / span 2; transform: none; justify-content: flex-end; gap: 6px; }
+  .header .admin-link { position: static; transform: none; white-space: nowrap; }
   .search-wrap { margin: 10px auto; }
-  .search-wrap input { padding: 10px 14px; font-size: 15px; }
-  .search-scope-switch { flex-wrap: wrap; }
-  .search-scope-hint { flex-basis: 100%; margin-left: 2px; }
+  .search-wrap input { padding: 10px 14px; }
   .sort-bar { gap: 4px; }
-  .sort-bar button { padding: 5px 10px; font-size: 0.78em; }
+  .sort-bar .ui-choice { padding-left: 8px; padding-right: 8px; }
   .post { padding: 12px 14px; }
   .post .post-content.collapsed { max-height: 4.5em; }
   .pagination { gap: 4px; }
   .pagination button { padding: 7px 12px; font-size: 0.82em; }
 }
 
-html[data-theme="light"] body { background: #f4f1e8; color: #2f2d29; }
-html[data-theme="light"] .search-wrap input,
-html[data-theme="light"] .filter-bar input,
-html[data-theme="light"] .filter-bar select,
-html[data-theme="light"] .pagination .page-input { background: #fffdf8; border-color: #d9d3c7; color: #2f2d29; }
-html[data-theme="light"] .sort-bar button,
-html[data-theme="light"] .pagination button { background: #fffdf8; border-color: #d9d3c7; }
-html[data-theme="light"] .post { background: #fffdf8; border-color: #e1dbcf; }
-html[data-theme="light"] .post .post-content.collapsed::after { background: linear-gradient(transparent, #fffdf8); }
-html[data-theme="light"] .post-bottom-row,
-html[data-theme="light"] .cmt { border-color: #e8e2d7; }
-html[data-theme="light"] .post .comments-wrap,
-html[data-theme="light"] .cmt .replies { border-color: #ded8cc; }
-
-html[data-theme="dark"] { color-scheme: dark; }
-html[data-theme="dark"] body { background: #111315; color: #e8e8e8; }
-html[data-theme="dark"] .header { background: #65000d; }
-html[data-theme="dark"] .search-wrap input,
-html[data-theme="dark"] .filter-bar input,
-html[data-theme="dark"] .filter-bar select,
-html[data-theme="dark"] .pagination .page-input { background: #1b1f23; border-color: #3b4249; color: #ededed; }
-html[data-theme="dark"] .search-wrap input::placeholder,
-html[data-theme="dark"] input::placeholder { color: #8d949b; }
-html[data-theme="dark"] .sort-bar button,
-html[data-theme="dark"] .pagination button { background: #1b1f23; border-color: #3b4249; color: #c8cdd2; }
-html[data-theme="dark"] .sort-bar button.active { background: #9d1c2d; border-color: #9d1c2d; color: #fff; }
-html[data-theme="dark"] .post { background: #1a1d20; border-color: #30363c; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
-html[data-theme="dark"] .post:hover { box-shadow: 0 2px 10px rgba(0,0,0,.45); }
-html[data-theme="dark"] .post .post-cat { background: #3a1c21; color: #f0a5af; }
-html[data-theme="dark"] .post .post-user,
-html[data-theme="dark"] .post .post-content { color: #e8e8e8; }
-html[data-theme="dark"] .post .post-time-right,
-html[data-theme="dark"] .post .post-id,
-html[data-theme="dark"] .sort-bar .count-text,
-html[data-theme="dark"] .post-stats-inline,
-html[data-theme="dark"] .cmt .cmt-meta,
-html[data-theme="dark"] .pagination .total-pages { color: #929aa2; }
-html[data-theme="dark"] .post .post-content.collapsed::after { background: linear-gradient(transparent, #1a1d20); }
-html[data-theme="dark"] .identity-pill { border-color: #4a4c47; color: #c7c1b6; background: #302f2a; }
-html[data-theme="dark"] .identity-pill.real { border-color: #3e7650; color: #9bd5a7; background: #203326; }
-html[data-theme="dark"] .identity-pill.anonymous { border-color: #4a4c47; color: #b3aea5; background: #302f2a; }
-html[data-theme="dark"] .identity-pill.unknown { border-color: #7e5c3c; color: #e0b37d; background: #3b2d20; }
-html[data-theme="dark"] .post-bottom-row,
-html[data-theme="dark"] .cmt { border-color: #30363c; }
-html[data-theme="dark"] .post .comments-wrap,
-html[data-theme="dark"] .cmt .replies { border-color: #3b4249; }
-html[data-theme="dark"] .cmt .cmt-text { color: #cdd2d7; }
-html[data-theme="dark"] .pagination .page-info,
-html[data-theme="dark"] .filter-bar label,
-html[data-theme="dark"] .pagination .total-pages { color: #a0a7ae; }
-html[data-theme="dark"] mark { background: #6d5413; color: #fff2bd; }
-html[data-theme="dark"] .spinner { border-color: #3b4249; border-top-color: #d66b79; }
-
-html[data-theme="light"] {
-  --ui-bg: #f7f5ee;
-  --ui-surface: #fffdf7;
-  --ui-surface-2: #f1eee5;
-  --ui-border: #ddd7ca;
-  --ui-text: #2d2b27;
-  --ui-muted: #7b766d;
-  --ui-accent: #c15f3c;
-  --ui-accent-hover: #a84f32;
-  --ui-accent-soft: #f3e2d8;
-  --ui-shadow: rgba(71, 58, 43, .08);
-}
-html[data-theme="dark"] {
-  --ui-bg: #1f1e1b;
-  --ui-surface: #292824;
-  --ui-surface-2: #32312c;
-  --ui-border: #45423b;
-  --ui-text: #eee9df;
-  --ui-muted: #aaa398;
-  --ui-accent: #d97757;
-  --ui-accent-hover: #e58a6c;
-  --ui-accent-soft: #493028;
-  --ui-shadow: rgba(0, 0, 0, .28);
-}
-html[data-theme] body { background: var(--ui-bg); color: var(--ui-text); font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; }
-html[data-theme] .header { background: var(--ui-surface-2); color: var(--ui-text); border-bottom: 1px solid var(--ui-border); box-shadow: inset 0 3px 0 var(--ui-accent); }
-html[data-theme] .header h1 { color: var(--ui-text); font-family: Georgia, "Songti SC", "STSong", serif; font-weight: 600; }
-html[data-theme] .header p,
-html[data-theme] .header .github-link,
-html[data-theme] .header .admin-link { color: var(--ui-muted); }
-html[data-theme] .header .github-link:hover,
-html[data-theme] .header .admin-link:hover { color: var(--ui-accent); }
-html[data-theme] .theme-toggle { border-color: var(--ui-border); color: var(--ui-muted); background: var(--ui-surface); }
-html[data-theme] .theme-toggle:hover { border-color: var(--ui-accent); color: var(--ui-accent); }
-html[data-theme] .settings-toggle { border-color: var(--ui-border); color: var(--ui-muted); background: var(--ui-surface); }
-html[data-theme] .settings-toggle:hover { border-color: var(--ui-accent); color: var(--ui-accent); }
-html[data-theme] .settings-panel { background: var(--ui-surface); color: var(--ui-text); border-color: var(--ui-border); box-shadow: 0 12px 32px var(--ui-shadow); }
-html[data-theme] .settings-panel h3 { color: var(--ui-accent); }
-html[data-theme] .settings-row { border-color: var(--ui-border); }
-html[data-theme] .settings-row label { color: var(--ui-text); }
-html[data-theme] .settings-row select,
-html[data-theme] .settings-actions button { background: var(--ui-surface); border-color: var(--ui-border); color: var(--ui-text); }
-html[data-theme] .settings-actions button.primary { background: var(--ui-accent); border-color: var(--ui-accent); color: #fff; }
-html[data-theme] .search-wrap input,
-html[data-theme] .filter-bar input,
-html[data-theme] .filter-bar select,
-html[data-theme] .pagination .page-input { background: var(--ui-surface); border-color: var(--ui-border); color: var(--ui-text); }
-html[data-theme] input::placeholder { color: var(--ui-muted); }
-html[data-theme] .search-wrap input:focus,
-html[data-theme] .filter-bar input:focus,
-html[data-theme] .filter-bar select:focus,
-html[data-theme] .pagination .page-input:focus { border-color: var(--ui-accent); }
-html[data-theme] .sort-bar button,
-html[data-theme] .pagination button { background: var(--ui-surface); border-color: var(--ui-border); color: var(--ui-muted); border-radius: 8px; }
-html[data-theme] .sort-bar button:hover,
-html[data-theme] .pagination button:hover:not(:disabled) { border-color: var(--ui-accent); color: var(--ui-accent); }
-html[data-theme] .sort-bar button.active { background: var(--ui-accent); border-color: var(--ui-accent); color: #fff; }
-html[data-theme] .post { background: var(--ui-surface); border-color: var(--ui-border); border-radius: 8px; box-shadow: 0 1px 4px var(--ui-shadow); }
-html[data-theme] .post.expanded { border-color: var(--ui-accent); background: color-mix(in srgb, var(--ui-accent-soft) 28%, var(--ui-surface)); }
-html[data-theme] .post .post-cat { background: var(--ui-accent-soft); color: var(--ui-accent); }
-html[data-theme] .post .post-user,
-html[data-theme] .post .post-content,
-html[data-theme] .cmt .cmt-text { color: var(--ui-text); }
-html[data-theme] .post .post-content.collapsed::after { background: linear-gradient(transparent, var(--ui-surface)); }
-html[data-theme] .post .post-time-right,
-html[data-theme] .post .post-id,
-html[data-theme] .sort-bar .count-text,
-html[data-theme] .post-stats-inline,
-html[data-theme] .cmt .cmt-meta,
-html[data-theme] .pagination .page-info,
-html[data-theme] .pagination .total-pages,
-html[data-theme] .filter-bar label { color: var(--ui-muted); }
-html[data-theme] .post .expand-btn,
-html[data-theme] .comment-toggle-inline,
-html[data-theme] .cmt .depth-tag,
-html[data-theme] .info a { color: var(--ui-accent); }
-html[data-theme] .post-bottom-row,
-html[data-theme] .cmt { border-color: var(--ui-border); }
-html[data-theme] .post .comments-wrap,
-html[data-theme] .cmt .replies { border-color: var(--ui-border); }
-html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var(--ui-surface)); color: var(--ui-text); }
-html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: var(--ui-accent); }
 </style>
 </head>
 <body>
@@ -344,31 +184,35 @@ html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: va
   </div>
 </div>
 
-<div class="sort-bar">
-  <button id="btn-time" class="active" onclick="setSort('time')">按时间</button>
-  <button id="btn-stars" onclick="setSort('stars')">按点赞</button>
-  <button id="btn-comments" onclick="setSort('comments')">按评论</button>
-  <button id="btn-score" onclick="setSort('score')">综合</button>
+<div class="sort-bar ui-flow">
+  <button id="btn-time" class="ui-choice active" onclick="setSort('time')">按时间</button>
+  <button id="btn-stars" class="ui-choice" onclick="setSort('stars')">按点赞</button>
+  <button id="btn-comments" class="ui-choice" onclick="setSort('comments')">按评论</button>
+  <button id="btn-score" class="ui-choice" onclick="setSort('score')">综合</button>
   <span class="count-text" id="count-text"></span>
 </div>
 
-<div class="filter-bar">
-  <label>分类:</label>
-  <input type="text" id="filter-category" list="category-options" placeholder="全部分类 / 输入tag">
-  <datalist id="category-options"></datalist>
-  <label id="source-state-label" for="filter-source-state" hidden>记录状态:</label>
-  <select id="filter-source-state" hidden>
-    <option value="available">未删除/可用</option>
-    <option value="all">全部状态</option>
-    <option value="deleted">仅已删除/不可访问</option>
-  </select>
-  <label>时间:</label>
-  <div class="date-filter" id="date-filter" data-preset="1d">
-    <button type="button" class="date-filter-trigger" id="date-filter-trigger" aria-controls="date-range-panel" aria-expanded="false">
-      <span class="date-filter-icon" aria-hidden="true">▦</span>
-      <span id="date-filter-summary">今天</span>
-      <span aria-hidden="true">⌄</span>
-    </button>
+<div class="filter-bar ui-flow">
+  <div class="filter-group ui-control-group">
+    <label for="filter-category">分类:</label>
+    <input type="text" id="filter-category" list="category-options" placeholder="全部分类 / 输入tag">
+    <datalist id="category-options"></datalist>
+    <label id="source-state-label" for="filter-source-state" hidden>记录状态:</label>
+    <select id="filter-source-state" hidden>
+      <option value="available">未删除/可用</option>
+      <option value="all">全部状态</option>
+      <option value="deleted">仅已删除/不可访问</option>
+    </select>
+  </div>
+  <div class="filter-group ui-control-group">
+    <label for="date-filter-trigger">时间:</label>
+    <div class="date-filter" id="date-filter" data-preset="1d">
+      <button type="button" class="date-filter-trigger" id="date-filter-trigger" aria-controls="date-range-panel" aria-expanded="false">
+        <span class="date-filter-icon" aria-hidden="true">▦</span>
+        <span id="date-filter-summary">今天</span>
+        <span aria-hidden="true">⌄</span>
+      </button>
+    </div>
   </div>
 </div>
 

@@ -18,6 +18,12 @@ function toggleTheme() {
   updateThemeButton();
 }
 
+window.addEventListener('storage', function(event) {
+  if (event.key !== 'rucxlb-theme') return;
+  document.documentElement.setAttribute('data-theme', event.newValue === 'dark' ? 'dark' : 'light');
+  updateThemeButton();
+});
+
 var SETTINGS_KEY = 'rucxlb-ui-settings';
 var DEFAULT_SETTINGS = {
   pageSize: 50,
