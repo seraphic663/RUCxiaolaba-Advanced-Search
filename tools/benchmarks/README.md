@@ -74,4 +74,4 @@ python -m tools.benchmarks.benchmark_bigram_index `
 - 同时报告 median 与 P95，不使用单次运行下结论。
 - 睡眠、系统暂停和后台 I/O 会污染结果；脚本会丢弃部分明显异常样本。
 - 单字查询不会使用 Bigram，属于 SQLite `LIKE`/游标扫描路径。
-- 完整实验记录和历史数据见 [搜索性能文档](../../docs/features/search-performance.md)。
+- 历史 benchmark 数字不作为当前性能承诺；需要当前结论时重新运行本目录中的 benchmark。

@@ -23,8 +23,8 @@
 | `app/domain/search.py` | 搜索查询类型、Bigram/Symbol 分词和 `SearchQuery` 数据模型 | 纯函数和不可变查询模型；不连接数据库 | `tests/test_search_bigram.py`、`tests/test_cursor_search.py` |
 | `app/http/server.py` | HTTP handler、请求上下文和兼容服务函数 | 组装路由、service 和 template；不要在这里写 SQL | `tests/test_http_contract.py` |
 | `app/http/router.py` | 根据路径分发 public/admin 路由 | 只做路由匹配和 handler 调用 | `tests/test_http_contract.py` |
-| `app/http/routes/public.py` | 首页、搜索、评论、分类和公开健康接口 | 公开响应不得返回真实用户 ID；查询参数转换后交给 `SearchService` | `tests/test_http_contract.py` |
-| `app/http/routes/admin.py` | 管理登录、Admin 搜索和管理员状态接口 | 只在已认证上下文中返回管理字段；状态变更应遵守认证/CSRF 契约 | `tests/test_http_contract.py` |
+| `app/http/routes/public.py` | 首页、搜索、评论、分类和公开健康接口 | 公开访问策略必须在服务端执行；公开响应不得返回真实用户 ID | `tests/test_http_contract.py` |
+| `app/http/routes/admin.py` | 管理登录、Admin 搜索、状态接口和全站公开权限设置 | 公开权限写入要求管理员会话和一次性 CSRF | `tests/test_http_contract.py` |
 | `app/http/routes/admin_crawl.py` | Admin 上游预览、选中任务和人工抓取接口 | 通过 `AdminCrawlService`，不直接发 API 或写主库 | `tests/test_admin_crawl_service.py`、HTTP 契约 |
 | `app/http/routes/admin_ai_search.py` | Admin AI 检索页面、配置及调用接口 | 登录与一次性 CSRF；只委托 AI 检索 service | `tests/test_ai_search.py` |
 | `app/domain/ai_search.py`、`app/integrations/ai_search_client.py` | AI 检索契约及外部接口适配 | 有界请求、固定响应契约，不转发 admin cookie | `tests/test_ai_search.py` |
@@ -44,6 +44,7 @@
 | `app/services/admin_service.py` | 管理状态和本地数据查询 | 只组织 Admin 读操作；不负责上游详情抓取 | HTTP/Admin tests |
 | `app/services/admin_crawl_service.py` | Admin 预览、策略判断、任务 worker 和详情写入 | 通过 `crawler.detail_pipeline` 校验详情；`smart/force/queue` 是公开策略边界 | `tests/test_admin_crawl_service.py` |
 | `app/services/auth_service.py` | Admin session、CSRF 和认证状态 | 当前是单实例内存 session；不要在多副本部署前假设它可共享 | `tests/test_http_contract.py` |
+| `app/services/public_access_policy.py` | 全站未登录访客的查看、搜索和删除记录权限 | JSON 持久化在主库同目录，公开页面和 API 都须执行；用户真实 ID 继续仅 Admin 可见 | `tests/test_public_access_policy.py`、`tests/test_http_contract.py` |
 | `app/services/template_service.py` | 读取和渲染 HTML 模板 | 只负责模板文件，不放业务查询 | HTTP 契约测试 |
 
 ## crawler/
