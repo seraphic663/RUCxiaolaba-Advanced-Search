@@ -82,7 +82,7 @@ posts、comments、search_index、crawl_state
 | 工具归属与生命周期 | `tools/README.md` |
 | 历史变更 | `docs/CHANGELOG.md` 与 Git history |
 
-审计、性能和迁移文档可以保留当时证据，但必须标明它们是历史快照还是当前操作说明，不能覆盖上述事实源。
+历史审计和性能材料不属于当前事实源；需要保留时应放在明确标注的外部归档或 Git history 中，不能覆盖上述事实源。
 
 ## 验证层次
 
