@@ -131,10 +131,14 @@ class SearchRepository:
         identity_mode = request.admin and bool(fields & ADMIN_IDENTITY_FIELDS)
         has_location = bool(fields & {"body", "cmt"})
         search_posts = (
-            True if not request.admin else ("body" in fields or not has_location)
+            request.scope in {"content", "all"}
+            if not request.admin
+            else ("body" in fields or not has_location)
         )
         search_comments = (
-            request.scope == "all" if not request.admin else ("cmt" in fields)
+            request.scope in {"comments", "all"}
+            if not request.admin
+            else ("cmt" in fields)
         )
         if identity_mode:
             return [], []
@@ -182,11 +186,22 @@ class SearchRepository:
         clauses: list[str] = []
         args: list = []
         keywords = (request.text or "").lower().split()
+        if not request.admin and request.text and request.scope == "none":
+            clauses.append("0")
+            keywords = []
         fields = set(request.admin_fields)
         identity_mode = request.admin and bool(fields & ADMIN_IDENTITY_FIELDS)
         has_location = bool(fields & {"body", "cmt"})
-        search_posts = "body" in fields or not has_location
-        search_comments = "cmt" in fields
+        search_posts = (
+            request.scope in {"content", "all"}
+            if not request.admin
+            else ("body" in fields or not has_location)
+        )
+        search_comments = (
+            request.scope in {"comments", "all"}
+            if not request.admin
+            else "cmt" in fields
+        )
         symbol_clauses, symbol_args = (
             self._symbol_text_clauses(request) if use_symbol else ([], [])
         )
@@ -285,9 +300,11 @@ class SearchRepository:
                             field_clauses.append("(" + " or ".join(name_parts) + ")")
                     clauses.append("(" + " or ".join(field_clauses or ["0"]) + ")")
                 elif token_query:
-                    kind_filter = (
-                        " and m.kind='post'" if request.scope == "content" else ""
-                    )
+                    kind_filter = ""
+                    if request.scope == "content":
+                        kind_filter = " and m.kind='post'"
+                    elif request.scope == "comments":
+                        kind_filter = " and m.kind='comment'"
                     text_clause = (
                         "p.id in ("
                         "select m.post_id from bigram.search_bigram f "
@@ -305,6 +322,13 @@ class SearchRepository:
                         ")"
                     )
                     args.extend([like, like])
+                elif request.scope == "comments":
+                    clauses.append(
+                        "p.id in (select post_id from comments where lower(detail) like ?)"
+                    )
+                    args.append(like)
+                elif request.scope == "none":
+                    clauses.append("0")
                 else:
                     clauses.append("lower(p.content) like ?")
                     args.append(like)
@@ -332,7 +356,10 @@ class SearchRepository:
         if request.admin and request.identity == "real":
             clauses.append("(p.real_user_id!='' and p.real_user_id!='0')")
         if has_source_state:
-            if not request.admin or request.source_state == "available":
+            if (
+                (not request.admin and not request.public_deleted_records)
+                or request.source_state == "available"
+            ):
                 clauses.append("p.source_state='available'")
             elif request.source_state == "deleted":
                 clauses.append("p.source_state='deleted_or_unavailable'")
@@ -372,7 +399,10 @@ class SearchRepository:
         if request.admin and request.identity == "real":
             clauses.append("(p.real_user_id!='' and p.real_user_id!='0')")
         if has_source_state:
-            if not request.admin or request.source_state == "available":
+            if (
+                (not request.admin and not request.public_deleted_records)
+                or request.source_state == "available"
+            ):
                 clauses.append("p.source_state='available'")
             elif request.source_state == "deleted":
                 clauses.append("p.source_state='deleted_or_unavailable'")
@@ -481,9 +511,12 @@ class SearchRepository:
 
         for keyword in keywords:
             if not request.admin:
-                body_match = keyword in content
+                body_match = (
+                    request.scope in {"content", "all"}
+                    and keyword in content
+                )
                 comment_match = (
-                    request.scope == "all"
+                    request.scope in {"comments", "all"}
                     and any(keyword in str(item["detail"] or "").lower() for item in comments)
                 )
                 if not body_match and not comment_match:
@@ -587,6 +620,21 @@ class SearchRepository:
         item["source_observed_at"] = row["source_observed_at"]
         item["archived_comment_rows"] = _safe_int(row["archived_comment_rows"])
 
+    @classmethod
+    def _search_result_post(cls, row, request: SearchQuery) -> dict:
+        item = cls._public_post(row)
+        if request.admin:
+            cls._add_admin_post_metadata(item, row)
+        else:
+            if not request.public_body_view:
+                item["content"] = ""
+                item.pop("media", None)
+            if not request.public_comments_view:
+                item["comments"] = 0
+            if request.public_deleted_records and "source_state" in row.keys():
+                item["source_state"] = row["source_state"]
+        return item
+
     def search(self, request: SearchQuery) -> dict:
         if not self.posts_db.exists():
             return {
@@ -597,7 +645,7 @@ class SearchRepository:
                 "results": [],
             }
 
-        sort_by = request.sort_by if request.admin else "time"
+        sort_by = request.sort_by
         order_by = self._order_by(sort_by)
         use_bigram, use_fts, use_symbol, backend = self._plan(request)
         with self.connect(include_bigram=use_bigram, include_symbol=use_symbol) as conn:
@@ -671,10 +719,7 @@ class SearchRepository:
 
         results = []
         for row in rows:
-            item = self._public_post(row)
-            if request.admin:
-                self._add_admin_post_metadata(item, row)
-            results.append(item)
+            results.append(self._search_result_post(row, request))
 
         return {
             "total": total,
@@ -719,13 +764,13 @@ class SearchRepository:
 
         scan_offset = max(0, scan_offset)
         matched_before = max(0, matched_before)
-        sort_by = request.sort_by if request.admin else "time"
+        sort_by = request.sort_by
         order_by = self._order_by(sort_by)
         results: list[dict] = []
         fields = set(request.admin_fields)
         identity_mode = request.admin and bool(fields & ADMIN_IDENTITY_FIELDS)
         need_comments = (
-            request.scope == "all"
+            request.scope in {"comments", "all"}
             if not identity_mode
             else "cmt" in fields
         )
@@ -824,10 +869,7 @@ class SearchRepository:
                         comments.get(str(row["id"]), []),
                         request,
                     ):
-                        item = self._public_post(row)
-                        if request.admin:
-                            self._add_admin_post_metadata(item, row)
-                        results.append(item)
+                        results.append(self._search_result_post(row, request))
                         if len(results) >= request.limit:
                             break
 
@@ -866,7 +908,7 @@ class SearchRepository:
         """
         scan_offset = max(0, scan_offset)
         matched_before = max(0, matched_before)
-        sort_by = request.sort_by if request.admin else "time"
+        sort_by = request.sort_by
         order_by = self._order_by(sort_by)
         fetch_limit = request.limit + 1
 
@@ -934,10 +976,7 @@ class SearchRepository:
         has_more = len(rows) > request.limit
         results = []
         for row in page_rows:
-            item = self._public_post(row)
-            if request.admin:
-                self._add_admin_post_metadata(item, row)
-            results.append(item)
+            results.append(self._search_result_post(row, request))
 
         next_offset = scan_offset + len(page_rows)
         matched_so_far = matched_before + len(results)
@@ -957,13 +996,16 @@ class SearchRepository:
             "total_exact": not has_more,
         }
 
-    def categories(self, min_count: int = 200) -> dict:
+    def categories(
+        self, min_count: int = 200, *, include_deleted: bool = False
+    ) -> dict:
         if not self.posts_db.exists():
             return {"categories": []}
         with self.connect() as conn:
             state_filter = (
                 " and source_state='available'"
                 if self._has_column(conn, "posts", "source_state")
+                and not include_deleted
                 else ""
             )
             rows = conn.execute(
@@ -989,6 +1031,7 @@ class SearchRepository:
         post_id: str,
         *,
         admin: bool = False,
+        public_deleted_records: bool = False,
         limit: int = 500,
         normalize_publisher_name: bool = True,
     ) -> dict | None:
@@ -1017,7 +1060,11 @@ class SearchRepository:
             ).fetchone()
             if post is None:
                 return None
-            if not admin and str(post["source_state"] or "available") != "available":
+            if (
+                not admin
+                and not public_deleted_records
+                and str(post["source_state"] or "available") != "available"
+            ):
                 return None
             rows = conn.execute(
                 f"""
@@ -1100,6 +1147,6 @@ class SearchRepository:
             "comment_state": comment_state,
             "comment_list": top[:limit],
         }
-        if admin:
+        if admin or public_deleted_records:
             result["source_state"] = post["source_state"]
         return result

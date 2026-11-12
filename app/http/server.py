@@ -24,6 +24,7 @@ from app.services.ai_search_benchmark_service import AiSearchBenchmarkService
 from app.services.ai_search_config import AiSearchConfigStore
 from app.services.ai_search_service import AiSearchService
 from app.services.auth_service import AdminAuthService
+from app.services.public_access_policy import PublicAccessPolicy
 from app.services.search_service import SearchService
 from app.services.template_service import TemplateService
 
@@ -177,8 +178,12 @@ class ApplicationContext:
     templates: TemplateService
     ai_search: AiSearchService | None = None
     ai_benchmark: AiSearchBenchmarkService | None = None
+    public_access: PublicAccessPolicy | None = None
 
     def __post_init__(self):
+        if self.public_access is None:
+            policy_path = Path(self.posts_db).with_name(".public_access_settings.json")
+            self.public_access = PublicAccessPolicy(policy_path)
         if self.ai_search is not None and self.ai_benchmark is None:
             self.ai_benchmark = AiSearchBenchmarkService(
                 self.ai_search, self.ai_search.config.path.parent / "ai-search-bench"
@@ -186,6 +191,9 @@ class ApplicationContext:
 
 
 def build_context() -> ApplicationContext:
+    public_access_path = os.environ.get("PUBLIC_ACCESS_SETTINGS_FILE") or str(
+        Path(SQLITE_DB).with_name(".public_access_settings.json")
+    )
     return ApplicationContext(
         posts_db=SQLITE_DB,
         admin_password=get_password(),
@@ -203,6 +211,7 @@ def build_context() -> ApplicationContext:
         ),
         auth=AdminAuthService(SESSION_TTL, CSRF_TTL),
         templates=TemplateService(TEMPLATES_DIR),
+        public_access=PublicAccessPolicy(public_access_path),
         ai_search=AiSearchService(
             SearchService(SQLITE_DB, BIGRAM_DB or None, SYMBOL_DB or None),
             AiSearchConfigStore(os.environ.get(

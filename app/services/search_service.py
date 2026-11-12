@@ -35,6 +35,9 @@ class SearchService:
         admin: bool = False,
         identity: str | None = None,
         source_state: str = "all",
+        public_body_view: bool = True,
+        public_comments_view: bool = True,
+        public_deleted_records: bool = False,
         admin_fields: set[str] | None = None,
         id_match: str = "exact",
         name_match: str = "exact",
@@ -54,14 +57,21 @@ class SearchService:
             admin=admin,
             identity=identity,
             source_state=source_state,
+            public_body_view=public_body_view,
+            public_comments_view=public_comments_view,
+            public_deleted_records=public_deleted_records,
             admin_fields=admin_fields,
             id_match=id_match,
             name_match=name_match,
         )
         return self.repository.search(request)
 
-    def categories(self, min_count: int = 200) -> dict:
-        return self.repository.categories(min_count=min_count)
+    def categories(
+        self, min_count: int = 200, *, include_deleted: bool = False
+    ) -> dict:
+        return self.repository.categories(
+            min_count=min_count, include_deleted=include_deleted
+        )
 
     def search_cursor(
         self,
@@ -82,6 +92,9 @@ class SearchService:
         admin: bool = False,
         identity: str | None = None,
         source_state: str = "all",
+        public_body_view: bool = True,
+        public_comments_view: bool = True,
+        public_deleted_records: bool = False,
         admin_fields: set[str] | None = None,
         id_match: str = "exact",
         name_match: str = "exact",
@@ -101,6 +114,9 @@ class SearchService:
             admin=admin,
             identity=identity,
             source_state=source_state,
+            public_body_view=public_body_view,
+            public_comments_view=public_comments_view,
+            public_deleted_records=public_deleted_records,
             admin_fields=admin_fields,
             id_match=id_match,
             name_match=name_match,
@@ -116,8 +132,10 @@ class SearchService:
         post_id: str,
         *,
         admin: bool = False,
+        public_deleted_records: bool = False,
     ) -> dict | None:
         return self.repository.comments(
             post_id,
             admin=admin,
+            public_deleted_records=public_deleted_records,
         )

@@ -56,6 +56,7 @@ html[data-theme="dark"] .search-scope-hint { color: #a49e93; }
 .identity-pill.real { border-color: #b8d9c0; color: #2b7541; background: #f0faf2; }
 .identity-pill.anonymous { border-color: #d9d3c9; color: #857e73; background: #f5f2ec; }
 .identity-pill.unknown { border-color: #e5c6a5; color: #996b3e; background: #fff8ed; }
+.source-state-pill { display: inline-flex; align-items: center; padding: 1px 6px; border: 1px solid #e4c3a1; border-radius: 10px; color: #8b5d2e; background: #fff7ec; font-size: .74em; white-space: nowrap; }
 
 /* Results */
 .results { max-width: 760px; margin: 0 auto; padding: 0 16px; }
@@ -335,9 +336,10 @@ html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: va
 
 <div class="search-wrap">
   <input type="text" id="q" placeholder="搜索关键词（空格分隔多个词），空着即显示最新..." autofocus>
-  <div class="search-scope-switch" role="group" aria-label="搜索范围">
-    <button type="button" id="scope-content" class="active" aria-pressed="true" onclick="setSearchScope('content')">正文</button>
-    <button type="button" id="scope-all" aria-pressed="false" onclick="setSearchScope('all')">正文 + 评论</button>
+  <div class="search-scope-switch ui-flow" role="group" aria-label="搜索范围">
+    <button type="button" id="scope-content" class="ui-choice active" aria-pressed="true" onclick="setSearchScope('content')">正文</button>
+    <button type="button" id="scope-comments" class="ui-choice" aria-pressed="false" onclick="setSearchScope('comments')">评论</button>
+    <button type="button" id="scope-all" class="ui-choice" aria-pressed="false" onclick="setSearchScope('all')">正文 + 评论</button>
     <span class="search-scope-hint" id="scope-hint" aria-live="polite">只检索帖子正文</span>
   </div>
 </div>
@@ -354,6 +356,12 @@ html[data-theme] .spinner { border-color: var(--ui-border); border-top-color: va
   <label>分类:</label>
   <input type="text" id="filter-category" list="category-options" placeholder="全部分类 / 输入tag">
   <datalist id="category-options"></datalist>
+  <label id="source-state-label" for="filter-source-state" hidden>记录状态:</label>
+  <select id="filter-source-state" hidden>
+    <option value="available">未删除/可用</option>
+    <option value="all">全部状态</option>
+    <option value="deleted">仅已删除/不可访问</option>
+  </select>
   <label>时间:</label>
   <div class="date-filter" id="date-filter" data-preset="1d">
     <button type="button" class="date-filter-trigger" id="date-filter-trigger" aria-controls="date-range-panel" aria-expanded="false">
@@ -404,10 +412,12 @@ var onUiSettingsSaved = function() { doSearch(); };
 __SHARED_UI_JS__
 
 // ===== State =====
+var publicAccessPolicy = __PUBLIC_ACCESS_JSON__;
 let currentPage = 1;
 let currentSort = 'time';
 let currentQuery = '';
 let currentScope = 'content';
+let currentSourceState = 'available';
 let totalPages = 1;
 let paginationMode = 'numbered';
 let cursorPages = [{ offset: 0, matchedBefore: 0 }];
@@ -416,6 +426,42 @@ let searchController = null;
 let PAGE_SIZE = 50;
 let TRUNCATE_LEN = 140;
 applySettings();
+
+function allowedPublicSearchScopes() {
+  var scopes = [];
+  if (publicAccessPolicy.body_search) scopes.push('content');
+  if (publicAccessPolicy.comments_search) scopes.push('comments');
+  if (publicAccessPolicy.body_search && publicAccessPolicy.comments_search) scopes.push('all');
+  return scopes;
+}
+
+function refreshPublicAccessControls() {
+  var scopes = allowedPublicSearchScopes();
+  if (scopes.indexOf(currentScope) < 0) currentScope = scopes[0] || 'none';
+  var controls = {
+    content: document.getElementById('scope-content'),
+    comments: document.getElementById('scope-comments'),
+    all: document.getElementById('scope-all')
+  };
+  Object.keys(controls).forEach(function(scope) {
+    var button = controls[scope];
+    var visible = scopes.indexOf(scope) >= 0;
+    button.hidden = !visible;
+    button.classList.toggle('active', currentScope === scope);
+    button.setAttribute('aria-pressed', currentScope === scope ? 'true' : 'false');
+  });
+  var sourceStateVisible = !!publicAccessPolicy.deleted_records;
+  document.getElementById('source-state-label').hidden = !sourceStateVisible;
+  document.getElementById('filter-source-state').hidden = !sourceStateVisible;
+  document.getElementById('scope-hint').textContent = currentScope === 'all'
+    ? '检索帖子正文和公开评论'
+    : currentScope === 'comments'
+      ? '只检索公开评论'
+      : scopes.length
+        ? '只检索帖子正文'
+        : '当前未开放正文或评论搜索';
+}
+refreshPublicAccessControls();
 
 // ===== Format helpers =====
 function formatTime(t) {
@@ -475,9 +521,14 @@ let _postData = {};       // index -> { fullContent, postId, commentCount }
 let _contentState = {};   // index -> bool (true=expanded, false=collapsed)
 
 function renderPost(post, index, keywords) {
-  let fullContent = post.content || '';
+  let fullContent = publicAccessPolicy.body_view
+    ? (post.content || '')
+    : '正文内容暂未向普通访客开放';
+  var visibleCommentCount = publicAccessPolicy.comments_view
+    ? (post.comments || 0)
+    : 0;
   let tc = truncateContent(fullContent);
-  _postData[index] = { fullContent: fullContent, postId: post.id, commentCount: post.comments || 0 };
+  _postData[index] = { fullContent: fullContent, postId: post.id, commentCount: visibleCommentCount };
   _contentState[index] = false;
 
   // ---- Header: [category] user #ID ······ time ----
@@ -486,6 +537,7 @@ function renderPost(post, index, keywords) {
       '<span class="post-cat">' + escapeHtml(post.category || '?') + '</span>' +
       '<span class="post-user">' + escapeHtml(post.user || '?') + '</span>' +
       renderIdentityStatus(post) +
+      (post.source_state === 'deleted_or_unavailable' ? '<span class="source-state-pill">已删除/不可访问</span>' : '') +
       '<span class="post-id">#' + escapeHtml(post.id) + '</span>' +
     '</div>' +
     '<span class="post-time-right">' + escapeHtml(post.time || '') + '</span>' +
@@ -508,18 +560,18 @@ function renderPost(post, index, keywords) {
   }
 
   // ---- Bottom row: comment toggle (left) + stats (right) ----
-  let bottomRowHtml = '<div class="post-bottom-row' + (post.comments > 0 ? ' has-comments' : '') + '"' +
-    (post.comments > 0 ? ' onclick="toggleComments(' + index + ')"' : '') + '>';
+  let bottomRowHtml = '<div class="post-bottom-row' + (visibleCommentCount > 0 ? ' has-comments' : '') + '"' +
+    (visibleCommentCount > 0 ? ' onclick="toggleComments(' + index + ')"' : '') + '>';
 
-  if (post.comments > 0) {
-    bottomRowHtml += '<span class="comment-toggle-inline" id="cmt-btn-' + index + '" onclick="event.stopPropagation(); toggleComments(' + index + ')">&#9654; 展开 ' + post.comments + ' 条评论</span>';
+  if (visibleCommentCount > 0) {
+    bottomRowHtml += '<span class="comment-toggle-inline" id="cmt-btn-' + index + '" onclick="event.stopPropagation(); toggleComments(' + index + ')">&#9654; 展开 ' + visibleCommentCount + ' 条评论</span>';
   } else {
     bottomRowHtml += '<span></span>';  // spacer
   }
 
   bottomRowHtml += '<span class="post-stats-inline">' +
       '<span>&#10084; ' + (post.stars||0) + '</span>' +
-      '<span>&#128172; ' + (post.comments||0) + '</span>' +
+      (publicAccessPolicy.comments_view ? '<span>&#128172; ' + (post.comments||0) + '</span>' : '') +
     '</span>' +
   '</div>';
 
@@ -601,7 +653,7 @@ function loadComments(index, postId) {
   wrap.innerHTML = '<div class="loading"><span class="spinner"></span>加载评论...</div>';
 
   fetch('/api/comments?id=' + encodeURIComponent(postId) +
-    '&sort=time')
+    '&sort=time', {cache: 'no-store'})
     .then(parseJsonResponse)
     .then(function(data) {
       var cmts = data.comment_list || [];
@@ -682,16 +734,10 @@ function doSearch() {
 }
 
 function setSearchScope(scope) {
-  currentScope = scope === 'all' ? 'all' : 'content';
-  var contentButton = document.getElementById('scope-content');
-  var allButton = document.getElementById('scope-all');
-  contentButton.classList.toggle('active', currentScope === 'content');
-  allButton.classList.toggle('active', currentScope === 'all');
-  contentButton.setAttribute('aria-pressed', currentScope === 'content' ? 'true' : 'false');
-  allButton.setAttribute('aria-pressed', currentScope === 'all' ? 'true' : 'false');
-  document.getElementById('scope-hint').textContent = currentScope === 'all'
-    ? '也检索公开帖子的评论；展开评论可查看关键词高亮'
-    : '只检索帖子正文';
+  currentScope = allowedPublicSearchScopes().indexOf(scope) >= 0
+    ? scope
+    : (allowedPublicSearchScopes()[0] || 'none');
+  refreshPublicAccessControls();
   doSearch();
 }
 
@@ -752,6 +798,9 @@ function getFilterParams() {
   var cat = document.getElementById('filter-category').value;
   if (cat) parts.push('category=' + encodeURIComponent(cat));
   parts.push('scope=' + encodeURIComponent(currentScope));
+  if (publicAccessPolicy.deleted_records) {
+    parts.push('source_state=' + encodeURIComponent(document.getElementById('filter-source-state').value));
+  }
   parts.push.apply(parts, getDateFilterParams());
   return parts.length ? '&' + parts.join('&') : '';
 }
@@ -772,7 +821,7 @@ function fetchResults() {
     '&matched_before=' + cursor.matchedBefore +
     getFilterParams();
 
-  fetch(url, { signal: searchController.signal })
+  fetch(url, { signal: searchController.signal, cache: 'no-store' })
     .then(parseJsonResponse)
     .then(data => {
       paginationMode = data.pagination_mode || 'numbered';
@@ -857,8 +906,10 @@ document.getElementById('filter-category').addEventListener('input', function() 
   categoryTimer = setTimeout(doSearch, 350);
 });
 
+document.getElementById('filter-source-state').addEventListener('change', doSearch);
+
 // Load frequent category suggestions. Rare tags can still be typed manually.
-fetch('/api/categories')
+fetch('/api/categories', {cache: 'no-store'})
   .then(parseJsonResponse)
   .then(function(data) {
     var sel = document.getElementById('category-options');

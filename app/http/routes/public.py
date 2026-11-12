@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, time, timedelta
 from pathlib import Path
 
@@ -26,15 +27,21 @@ def _parse_search_date(raw_value: str, *, is_end: bool = False) -> datetime:
 
 
 def main_page(handler):
-    overview = handler.context.posts.overview()
+    policy = handler.context.public_access.load()
+    if handler.is_admin():
+        policy = {key: True for key in policy}
+    overview = handler.context.posts.overview(
+        include_deleted=policy["deleted_records"]
+    )
     content = handler.context.templates.render(
         "main.html",
         TOTAL=overview["total"],
         CRAWL_TIME=overview["crawl_time"] or "?",
         EARLIEST_TIME=overview["earliest"],
         LATEST_TIME=overview["latest"],
+        PUBLIC_ACCESS_JSON=json.dumps(policy, separators=(",", ":")),
     )
-    handler.serve_html(content)
+    handler.serve_html(content, no_store=True)
 
 
 def search(handler):
@@ -61,19 +68,40 @@ def search(handler):
     uid = params.get("uid", [""])[0].strip() or None
     uname = params.get("uname", [""])[0].strip() or None
     scope = params.get("scope", ["content"])[0]
-    if scope not in ("all", "content"):
+    if scope not in ("all", "content", "comments"):
         scope = "content"
 
     admin_required = params.get("admin_required", ["0"])[0] == "1"
     admin = handler.is_admin()
+    public_access = handler.context.public_access.load()
     if not admin:
-        sort_by = "time"
         # Topic taxonomy is intentionally not exposed on the public search API.
         l2 = None
+        if scope == "all":
+            scope = (
+                "all"
+                if public_access["body_search"] and public_access["comments_search"]
+                else "content"
+                if public_access["body_search"]
+                else "comments"
+                if public_access["comments_search"]
+                else "none"
+            )
+        elif scope == "comments":
+            scope = (
+                "comments"
+                if public_access["comments_search"]
+                else "content"
+                if public_access["body_search"]
+                else "none"
+            )
+        elif not public_access["body_search"]:
+            scope = "comments" if public_access["comments_search"] else "none"
     if admin_required and not admin:
         handler.serve_json(
             {"ok": False, "error": "管理员登录已失效，请重新登录"},
             code=401,
+            no_store=True,
         )
         return
     admin_fields = None
@@ -102,8 +130,10 @@ def search(handler):
     if identity not in ("anonymous", "real") or not admin:
         identity = None
     source_state = params.get("source_state", ["all"])[0].strip()
-    if not admin or source_state not in ("all", "available", "deleted"):
-        source_state = "all"
+    if source_state not in ("all", "available", "deleted"):
+        source_state = "all" if admin else "available"
+    if not admin and not public_access["deleted_records"]:
+        source_state = "available"
 
     date_from = date_to = None
     preset = params.get("date", [""])[0].strip()
@@ -129,14 +159,38 @@ def search(handler):
             handler.serve_json(
                 {"ok": False, "error": "日期格式无效，请使用 YYYY-MM-DD"},
                 code=400,
+                no_store=True,
             )
             return
         if date_from and date_to and date_from > date_to:
             handler.serve_json(
                 {"ok": False, "error": "开始日期不能晚于结束日期"},
                 code=400,
+                no_store=True,
             )
             return
+
+    if not admin and query and scope == "none":
+        result = {
+            "total": 0,
+            "page": page,
+            "page_size": limit,
+            "total_pages": 1,
+            "results": [],
+            "search_backend": "none",
+        }
+        if cursor_mode:
+            result.update(
+                pagination_mode="cursor",
+                candidate_total=0,
+                scanned=0,
+                matched_so_far=0,
+                has_more=False,
+                next_offset=None,
+                total_exact=True,
+            )
+        handler.serve_json(result, no_store=True)
+        return
 
     search_method = (
         handler.context.search.search_cursor
@@ -164,11 +218,16 @@ def search(handler):
         admin=admin,
         identity=identity,
         source_state=source_state,
+        public_body_view=public_access["body_view"],
+        public_comments_view=public_access["comments_view"],
+        public_deleted_records=(
+            not admin and public_access["deleted_records"]
+        ),
         admin_fields=admin_fields,
         id_match=id_match,
         name_match=name_match,
     )
-    handler.serve_json(result)
+    handler.serve_json(result, no_store=True)
 
 
 def categories(handler):
@@ -177,31 +236,51 @@ def categories(handler):
         min_count = max(1, min(int(params.get("min_count", ["200"])[0]), 1000000))
     except ValueError:
         min_count = 200
-    handler.serve_json(handler.context.search.categories(min_count=min_count))
+    policy = handler.context.public_access.load()
+    include_deleted = handler.is_admin() or policy["deleted_records"]
+    handler.serve_json(
+        handler.context.search.categories(
+            min_count=min_count,
+            include_deleted=include_deleted,
+        ),
+        no_store=True,
+    )
 
 
 def comments(handler):
     params, _ = handler.parse_query()
     post_id = params.get("id", [""])[0]
     if not post_id:
-        handler.serve_json({"error": "Missing post id"}, code=400)
+        handler.serve_json({"error": "Missing post id"}, code=400, no_store=True)
         return
     admin_required = params.get("admin_required", ["0"])[0] == "1"
     admin = handler.is_admin()
+    public_access = handler.context.public_access.load()
     if admin_required and not admin:
         handler.serve_json(
             {"ok": False, "error": "管理员登录已失效，请重新登录"},
             code=401,
+            no_store=True,
+        )
+        return
+    if not admin and not public_access["comments_view"]:
+        handler.serve_json(
+            {"ok": False, "error": "评论内容暂未向普通访客开放"},
+            code=403,
+            no_store=True,
         )
         return
     result = handler.context.search.comments(
         post_id,
         admin=admin,
+        public_deleted_records=(
+            not admin and public_access["deleted_records"]
+        ),
     )
     if result is None:
-        handler.serve_json({"error": "Post not found"}, code=404)
+        handler.serve_json({"error": "Post not found"}, code=404, no_store=True)
         return
-    handler.serve_json(result)
+    handler.serve_json(result, no_store=True)
 
 
 def health(handler):

@@ -118,6 +118,25 @@ class BigramSearchTest(unittest.TestCase):
         result = self.search("食堂", scope="all")
         self.assertEqual({item["id"] for item in result["results"]}, {"1", "2"})
 
+    def test_comments_only_scope_uses_comment_rows(self) -> None:
+        result = self.search("食堂", scope="comments")
+        self.assertEqual(result["search_backend"], "bigram")
+        self.assertEqual([item["id"] for item in result["results"]], ["2"])
+
+        symbols = self.search("♀找", scope="comments")
+        self.assertEqual([item["id"] for item in symbols["results"]], ["2"])
+
+    def test_comments_only_scope_falls_back_to_comment_like_without_bigram(self) -> None:
+        with (
+            patch.object(server, "SQLITE_DB", str(self.posts_db)),
+            patch.object(server, "BIGRAM_DB", ""),
+        ):
+            result = server.api_search_sqlite(
+                "食堂", "time", 1, 50, scope="comments"
+            )
+        self.assertEqual(result["search_backend"], "like")
+        self.assertEqual([item["id"] for item in result["results"]], ["2"])
+
     def test_admin_field_scope_is_preserved(self) -> None:
         body = self.search("食堂", scope="all", admin=True, admin_fields={"body"})
         comments = self.search("食堂", scope="all", admin=True, admin_fields={"cmt"})
