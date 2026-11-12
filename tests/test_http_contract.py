@@ -215,6 +215,29 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body_only["results"], [])
 
+    def test_public_search_keeps_text_scope_with_admin_session(self):
+        opener = build_opener(HTTPCookieProcessor(CookieJar()))
+        with opener.open(self.base + "/admin", timeout=5) as response:
+            token = re.search(r'name="csrf_token" value="([^"]+)"', response.read().decode()).group(1)
+        with opener.open(Request(self.base + "/admin", data=urlencode(
+            {"password": "test", "csrf_token": token}).encode(), method="POST"), timeout=5):
+            pass
+        for cursor in (0, 1):
+            for query, scope, expected in (
+                ("食堂", "content", ["100"]),
+                ("十一点关门", "content", []),
+                ("十一点关门", "all", ["100"]),
+                ("123", "content", []),
+            ):
+                with self.subTest(cursor=cursor, query=query, scope=scope):
+                    params = urlencode({"q": query, "scope": scope, "cursor": cursor})
+                    with opener.open(self.base + "/api/search?" + params, timeout=5) as response:
+                        payload = json.load(response)
+                    self.assertEqual([p["id"] for p in payload["results"]], expected)
+        params = urlencode({"q": "123", "admin_required": 1, "admin_fields": "body,uid"})
+        with opener.open(self.base + "/api/search?" + params, timeout=5) as response:
+            self.assertEqual([p["id"] for p in json.load(response)["results"]], ["100"])
+
     def test_admin_search_and_comments_omit_inferred_gender_metadata(self):
         search = SearchService(self.db_path)
         result = search.search("", "time", 1, 10, admin=True)

@@ -81,10 +81,14 @@ def search(handler):
     if admin:
         allowed = {"body", "cmt", "uid", "name", "post"}
         raw_fields = params.get("admin_fields", [""])[0].strip()
+        # An admin session on the public page must still search its text scope.
+        default_fields = allowed if admin_required else (
+            {"body", "cmt"} if scope == "all" else {"body"}
+        )
         admin_fields = (
             {field for field in raw_fields.split(",") if field in allowed}
             if raw_fields
-            else allowed
+            else default_fields
         )
         if not admin_fields:
             admin_fields = allowed
