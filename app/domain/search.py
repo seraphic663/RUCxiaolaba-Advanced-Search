@@ -95,6 +95,9 @@ class SearchQuery:
     admin: bool = False
     identity: str | None = None
     source_state: str = "all"
+    public_body_view: bool = True
+    public_comments_view: bool = True
+    public_deleted_records: bool = False
     admin_fields: frozenset[str] = field(
         default_factory=lambda: frozenset({"body", "cmt", "uid", "name", "post"})
     )

@@ -201,6 +201,43 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(cursor["candidate_total"], 1)
         self.assertTrue(cursor["total_exact"])
 
+    def test_public_sort_modes_work_for_numbered_and_cursor_search(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.executemany(
+            "insert into posts values (?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (
+                    "200", "食堂二", "日常", "gender_view", "乙", "u6", "0",
+                    "2026-06-12 10:00:00", 8, 1, 0,
+                ),
+                (
+                    "300", "食堂三", "日常", "gender_view", "丙", "u7", "0",
+                    "2026-06-13 10:00:00", 0, 10, 0,
+                ),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        cases = [
+            ("/api/search?sort=stars&limit=10", ["300", "100", "200"]),
+            (
+                "/api/search?sort=comments&limit=10&cursor=1",
+                ["200", "100", "300"],
+            ),
+            (
+                f"/api/search?q={quote('食')}&scope=content&sort=score&limit=10&cursor=1",
+                ["200", "300", "100"],
+            ),
+        ]
+        for path, expected_ids in cases:
+            with self.subTest(path=path):
+                status, payload = self.get_json(path)
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    [item["id"] for item in payload["results"]], expected_ids
+                )
+
     def test_public_can_search_comment_text_without_admin_metadata(self):
         status, payload = self.get_json(
             f"/api/search?q={quote('十一点关门')}&scope=all&limit=10"
@@ -237,6 +274,100 @@ class HTTPContractTest(unittest.TestCase):
         params = urlencode({"q": "123", "admin_required": 1, "admin_fields": "body,uid"})
         with opener.open(self.base + "/api/search?" + params, timeout=5) as response:
             self.assertEqual([p["id"] for p in json.load(response)["results"]], ["100"])
+    def test_public_access_policy_enforces_view_search_and_deleted_settings(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "alter table posts add column source_state text not null default 'available'"
+        )
+        conn.execute(
+            "insert into posts "
+            "(id,content,category_name,l2_category,user_name,show_user_id,real_user_id,"
+            "create_time,comment_count,star_count,trace_count,source_state) "
+            "values (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "200", "已删除帖子正文", "已删分类", "", "删除者", "u200", "0",
+                "2026-06-12 10:00:00", 1, 0, 0, "deleted_or_unavailable",
+            ),
+        )
+        conn.execute(
+            "insert into comments values (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "200:c1", "c1", "200", "", "删除帖评论", "评论者", "u201", "0",
+                "", "", 2, "2026-06-12 10:01:00",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        policy = Handler.context.public_access
+        policy.save(
+            {
+                "body_view": False,
+                "body_search": True,
+                "comments_view": False,
+                "comments_search": True,
+                "deleted_records": False,
+            }
+        )
+        status, hidden_body = self.get_json(
+            f"/api/search?q={quote('食堂')}&scope=content&limit=10"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(hidden_body["results"][0]["content"], "")
+        self.assertEqual(hidden_body["results"][0]["comments"], 0)
+        with urlopen(self.base + "/api/search?q=" + quote("食堂"), timeout=5) as response:
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        status, hidden_deleted = self.get_json(
+            f"/api/search?q={quote('已删除帖子正文')}&source_state=deleted&limit=10"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(hidden_deleted["results"], [])
+        status, comments_denied = self.get_json("/api/comments?id=100")
+        self.assertEqual(status, 403)
+        self.assertFalse(comments_denied["ok"])
+
+        policy.save(
+            {
+                "body_view": True,
+                "body_search": False,
+                "comments_view": True,
+                "comments_search": True,
+                "deleted_records": False,
+            }
+        )
+        _, body_search_denied = self.get_json(
+            f"/api/search?q={quote('食堂')}&scope=content&limit=10"
+        )
+        self.assertEqual(body_search_denied["results"], [])
+        for cursor in ("0", "1"):
+            _, comment_search = self.get_json(
+                f"/api/search?q={quote('十一点关门')}&scope=content&limit=10&cursor={cursor}"
+            )
+            self.assertEqual([item["id"] for item in comment_search["results"]], ["100"])
+
+        policy.save(
+            {
+                "body_view": True,
+                "body_search": True,
+                "comments_view": True,
+                "comments_search": True,
+                "deleted_records": True,
+            }
+        )
+        status, deleted_visible = self.get_json(
+            f"/api/search?q={quote('已删除帖子正文')}&source_state=deleted&limit=10"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in deleted_visible["results"]], ["200"])
+        self.assertEqual(
+            deleted_visible["results"][0]["source_state"],
+            "deleted_or_unavailable",
+        )
+        _, deleted_comments = self.get_json("/api/comments?id=200")
+        self.assertEqual(deleted_comments["source_state"], "deleted_or_unavailable")
+        self.assertEqual(deleted_comments["comment_list"][0]["detail"], "删除帖评论")
+        _, categories = self.get_json("/api/categories?min_count=1")
+        self.assertIn("已删分类", categories["categories"])
 
     def test_admin_search_and_comments_omit_inferred_gender_metadata(self):
         search = SearchService(self.db_path)
@@ -330,9 +461,13 @@ class HTTPContractTest(unittest.TestCase):
         status, payload = self.get_json("/api/admin/crawl-status")
         self.assertEqual(status, 401)
         self.assertFalse(payload["ok"])
+        status, payload = self.get_json("/api/admin/public-access")
+        self.assertEqual(status, 401)
+        self.assertFalse(payload["ok"])
 
     def test_main_page_contract(self):
         with urlopen(self.base + "/", timeout=5) as response:
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store")
             content = response.read().decode("utf-8")
         self.assertIn("RUC", content)
         self.assertNotIn("__SHARED_UI_", content)
@@ -342,7 +477,10 @@ class HTTPContractTest(unittest.TestCase):
         self.assertNotIn('id="filter-l2"', content)
         self.assertNotIn("主题:", content)
         self.assertIn('id="scope-content"', content)
+        self.assertIn('id="scope-comments"', content)
         self.assertIn('id="scope-all"', content)
+        self.assertIn('id="filter-source-state"', content)
+        self.assertNotIn("__PUBLIC_ACCESS_JSON__", content)
         self.assertIn('id="date-range-panel"', content)
         self.assertIn('type="date" id="date-from"', content)
         self.assertIn('id="date-filter" data-preset="1d"', content)
@@ -378,6 +516,32 @@ class HTTPContractTest(unittest.TestCase):
         self.assertIn('id="date-filter" data-preset="1d"', dashboard)
         self.assertIn('<span id="date-filter-summary">今天</span>', dashboard)
         self.assertNotIn("__ADMIN_CSRF_TOKEN__", dashboard)
+        with opener.open(self.base + "/api/admin/public-access", timeout=5) as response:
+            access_data = json.loads(response.read())
+        self.assertEqual(
+            access_data["settings"],
+            {
+                "body_view": True,
+                "body_search": True,
+                "comments_view": True,
+                "comments_search": True,
+                "deleted_records": False,
+            },
+        )
+        save_request = Request(
+            self.base + "/api/admin/public-access",
+            data=json.dumps({"comments_search": False}).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-CSRF-Token": access_data["csrf_token"],
+            },
+            method="POST",
+        )
+        with opener.open(save_request, timeout=5) as response:
+            saved_access = json.loads(response.read())
+        self.assertTrue(saved_access["ok"])
+        self.assertFalse(saved_access["settings"]["comments_search"])
+        self.assertIn('id="public-access-section"', dashboard)
         with opener.open(self.base + "/admin/crawl", timeout=5) as response:
             crawl_page = response.read().decode("utf-8")
         self.assertIn('id="live-source"', crawl_page)

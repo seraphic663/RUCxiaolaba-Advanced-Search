@@ -19,6 +19,7 @@ GET_ROUTES = {
     "/api/admin/ai-search/bench": admin_ai_benchmark.get,
     "/api/admin/ai-search/settings": admin_ai_search.settings,
     "/api/admin/crawler-report": admin.report_data,
+    "/api/admin/public-access": admin.public_access_settings,
     "/api/admin/live-crawl": admin_crawl.status,
     "/api/admin/crawl-status": admin_crawl.overview,
 }
@@ -29,6 +30,7 @@ POST_ROUTES = {
     "/api/admin/ai-search/settings": admin_ai_search.save_settings,
     "/api/admin/ai-search/test": admin_ai_search.test_connection,
     "/api/admin/ai-search/estimate": admin_ai_search.estimate,
+    "/api/admin/public-access": admin.save_public_access_settings,
     "/api/admin/ai-search/bench/run": admin_ai_benchmark.start,
     "/api/admin/ai-search/bench/estimate": admin_ai_benchmark.estimate,
     "/api/admin/upstream-preview": admin_crawl.preview,

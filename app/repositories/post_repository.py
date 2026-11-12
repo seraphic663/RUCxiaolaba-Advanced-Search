@@ -12,7 +12,7 @@ class PostRepository:
     def __init__(self, posts_db: str | Path):
         self.posts_db = Path(posts_db)
 
-    def overview(self) -> dict:
+    def overview(self, *, include_deleted: bool = False) -> dict:
         if not self.posts_db.exists():
             return {
                 "total": 0,
@@ -24,7 +24,7 @@ class PostRepository:
             columns = {row["name"] for row in conn.execute("pragma table_info(posts)")}
             state_filter = (
                 "where source_state='available'"
-                if "source_state" in columns
+                if "source_state" in columns and not include_deleted
                 else ""
             )
             row = conn.execute(

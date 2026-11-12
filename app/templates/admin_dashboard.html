@@ -246,6 +246,16 @@ html[data-theme] .cmt,
 html[data-theme] .comments-panel,
 html[data-theme] .cmt .nested { border-color: var(--ui-border); }
 html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var(--ui-surface)); color: var(--ui-text); }
+.settings-panel { max-height: calc(100vh - 90px); overflow-y: auto; }
+.public-access-section { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--ui-border); }
+.public-access-section h4 { margin: 0 0 6px; font-size: .92em; }
+.public-access-help, #public-access-status { margin: 0 0 8px; font-size: var(--ui-font-meta); line-height: 1.5; }
+.public-access-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px solid var(--ui-border); font-size: 14px; }
+.public-access-row input { width: 18px; height: 18px; accent-color: var(--ui-accent); }
+html[data-theme] .public-access-section,
+html[data-theme] .public-access-row { border-color: var(--ui-border); }
+html[data-theme] .public-access-row { color: var(--ui-text); }
+html[data-theme] .public-access-help,
 </style>
 </head>
 <body>
@@ -291,6 +301,20 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
       <button type="button" onclick="closeSettings()">取消</button>
       <button type="button" class="primary" onclick="saveSettings()">保存</button>
     </div>
+    <section id="public-access-section" class="public-access-section" aria-labelledby="public-access-title">
+      <h4 id="public-access-title">普通访客权限 · 全站生效</h4>
+      <p class="public-access-help">控制所有未登录访客的查看与搜索范围。真实用户 ID 仍仅管理员可见。</p>
+      <label class="public-access-row" for="public-body-view"><span>允许查看帖子正文</span><input id="public-body-view" type="checkbox"></label>
+      <label class="public-access-row" for="public-body-search"><span>允许搜索帖子正文</span><input id="public-body-search" type="checkbox"></label>
+      <label class="public-access-row" for="public-comments-view"><span>允许展开查看评论</span><input id="public-comments-view" type="checkbox"></label>
+      <label class="public-access-row" for="public-comments-search"><span>允许搜索评论</span><input id="public-comments-search" type="checkbox"></label>
+      <label class="public-access-row" for="public-deleted-records"><span>允许访问已删除/不可访问记录</span><input id="public-deleted-records" type="checkbox"></label>
+      <p class="public-access-help">当前数据把“已删除”和“不可访问”合并管理。保存后接口立即执行新权限，公开页面刷新后更新控件。</p>
+      <div id="public-access-status" role="status" aria-live="polite">打开此设置时读取当前权限。</div>
+      <div class="settings-actions">
+        <button type="button" class="primary" id="save-public-access" onclick="savePublicAccessSettings()">保存访客权限</button>
+      </div>
+    </section>
   </div>
 </div>
 
@@ -358,6 +382,8 @@ html[data-theme] mark { background: color-mix(in srgb, var(--ui-accent) 28%, var
 
 <script>
 var onUiSettingsSaved = function() { startSearch(); };
+var onSettingsOpened = function() { loadPublicAccessSettings(); };
+var adminCsrfToken = '__ADMIN_CSRF_TOKEN__';
 __SHARED_UI_JS__
 updateThemeButton();
 
@@ -373,6 +399,64 @@ var searchController = null;
 var PAGE_SIZE = 50;
 var TRUNCATE_LEN = 140;
 applySettings();
+
+function setPublicAccessInputs(settings) {
+  document.getElementById('public-body-view').checked = !!settings.body_view;
+  document.getElementById('public-body-search').checked = !!settings.body_search;
+  document.getElementById('public-comments-view').checked = !!settings.comments_view;
+  document.getElementById('public-comments-search').checked = !!settings.comments_search;
+  document.getElementById('public-deleted-records').checked = !!settings.deleted_records;
+}
+
+function parseAdminJson(response) {
+  return response.json().then(function(data) {
+    if (!response.ok) throw new Error(data.error || '请求失败');
+    if (data.csrf_token) adminCsrfToken = data.csrf_token;
+    return data;
+  });
+}
+
+function loadPublicAccessSettings() {
+  var status = document.getElementById('public-access-status');
+  status.textContent = '正在读取全站访客权限…';
+  fetch('/api/admin/public-access', {cache: 'no-store'})
+    .then(parseAdminJson)
+    .then(function(data) {
+      setPublicAccessInputs(data.settings || {});
+      status.textContent = '已读取当前全站权限。';
+    })
+    .catch(function(error) {
+      status.textContent = '读取失败：' + error.message;
+    });
+}
+
+function savePublicAccessSettings() {
+  var status = document.getElementById('public-access-status');
+  var button = document.getElementById('save-public-access');
+  var settings = {
+    body_view: document.getElementById('public-body-view').checked,
+    body_search: document.getElementById('public-body-search').checked,
+    comments_view: document.getElementById('public-comments-view').checked,
+    comments_search: document.getElementById('public-comments-search').checked,
+    deleted_records: document.getElementById('public-deleted-records').checked
+  };
+  button.disabled = true;
+  status.textContent = '正在保存…';
+  fetch('/api/admin/public-access', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': adminCsrfToken},
+    body: JSON.stringify(settings)
+  })
+    .then(parseAdminJson)
+    .then(function(data) {
+      setPublicAccessInputs(data.settings || settings);
+      status.textContent = '已保存。新请求立即执行；公开页面刷新后更新控件。';
+    })
+    .catch(function(error) {
+      status.textContent = '保存失败：' + error.message;
+    })
+    .finally(function() { button.disabled = false; });
+}
 
 function startSearch() {
   currentPage = 1;

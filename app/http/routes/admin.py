@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from urllib.parse import parse_qs
 
@@ -96,3 +97,66 @@ def report_data(handler):
         handler.serve_json({"ok": False, "error": str(exc)}, 400)
         return
     handler.serve_json(result)
+
+
+def public_access_settings(handler):
+    if not handler.is_admin():
+        handler.serve_json(
+            {"ok": False, "error": "管理员登录已失效，请重新登录"},
+            code=401,
+            no_store=True,
+        )
+        return
+    handler.serve_json(
+        {
+            "ok": True,
+            "settings": handler.context.public_access.load(),
+            "csrf_token": handler.context.auth.create_csrf_token(),
+        },
+        no_store=True,
+    )
+
+
+def save_public_access_settings(handler):
+    if not handler.is_admin():
+        handler.serve_json(
+            {"ok": False, "error": "管理员登录已失效，请重新登录"},
+            code=401,
+            no_store=True,
+        )
+        return
+    if not handler.context.auth.verify_csrf_token(
+        handler.headers.get("X-CSRF-Token", "")
+    ):
+        handler.serve_json(
+            {
+                "ok": False,
+                "error": "操作令牌已过期，请重试",
+                "csrf_token": handler.context.auth.create_csrf_token(),
+            },
+            code=403,
+            no_store=True,
+        )
+        return
+    try:
+        payload = json.loads(handler.read_body(max_bytes=4096).decode("utf-8"))
+        settings = handler.context.public_access.save(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        handler.serve_json(
+            {
+                "ok": False,
+                "error": str(exc) or "权限设置格式无效",
+                "csrf_token": handler.context.auth.create_csrf_token(),
+            },
+            code=400,
+            no_store=True,
+        )
+        return
+    handler.serve_json(
+        {
+            "ok": True,
+            "settings": settings,
+            "csrf_token": handler.context.auth.create_csrf_token(),
+        },
+        no_store=True,
+    )

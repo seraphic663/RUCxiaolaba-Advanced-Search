@@ -63,6 +63,7 @@ function openSettings() {
   document.getElementById('set-show-stats').checked = uiSettings.showStats;
   document.getElementById('set-compact-mode').checked = uiSettings.compactMode;
   document.getElementById('settings-backdrop').classList.add('open');
+  if (typeof onSettingsOpened === 'function') onSettingsOpened();
 }
 
 function closeSettings() {
