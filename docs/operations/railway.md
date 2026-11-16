@@ -18,9 +18,10 @@ Web 和 crawler 保持在同一个 service，SQLite 与 Volume 由该 service �
 /app/data/posts.db
 /app/data/bigram_index.db
 /app/data/symbol_index.db
-/app/data/config.txt
-/app/data/config_small.txt        # 可选，固定 lane 的另一个合法会话
-/app/data/cookie_pool.json        # 可选，只有路径和预算，不含 cookie 值
+/app/data/cookies/cookie_01.txt   # old，500 次自动详情/日
+/app/data/cookies/cookie_02.txt   # new，500 次自动详情/日
+/app/data/cookies/cookie_03.txt   # third，500 次自动详情/日
+/app/data/cookie_pool.json       # 只有相对路径和预算，不含 cookie 值
 ```
 
 上传命令：
@@ -29,8 +30,7 @@ Web 和 crawler 保持在同一个 service，SQLite 与 Volume 由该 service �
 railway volume files upload data\posts.db /posts.db --overwrite
 railway volume files upload data\bigram_index.db /bigram_index.db --overwrite
 railway volume files upload data\symbol_index.db /symbol_index.db --overwrite
-railway volume files upload data\config.txt /config.txt --overwrite
-railway volume files upload data\config_small.txt /config_small.txt --overwrite
+railway volume files upload data\cookies /cookies --overwrite
 railway volume files upload data\cookie_pool.json /cookie_pool.json --overwrite
 ```
 
@@ -50,6 +50,7 @@ CRAWLER_TRICKLE_ENABLED=1
 CRAWLER_TRICKLE_SINCE=<需要持续覆盖的起始时间>
 # 可选：固定 lane 池，启用后以 cookie_pool.json 的每 lane 预算为准
 CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json
+CRAWLER_PARALLEL_LANES=0
 ```
 
 不要上传 `admin_password.txt`。Bigram 用于普通中文/混合文本，Symbol 用于特殊符号、表情和符号混合查询；普通单字查询仍可能回退 `LIKE`。旁路索引由 `SQLitePostStore` 随详情写入更新，也可以从主库重建。
@@ -61,10 +62,10 @@ CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json
 ```text
 discover-latest  当前线上每 3 小时，全天最多 20 页、有效信号不足时提前停
 discover-active  当前线上每 3 小时，和 discover-latest 错开 1 小时；全天最多 10 页、有效信号不足时提前停
-trickle-fill     02:00 起补到各 300，20:00 起补到各 500；每批最多 25 条，两个 cookie lane 轮换
+trickle-fill     02:00 起补到各 300，20:00 起补到各 500；每批最多 25 条，三个 cookie lane 分配
 ```
 
-调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 队列 worker 另外用 owner/token 认领围栏防止租约过期后的旧 worker 覆盖新 worker。列表全天使用同一套提前停止规则，不再设置凌晨强扫窗口；详情只在 02:00 和 20:00 固定窗口运行，两个等价 cookie lane 以 25 条小批次轮换，直到各自达到当天目标。
+调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 队列 worker 另外用 owner/token 认领围栏防止租约过期后的旧 worker 覆盖新 worker。列表全天使用同一套提前停止规则，不再设置凌晨强扫窗口；详情只在 02:00 和 20:00 固定窗口运行，三个等价 cookie lane 以 25 条小批次分配，直到各自达到当天目标。每路 500 是自动详情硬上限，合计 1500；列表和人工调用另外记账。内部 ID `old`/`new` 保留，避免迁移文件时重置已有计数和暂停。
 
 主要间隔变量，单位为秒：
 
@@ -90,7 +91,7 @@ CRAWLER_HISTORY_TRICKLE_INTERVAL=1800
 单 cookie 模式出现 `cookie_expired` 时，覆盖合法取得的新配置：
 
 ```powershell
-railway volume files upload data\config.txt /config.txt --overwrite
+railway volume files upload data\cookies\cookie_01.txt /cookies/cookie_01.txt --overwrite
 ```
 
 调度器下次执行会读取新 cookie，无需上传 DB。`rate_limited` 不是 cookie 格式错误；单 cookie 模式发生后 scheduler 暂停到下一个北京时间 00:05，恢复后仍受当天阶梯释放约束。固定池模式改为按 lane 保存 cooldown/次日暂停和 pacing 状态，某个 lane 被限流不再阻塞其他健康 lane；不会通过临时替换身份、轮换 cookie、代理或提高并发规避限制。

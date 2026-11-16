@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from crawler.automatic_quota import AUTOMATIC_QUOTA_KIND_ENV
+from crawler.config import default_cookie_config
 from crawler.cookie_pool import COOKIE_KINDS, CookieLaneSpec, load_cookie_pool_specs
 from crawler.id_ledger import ledger_state, set_ledger_state
 from crawler.lock import database_write_lock
@@ -34,7 +35,9 @@ from crawler.task_routing import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = os.environ.get("SQLITE_DB", "/app/data/posts.db")
-CONFIG_PATH = os.environ.get("CRAWLER_CONFIG", "/app/data/config.txt")
+CONFIG_PATH = os.environ.get(
+    "CRAWLER_CONFIG", str(default_cookie_config(Path(DB_PATH).parent))
+)
 COOKIE_POOL_PATH = os.environ.get("CRAWLER_COOKIE_POOL", "")
 PAUSE_PATH = Path(
     os.environ.get(
@@ -240,10 +243,8 @@ NEW_DETAIL_QUOTA_RELEASE_STEPS_TEXT = os.environ.get(
     "CRAWLER_NEW_DETAIL_QUOTA_RELEASE_STEPS",
     "0=0.05,04:00=0.75,06:00=1.00",
 )
-# Both fixed cookie lanes now serve the same ID-followup queue.  Keep the
-# existing environment variable name for deployment compatibility while using
-# one release profile for the two ID lanes.
-ID_DETAIL_LANES = frozenset(("new", "old"))
+# Keep the existing environment variable name for deployment compatibility.
+# Every configured ID-followup lane uses the same release profile.
 QUOTA_ADAPTIVE_ENABLED = os.environ.get("CRAWLER_QUOTA_ADAPTIVE_ENABLED", "1") == "1"
 QUOTA_ADAPTIVE_LOOKBACK_DAYS = env_int("CRAWLER_QUOTA_ADAPTIVE_LOOKBACK_DAYS", 14)
 QUOTA_RATE_LIMIT_EXCLUDED_DATES = env_iso_dates(
@@ -690,9 +691,14 @@ def quota_release_steps() -> list[tuple[int, float]]:
 
 
 def detail_quota_release_steps(lane_id: str = "") -> list[tuple[int, float]]:
+    lane_key = str(lane_id or "").lower()
+    id_lane = lane_key in {"new", "old"} or any(
+        spec.lane_id.lower() == lane_key and spec.supports_task(TASK_ID_FOLLOWUP)
+        for spec in cookie_pool_specs()
+    )
     text = (
         NEW_DETAIL_QUOTA_RELEASE_STEPS_TEXT
-        if str(lane_id or "").lower() in ID_DETAIL_LANES
+        if id_lane
         else DETAIL_QUOTA_RELEASE_STEPS_TEXT
     )
     steps = parse_release_steps(text)
@@ -2295,8 +2301,6 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
                     f"{next_detail_window_start().isoformat()}"
                 )
         remaining = remaining_budget(kind, quota, lane_id=lane_id)
-        if name == "trickle_fill" and lane_id and cookie_pool_specs():
-            remaining = detail_window_remaining(quota, lane_id)
         if remaining <= 0:
             if name == "trickle_fill" and lane_id and cookie_pool_specs():
                 if not any_detail_window_remaining(quota):
@@ -2494,17 +2498,22 @@ def phase1_delay() -> float:
 def main() -> int:
     if not Path(DB_PATH).exists():
         raise FileNotFoundError(DB_PATH)
-    if not Path(CONFIG_PATH).exists():
-        raise FileNotFoundError(CONFIG_PATH)
     if str(COOKIE_POOL_PATH or "").strip():
         for spec in cookie_pool_specs():
-            if not spec.config_path.exists():
+            if spec.enabled and not spec.config_path.exists():
                 raise FileNotFoundError(spec.config_path)
+    elif not Path(CONFIG_PATH).exists():
+        raise FileNotFoundError(CONFIG_PATH)
 
     try:
         startup_quota = refresh_runtime_state()
+        lane_budgets = ",".join(
+            f"{spec.lane_id}:{spec.budget('detail')}"
+            for spec in cookie_pool_specs() if spec.enabled
+        )
         print(
             "[scheduler] quota "
+            f"cookie_lanes={lane_budgets or 'single'} "
             f"detail_policy={DETAIL_MORNING_START}->{DETAIL_MORNING_TARGET},"
             f"{DETAIL_EVENING_START}->{DETAIL_DAILY_TARGET} "
             f"source_effective={startup_quota.get('effective_source_budget')} "

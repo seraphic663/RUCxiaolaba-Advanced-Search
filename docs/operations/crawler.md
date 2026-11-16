@@ -1,6 +1,6 @@
 # 爬虫运行与调度
 
-> 本页按 2026-10-10 当前代码核对。若代码、环境变量示例和历史报告不一致，以当前 `jobs/scheduler.py` 和本文的当前配置段为准；历史测量只用于解释当时现象。
+> 三会话文件与配额配置于 2026-11-17 核对。若代码、环境变量示例和历史报告不一致，以当前 `jobs/scheduler.py` 和本文的当前配置段为准；历史测量只用于解释当时现象。
 
 本文档是爬虫命令、停止条件、队列、配额和 Railway 调度的当前唯一运维事实源。`crawler/README.md` 只说明模块边界，不再复制运行手册。
 
@@ -31,7 +31,15 @@ lists
 
 ## 配置与 Cookie
 
-Cookie 存放在 `data/config.txt`；爬虫兼容当前和历史两种会话名称：`ys7_ysxy_session`、`ys_ysxy_sess`。捕获器会保留实际观察到的名称：
+三个固定会话统一保存在下面目录。池文件 `data/cookie_pool.json` 只引用文件路径，不含会话值；线上目录对应 `/app/data/`。爬虫兼容 `ys7_ysxy_session`、`ys_ysxy_sess`，捕获器保留实际观察到的名称：
+
+| 会话文件 | 内部记账 ID | 自动详情上限/日 |
+|---|---|---:|
+| `data/cookies/cookie_01.txt` | `old` | 500 |
+| `data/cookies/cookie_02.txt` | `new` | 500 |
+| `data/cookies/cookie_03.txt` | `third` | 500 |
+
+保留已有 `old`/`new` ID，避免更名后重置当日计数或暂停。第三会话加入共享去重队列，三个会话详情硬上限合计 **1500 次/日**，相比双会话最多增加 500 次详情请求；列表频率和页级停止规则不增加。该上限仅指自动详情，列表和人工调用仍需分别统计。默认单会话路径是 `cookies/cookie_01.txt`；旧部署仅存在 `config.txt` 时仍兼容读取。
 
 ```text
 ys7_ysxy_session=你的cookie
@@ -46,13 +54,13 @@ Copy-Item data\cookie_pool.example.json data\cookie_pool.json
 python crawler_db.py trickle-fill --cookie-pool data\cookie_pool.json --limit 5 --min-delay 8 --max-delay 14
 ```
 
-`daily_budgets` 的键是 `new_list`、`active_list`、`detail`。当前两个 cookie lane 都负责 `list_new`、`list_active`、`id_followup`、`history_detail`，上游权限和主线任务路由保持等价；`history_detail` 只是旧阶段/兼容任务，不是 monitoring 日常主线。`enabled: false` 可以临时保留一个 lane 但禁止它领取任何任务。详情任务会在一个共享去重队列中按任务类型路由；启用 `CRAWLER_PARALLEL_LANES=1` 时由两个 lane worker 分别执行，仍依靠原子 claim 防止重复。三阶段主线中 list1/list2 的两个计数只作审计，不再用 lane 的列表预算挡住列表观察；详情 lane 的显式上限仍然有效。quota 文件会同时保留总计数和 `cookie_lanes` 分 lane 计数。真实 `rate_limited:*` 或 `cookie_expired` 会只暂停产生错误的 lane；池模式下旧的单 cookie 全局暂停记录不会阻塞其他健康 lane。系统不会用另一个 cookie 隐藏或重试同一个已被上游拒绝的请求。
+`daily_budgets` 的键是 `new_list`、`active_list`、`detail`。当前三个 cookie lane 都负责 `list_new`、`list_active`、`id_followup`、`history_detail`；`history_detail` 只是旧阶段/兼容任务，不是 monitoring 日常主线。`enabled: false` 可以保留一个 lane 但禁止它领取任务。三会话使用 `CRAWLER_PARALLEL_LANES=0`，串行领取共享队列；`1` 只兼容旧版 new/old 双 worker，不用于三会话。list1/list2 只作审计，不扣详情预算；详情显式上限仍然有效。quota 同时保留总计数和分 lane 计数。真实 `rate_limited:*` 或 `cookie_expired` 只暂停出错 lane；系统不会用另一会话隐藏或重试被上游拒绝的请求。
 
-默认生产节奏是：list1 每小时、list2 每小时且与 list1 错开 30 分钟；两个 cookie lane 的列表任务按当天同类调用数较少的一边轮换；详情在固定窗口内按两边详情调用数交替，小批次串行执行。历史 `history_detail` 只在旧阶段/兼容任务显式存在时运行。
+当前 Railway 配置是：list1/list2 各每 3 小时，错开 1 小时；代码未配置时的默认值仍是每小时、错开 30 分钟。列表分配给当天同类调用数较少的 lane；详情按实际详情利用率分配，小批次串行执行，后续详情间隔保持 8–14 秒。历史 `history_detail` 只在兼容任务显式存在时运行。
 
 池模式也会把兼容的 `scan-id-range` 强制为单 worker；如果需要日常自动调度，应使用上面的 `trickle` 主线，避免旧的并发扫描路径绕开这套逐请求配额。
 
-生产环境将池文件和各个 `config*.txt` 放在 Railway Volume 的 `/app/data/` 下，再设置 `CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json`。池文件、cookie 配置和 quota 文件都不能提交 Git、写入日志或上传到公共服务。
+生产环境将三个会话放在 Railway Volume 的 `/app/data/cookies/cookie_01.txt`～`cookie_03.txt`，设置 `CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json`。池配置使用相对路径 `cookies/cookie_01.txt` 等。池文件、cookie 配置和 quota 文件都不能提交 Git、写入日志或上传到公共服务。
 
 ## 源 API 与请求成本
 
@@ -138,22 +146,22 @@ list2 的 `update_time` 不能当作严格递减游标：本次扫描中页内�
 
 ## Railway 固定窗口调度
 
-`CRAWLER_ENABLED=1` 时 `start.sh` 启动 `jobs.scheduler`。生产详情调度只有两个窗口：02:00 起将 `new`、`old` 两个 cookie lane 分别补到当天 300 次详情调用；20:00 起再分别补到当天 500 次。窗口外只运行 list1/list2 观察并更新 ID 台账，不主动拉详情。
+`CRAWLER_ENABLED=1` 时 `start.sh` 启动 `jobs.scheduler`。生产详情调度只有两个窗口：02:00 起将 `new`、`old`、`third` 三个 cookie lane 分别补到当天 300 次详情调用；20:00 起再分别补到当天 500 次。窗口外只运行 list1/list2 观察并更新 ID 台账，不主动拉详情。
 
 固定策略：
 
 ```text
 02:00：每个 ID lane 的目标是 300
 20:00：每个 ID lane 的目标是 500
-每轮最多补 25，完成一轮后按两边实际调用数轮换
+每轮最多补 25，完成一轮后按三路实际调用数分配
 实际补量 = 窗口目标 - 当天该 lane 已完成的 detail_calls
-两个 lane 顺序运行，详情请求保持单请求串行和 8–14 秒间隔
+三个 lane 顺序运行，详情请求保持单请求串行和 8–14 秒间隔
 rate_limited/cookie_expired：立即停止对应 lane，队列保留到下一窗口/下一日
 ```
 
-`CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json` 仍提供两个 lane 的 cookie 和各自 500 次硬上限；quota 文件只记录实际请求，不做批量预留。重启或中途失败后，下一次窗口按当天实际计数补齐，因此不会因为 scheduler 重启而丢掉可用额度。
+`CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json` 提供三个 lane 的文件路径和各自 500 次硬上限；quota 文件只记录实际请求，不做批量预留。重启或中途失败后，下一次窗口按当天实际计数补齐，因此不会因为 scheduler 重启而丢掉可用额度。
 
-当前池配置为 new、old 各 `detail=500`。ID 详情不再按每小时 trickle 或自适应目标运行，而是在两个固定窗口中按当天真实 `detail_calls` 补齐；窗口内单轮最多 25 个，两个 lane 按实际调用数轮换，priority 0 的新回复仍由队列优先选择。历史详情不属于当前 ID 主线，生产 monitoring 阶段不再单独消耗调度轮次。
+当前池配置为 new、old、third 各 `detail=500`。ID 详情不再按每小时 trickle 或自适应目标运行，而是在两个固定窗口中按当天真实 `detail_calls` 补齐；窗口内单轮最多 25 个，三个 lane 按实际调用数分配，priority 0 的新回复仍由队列优先选择。历史详情不属于当前 ID 主线，生产 monitoring 阶段不再单独消耗调度轮次。
 
 Admin 的预览和详情只记录实际使用次数，不设本地数量或日额度上限；不扣减 new-list、active-list 或自动 detail 主计数，也不受自动详情释放约束。列表观察不再用固定的内部日上限裁剪，因此不能再用旧的 1240/1270 总数描述新主线。人工调用仍读取同一个全局 pause；人工计数也会进入 quota history 的真实 `source_calls`，不能在限流分析中漏算。预览支持自定义页数，任务支持任意数量的有效选中帖子；详情任务第一个帖子立即请求，后续帖子继续使用 8–14 秒串行间隔。
 
@@ -167,7 +175,7 @@ Admin 的预览和详情只记录实际使用次数，不设本地数量或日�
 
 scheduler 不再整批预扣额度；子进程仍在每一次真实 HTTP 请求前原子领取 1 次对应额度，因此 quota 文件记录实际请求。固定窗口只决定何时允许 ID 详情，窗口内实际补量由当天 lane 计数决定；部署中断、提前停止、重复页和空页不会虚扣整批额度。北京时间跨日后计数归零，下一天重新执行 300/500 两个目标。
 
-列表任务仍按有效信号、重复页和最大页数停止；详情任务不再按多个 overdue job 竞争，而是窗口开启后连续补齐两个 lane，完成窗口目标后等待下一窗口。列表日志保留 `queued` 作为候选观察数，同时新增 `queue_inserted`、`queue_reopened`、`queue_updated`、`queue_unchanged`；连续无收益页按真实队列变化判断。
+列表任务仍按有效信号、重复页和最大页数停止；详情任务不再按多个 overdue job 竞争，而是窗口开启后连续补齐三个 lane，完成窗口目标后等待下一窗口。列表日志保留 `queued` 作为候选观察数，同时新增 `queue_inserted`、`queue_reopened`、`queue_updated`、`queue_unchanged`；连续无收益页按真实队列变化判断。
 
 已完成队列行在 `lists2` 发现评论数增长后会重新变成 `pending` priority 0。启动时还会修复旧版本遗留的“队列 done、列表评论数大于主库评论数”记录。自动详情与 Admin 现爬共用可疑响应校验：正文为空，或上游声明有评论但评论列表为空时，不覆盖主库已有数据。
 

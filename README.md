@@ -57,10 +57,11 @@ Bigram 索引是可选的。未提供索引时，搜索自动回退到 SQLite FT
 > 使用者必须使用本人合法取得且有权使用的 cookie，不得绕过登录、验证码、签名、限流或权限检查。持续抓取、全量扫描、公开部署或共享真实数据前，应取得平台运营方的书面授权。无法确认授权范围时，请只使用仓库自带的合成 demo。
 
 ```powershell
-Copy-Item data\config.example.txt data\config.txt
+New-Item -ItemType Directory -Force data\cookies
+Copy-Item data\config.example.txt data\cookies\cookie_01.txt
 ```
 
-在 `data/config.txt` 中填写你有权使用的 cookie，然后执行一次小范围的“发现候选 → 慢补详情”：
+在 `data/cookies/cookie_01.txt` 中填写你有权使用的 cookie，然后执行一次小范围的“发现候选 → 慢补详情”。三会话配置使用同目录的 `cookie_01.txt`～`cookie_03.txt`，参考 [爬虫运行手册](docs/operations/crawler.md)：
 
 ```powershell
 $since = (Get-Date).AddDays(-1).ToString("yyyy-MM-dd HH:mm:ss")

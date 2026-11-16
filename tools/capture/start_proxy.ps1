@@ -3,8 +3,10 @@ param(
     [int]$ListenPort = 8899,
     [int]$WebPort = 8900,
     [string]$MitmwebPath = "D:\application\mitmproxy-env\Scripts\mitmweb.exe",
-    [ValidateSet("new", "old")]
-    [string]$Mode = "new",
+    [ValidateRange(1, 3)]
+    [int]$CookieSlot = 3,
+    [ValidateSet("new", "old", "third")]
+    [string]$Mode,
     [switch]$NoInstall,
     [int]$TimeoutSeconds = 300,
     [int]$PollSeconds = 1,
@@ -19,11 +21,17 @@ $script:ProxyServer = "127.0.0.1:$ListenPort"
 $script:PanelUrl = "http://127.0.0.1:$WebPort/"
 $script:BackupPath = Join-Path $env:TEMP "rucxiaolaba-mitmproxy-backup.json"
 $script:ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
-$script:CookieFilePath = if ($Mode -eq "old") {
-    Join-Path $script:ProjectRoot "data\config.txt"
-} else {
-    Join-Path $script:ProjectRoot "data\config_small.txt"
+if ($PSBoundParameters.ContainsKey("Mode")) {
+    $modeSlot = @{ old = 1; new = 2; third = 3 }[$Mode]
+    if ($PSBoundParameters.ContainsKey("CookieSlot") -and $CookieSlot -ne $modeSlot) {
+        throw "CookieSlot 与兼容参数 Mode 指向不同会话。"
+    }
+    $CookieSlot = $modeSlot
 }
+$Mode = @{ 1 = "old"; 2 = "new"; 3 = "third" }[$CookieSlot]
+$script:CookieFilePath = Join-Path $script:ProjectRoot (
+    "data\cookies\cookie_{0:D2}.txt" -f $CookieSlot
+)
 $script:CandidatePath = "$($script:CookieFilePath).candidate"
 $script:StatusPath = Join-Path $script:ProjectRoot "data\capture_status.json"
 $script:ProxySnapshot = $null
