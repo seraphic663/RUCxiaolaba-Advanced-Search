@@ -2,7 +2,7 @@
   "lanes": [
     {
       "id": "new",
-      "config": "config_small.txt",
+      "config": "cookies/cookie_02.txt",
       "enabled": true,
       "task_types": [
         "list_new",
@@ -18,7 +18,7 @@
     },
     {
       "id": "old",
-      "config": "config.txt",
+      "config": "cookies/cookie_01.txt",
       "enabled": true,
       "task_types": [
         "list_new",
@@ -27,6 +27,24 @@
         "history_detail"
       ],
       "daily_budgets": {
+        "new_list": 0,
+        "active_list": 0,
+        "detail": 500
+      }
+    },
+    {
+      "id": "third",
+      "config": "cookies/cookie_03.txt",
+      "enabled": true,
+      "task_types": [
+        "list_new",
+        "list_active",
+        "id_followup",
+        "history_detail"
+      ],
+      "daily_budgets": {
+        "new_list": 0,
+        "active_list": 0,
         "detail": 500
       }
     }

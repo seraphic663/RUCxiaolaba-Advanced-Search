@@ -10,17 +10,19 @@
 .\tools\capture\start_proxy.bat
 ```
 
-目标小程序请求出现后，过滤器会先保存一个临时候选；当同一请求收到正常 API 成功响应后，才自动把会话保存到 `data/config_small.txt`。它兼容当前观察到的 `ys_ysxy_sess` 和历史名称 `ys7_ysxy_session`，并保留实际捕获到的名称。因此不会因为失败请求把旧配置覆盖掉。只在本机使用，不要把文件内容发到聊天或提交到仓库。
+目标小程序请求出现后，过滤器会先保存一个临时候选；当同一请求收到正常 API 成功响应后，才自动把会话保存到 `data/cookies/cookie_03.txt`。它兼容当前观察到的 `ys_ysxy_sess` 和历史名称 `ys7_ysxy_session`，并保留实际捕获到的名称。因此不会因为失败请求把旧配置覆盖掉。只在本机使用，不要把文件内容发到聊天或提交到仓库。
 
 双击 `start_proxy.bat` 时不会打开抓包面板：启动后只需打开微信小程序并刷新或浏览任意页面。默认会在捕获并验证成功后自动关闭 mitmweb 并恢复原代理；5 分钟内没有成功响应则退出并保留原来的配置。
 
-默认是 `new` 模式，写入 `data/config_small.txt`。同一个脚本也支持 `old` 模式：
+三个会话统一保存在 `data/cookies/cookie_01.txt`、`cookie_02.txt`、`cookie_03.txt`。默认更新第 3 个；更新其他会话时明确指定编号：
 
 ```powershell
-.\tools\capture\start_proxy.bat -Mode old
+.\tools\capture\start_proxy.bat -CookieSlot 1
+.\tools\capture\start_proxy.bat -CookieSlot 2
+.\tools\capture\start_proxy.bat -CookieSlot 3
 ```
 
-`old` 模式写入 `data/config.txt`，两种模式都会在 `data/capture_status.json` 中记录对应标签；状态文件不包含 cookie 值。
+内部记账 ID 保留 `old`（01）、`new`（02）、`third`（03），以延续已有 quota/pause/history。兼容参数 `-Mode old/new/third` 分别对应编号 1/2/3；编号与 Mode 冲突时会在启动代理前报错。状态文件 `data/capture_status.json` 记录对应标签，不包含 cookie 值。
 
 需要手动观察面板时可以直接运行 PowerShell 脚本；面板使用独立的 Chrome 临时配置，不会关闭你原来打开的标签页：
 

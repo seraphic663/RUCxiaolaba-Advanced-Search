@@ -20,7 +20,7 @@ from mitmproxy import ctx, http
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "captured_requests.jsonl")
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 COOKIE_FILE = Path(
-    os.environ.get("RUC_CAPTURE_COOKIE_FILE", str(DATA_DIR / "config_small.txt"))
+    os.environ.get("RUC_CAPTURE_COOKIE_FILE", str(DATA_DIR / "cookies" / "cookie_03.txt"))
 )
 CANDIDATE_FILE = Path(
     os.environ.get(

@@ -5,7 +5,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_DB = DATA_DIR / "posts.db"
-DEFAULT_CONFIG = DATA_DIR / "config.txt"
+
+
+def default_cookie_config(data_dir: str | Path = DATA_DIR) -> Path:
+    """Prefer the numbered cookie directory, retaining legacy single-cookie setups."""
+    root = Path(data_dir)
+    canonical = root / "cookies" / "cookie_01.txt"
+    legacy = root / "config.txt"
+    return legacy if not canonical.exists() and legacy.exists() else canonical
+
+
+DEFAULT_CONFIG = default_cookie_config()
 DEFAULT_LOCK_TIMEOUT = 180
 # The write lock is a renewable lease rather than a permanent PID marker.  A
 # replacement Railway container cannot inspect the old container's PID

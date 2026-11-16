@@ -27,6 +27,7 @@ from app.services.auth_service import AdminAuthService
 from app.services.public_access_policy import PublicAccessPolicy
 from app.services.search_service import SearchService
 from app.services.template_service import TemplateService
+from crawler.config import default_cookie_config
 
 SESSION_TTL = 86400
 CSRF_TTL = 3600
@@ -204,7 +205,7 @@ def build_context() -> ApplicationContext:
             SQLITE_DB,
             config_path=os.environ.get(
                 "CRAWLER_CONFIG",
-                str(Path(SQLITE_DB).with_name("config.txt")),
+                str(default_cookie_config(Path(SQLITE_DB).parent)),
             ),
             bigram_db=BIGRAM_DB or None,
             symbol_db=SYMBOL_DB or None,
