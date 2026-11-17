@@ -2379,6 +2379,7 @@ def job_args(name: str) -> list[str]:
 
 
 def run_job(name: str) -> JobResult:
+    task_date = quota_date()
     lane_id = job_lane_id(name)
     args, quota_note = prepare_job(name)
     if args is None:
@@ -2439,7 +2440,7 @@ def run_job(name: str) -> JobResult:
     if kind:
         # A delayed or long-running child must not spend the next day's quota,
         # even if it survives until the next open detail window.
-        child_env[AUTOMATIC_QUOTA_DATE_ENV] = before_date
+        child_env[AUTOMATIC_QUOTA_DATE_ENV] = task_date
     route = job_task_type(name)
     route_note = f" task={route}" if route else ""
     if lane_id:
