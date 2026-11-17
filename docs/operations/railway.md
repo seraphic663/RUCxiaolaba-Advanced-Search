@@ -62,10 +62,10 @@ CRAWLER_PARALLEL_LANES=0
 ```text
 discover-latest  当前线上每 3 小时，全天最多 20 页、有效信号不足时提前停
 discover-active  当前线上每 3 小时，和 discover-latest 错开 1 小时；全天最多 10 页、有效信号不足时提前停
-trickle-fill     02:00 起补到各 300，20:00 起补到各 500；每批最多 25 条，三个 cookie lane 分配
+trickle-fill     01:00 起补到各 400，21:00 起补到各 500；每批最多 25 条，三个 cookie lane 分配
 ```
 
-调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 队列 worker 另外用 owner/token 认领围栏防止租约过期后的旧 worker 覆盖新 worker。列表全天使用同一套提前停止规则，不再设置凌晨强扫窗口；详情只在 02:00 和 20:00 固定窗口运行，三个等价 cookie lane 以 25 条小批次分配，直到各自达到当天目标。每路 500 是自动详情硬上限，合计 1500；列表和人工调用另外记账。内部 ID `old`/`new` 保留，避免迁移文件时重置已有计数和暂停。
+调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 队列 worker 另外用 owner/token 认领围栏防止租约过期后的旧 worker 覆盖新 worker。列表全天使用同一套提前停止规则，不再设置凌晨强扫窗口；详情在 01:00 和 21:00 固定窗口运行，三个等价 cookie lane 以 25 条小批次分配，直到各自达到当天累计目标。每路 500 是自动详情硬上限，合计 1500；列表和人工调用另外记账。内部 ID `old`/`new` 保留，修改窗口或重启不重置当日计数和暂停。自动任务固定启动日期，跨北京时间零点后旧任务停止领取额度；00:00–01:00 请求级检查严格禁止池模式自动详情。
 
 主要间隔变量，单位为秒：
 
@@ -80,6 +80,10 @@ CRAWLER_TRICKLE_FRESH_COVERAGE_HOURS=72
 CRAWLER_LIST_OLD_PAGE_THRESHOLD=1
 CRAWLER_TRICKLE_INTERVAL=600
 CRAWLER_HISTORY_TRICKLE_INTERVAL=1800
+CRAWLER_DETAIL_MORNING_START=01:00
+CRAWLER_DETAIL_MORNING_END=21:00
+CRAWLER_DETAIL_EVENING_START=21:00
+CRAWLER_DETAIL_EVENING_END=24:00
 ```
 
 完整请求成本、队列优先级、每日预算、固定详情窗口、lane 轮换和暂停语义统一见 [爬虫运行与调度](crawler.md)，本页不再复制完整参数表。

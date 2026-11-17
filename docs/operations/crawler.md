@@ -146,15 +146,15 @@ list2 的 `update_time` 不能当作严格递减游标：本次扫描中页内�
 
 ## Railway 固定窗口调度
 
-`CRAWLER_ENABLED=1` 时 `start.sh` 启动 `jobs.scheduler`。生产详情调度只有两个窗口：02:00 起将 `new`、`old`、`third` 三个 cookie lane 分别补到当天 300 次详情调用；20:00 起再分别补到当天 500 次。窗口外只运行 list1/list2 观察并更新 ID 台账，不主动拉详情。
+`CRAWLER_ENABLED=1` 时 `start.sh` 启动 `jobs.scheduler`。生产详情调度只有两个窗口：01:00 起将 `new`、`old`、`third` 三个 cookie lane 分别补到当天 400 次详情调用；21:00 起再分别补到当天 500 次。00:00–01:00 禁止自动详情请求，列表观察仍按原频率运行。
 
 固定策略：
 
 ```text
-02:00：每个 ID lane 的目标是 300
-20:00：每个 ID lane 的目标是 500
+01:00：每个 ID lane 的累计目标是 400（三路共 1200 次）
+21:00：每个 ID lane 的累计目标是 500（正常再各补 100，共 300 次）
 每轮最多补 25，完成一轮后按三路实际调用数分配
-实际补量 = 窗口目标 - 当天该 lane 已完成的 detail_calls
+实际补量 = max(0, 窗口目标 - 当天该 lane 实际请求的 detail_calls)
 三个 lane 顺序运行，详情请求保持单请求串行和 8–14 秒间隔
 rate_limited/cookie_expired：立即停止对应 lane，队列保留到下一窗口/下一日
 ```
@@ -173,7 +173,9 @@ Admin 的预览和详情只记录实际使用次数，不设本地数量或日�
 
 预览只写主库旁的 `.admin_crawl.db`，10 分钟后失效，不会写入 `posts`。人工任务也保存在该 sidecar，服务重启后会恢复未完成任务。详情成功后在同一写入路径更新 SQLite FTS、Bigram 和可用的 Symbol sidecar；上游声称有评论却返回空评论、正文为空或社区不匹配时拒绝覆盖旧数据。
 
-scheduler 不再整批预扣额度；子进程仍在每一次真实 HTTP 请求前原子领取 1 次对应额度，因此 quota 文件记录实际请求。固定窗口只决定何时允许 ID 详情，窗口内实际补量由当天 lane 计数决定；部署中断、提前停止、重复页和空页不会虚扣整批额度。北京时间跨日后计数归零，下一天重新执行 300/500 两个目标。
+scheduler 不再整批预扣额度；子进程在每一次真实 HTTP 请求前原子领取 1 次对应额度。固定窗口决定何时允许 ID 详情，实际补量沿用当天 lane 计数；部署、修改窗口或提前停止都不重置已用额度。例如各已请求 300 次时切换到 400 目标，只各补 100 次，再于 21:00 各补至 500。
+
+每个自动任务通过 `CRAWLER_AUTOMATIC_QUOTA_DATE` 固定启动时的北京时间日期。跨日后旧任务返回 `source_quota_day_changed`，不会领取新日额度，即使它一直存活到次日 01:00 也必须退出；新任务按新日正常启动。池模式请求级检查也严格使用固定窗口，00:00–01:00 返回 `source_quota_window_locked`，不再回退到旧曲线的凌晨 5% 释放。阻止的请求不发 HTTP、不增加请求计数，已认领但未请求的队列项保留待处理。正常新日记账仍归档前一天的实际用量，然后执行 400/500 两个累计目标。
 
 列表任务仍按有效信号、重复页和最大页数停止；详情任务不再按多个 overdue job 竞争，而是窗口开启后连续补齐三个 lane，完成窗口目标后等待下一窗口。列表日志保留 `queued` 作为候选观察数，同时新增 `queue_inserted`、`queue_reopened`、`queue_updated`、`queue_unchanged`；连续无收益页按真实队列变化判断。
 
@@ -190,13 +192,14 @@ CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=10   # 常规页上限；滚动时间边�
 CRAWLER_TRICKLE_NEW_LOOKBACK_HOURS=24      # list1 滚动观察窗口
 CRAWLER_TRICKLE_FRESH_COVERAGE_HOURS=72    # list2 滚动观察窗口
 CRAWLER_LIST_OLD_PAGE_THRESHOLD=1          # 连续 1 个边界外页面即停
-CRAWLER_DETAIL_MORNING_START=02:00
-CRAWLER_DETAIL_MORNING_END=20:00
-CRAWLER_DETAIL_EVENING_START=20:00
-# ID 详情窗口目标为 02:00->300、20:00->500；每轮最多 25
+CRAWLER_DETAIL_MORNING_START=01:00
+CRAWLER_DETAIL_MORNING_END=21:00
+CRAWLER_DETAIL_EVENING_START=21:00
+CRAWLER_DETAIL_EVENING_END=24:00
+# ID 详情累计目标为 01:00->400、21:00->500；每轮最多 25
 ```
 
-首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；生产 monitoring 阶段不再启动 `history_detail` 低速任务。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段 list1/list2 全天使用同一套滚动时间边界和提前停止规则，list1 最多 20 页、list2 最多 10 页，保留连续无收益、重复页和时间边界停止；不再设置凌晨强扫窗口，旧的深扫时间和页数变量不再生效。首次 bootstrap 仍固定 20 页。list1 和 list2 都是每 3 小时一次，并固定错开 1 小时；有效信号只包括新 ID、源端更新时间/评论数变化或新的 `lists2` 事件。ID 详情只在 02:00 和 20:00 两个固定窗口执行，窗口内每批最多 25 条并轮换 lane；`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
+首次启动先固定扫 20 页 list1；随后进入 `list1_seed`，再进入 `detail_backfill`，按 `id_followup` 的 `queue_order` 串行补详情。只有当前 ID 表队列全部到达成功、明确不可用或其他终态后，才进入 `monitoring` 并启动 list1/list2；生产 monitoring 阶段不再启动 `history_detail` 低速任务。旧 coverage 不再作为当前 ID 表回补的前置完成度门槛。监视阶段 list1/list2 全天使用同一套滚动时间边界和提前停止规则，list1 最多 20 页、list2 最多 10 页，保留连续无收益、重复页和时间边界停止；不再设置凌晨强扫窗口，旧的深扫时间和页数变量不再生效。首次 bootstrap 仍固定 20 页。list1 和 list2 都是每 3 小时一次，并固定错开 1 小时；有效信号只包括新 ID、源端更新时间/评论数变化或新的 `lists2` 事件。ID 详情只在 01:00 和 21:00 两个固定窗口执行，窗口内每批最多 25 条并轮换 lane；`CRAWLER_DISCOVER_INTERVAL` 仍作为旧部署的 active-list 兼容变量，`CRAWLER_ACTIVE_DISCOVER_INTERVAL` 和 `CRAWLER_ACTIVE_DISCOVER_OFFSET` 优先级更高。
 
 
 ## 限流、Cookie 失效与暂停

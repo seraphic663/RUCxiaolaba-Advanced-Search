@@ -115,13 +115,13 @@ class SchedulerPolicyTest(unittest.TestCase):
 
     def test_fixed_detail_windows_top_up_actual_lane_counters(self):
         tz = timezone(timedelta(hours=8))
-        before = datetime(2026, 8, 21, 1, 59, tzinfo=tz)
-        morning = datetime(2026, 8, 21, 2, 0, tzinfo=tz)
+        before = datetime(2026, 8, 21, 0, 59, tzinfo=tz)
+        morning = datetime(2026, 8, 21, 1, 0, tzinfo=tz)
         daytime = datetime(2026, 8, 21, 12, 0, tzinfo=tz)
-        evening = datetime(2026, 8, 21, 20, 0, tzinfo=tz)
+        evening = datetime(2026, 8, 21, 21, 0, tzinfo=tz)
         self.assertIsNone(scheduler.active_detail_window(before))
         self.assertEqual(scheduler.active_detail_window(morning)[0], "morning")
-        self.assertEqual(scheduler.active_detail_window(morning)[3], 300)
+        self.assertEqual(scheduler.active_detail_window(morning)[3], 400)
         self.assertEqual(scheduler.active_detail_window(daytime)[0], "morning")
         self.assertEqual(scheduler.active_detail_window(evening)[0], "evening")
         self.assertEqual(scheduler.active_detail_window(evening)[3], 500)
@@ -134,11 +134,11 @@ class SchedulerPolicyTest(unittest.TestCase):
         }
         self.assertEqual(
             scheduler.detail_window_remaining(quota, "new", morning),
-            275,
+            375,
         )
         self.assertEqual(
             scheduler.detail_window_remaining(quota, "old", morning),
-            276,
+            376,
         )
         self.assertEqual(
             scheduler.detail_window_remaining(quota, "new", evening),
@@ -146,16 +146,16 @@ class SchedulerPolicyTest(unittest.TestCase):
         )
         self.assertEqual(
             scheduler.next_detail_window_start(daytime),
-            daytime.replace(hour=20, minute=0, second=0, microsecond=0),
+            daytime.replace(hour=21, minute=0, second=0, microsecond=0),
         )
         self.assertEqual(
             scheduler.next_detail_window_start(before),
             morning.replace(second=0, microsecond=0),
         )
 
-    def test_fixed_detail_window_ignores_legacy_release_gate_at_two(self):
+    def test_fixed_detail_window_ignores_legacy_release_gate_at_one(self):
         tz = timezone(timedelta(hours=8))
-        morning = datetime(2026, 8, 21, 2, 0, tzinfo=tz)
+        morning = datetime(2026, 8, 21, 1, 0, tzinfo=tz)
         specs = (
             CookieLaneSpec(
                 "new",
@@ -177,7 +177,7 @@ class SchedulerPolicyTest(unittest.TestCase):
         ):
             self.assertEqual(
                 scheduler.remaining_budget("detail", quota, lane_id="new"),
-                300,
+                400,
             )
 
     def test_list_page_caps_ignore_removed_deep_scan_configuration(self):
@@ -228,12 +228,12 @@ print(json.dumps(pages + [arg(regular, '--no-action-page-threshold')]))
                 "old": {"detail_calls": 250},
             }
         }
-        before_evening = datetime(2026, 10, 27, 19, 59, tzinfo=tz)
-        evening = datetime(2026, 10, 27, 20, 0, tzinfo=tz)
+        before_evening = datetime(2026, 10, 27, 20, 59, tzinfo=tz)
+        evening = datetime(2026, 10, 27, 21, 0, tzinfo=tz)
         midnight = datetime(2026, 10, 28, 0, 0, tzinfo=tz)
         for lane in ("new", "old"):
             self.assertEqual(
-                scheduler.detail_window_remaining(quota, lane, before_evening), 50
+                scheduler.detail_window_remaining(quota, lane, before_evening), 150
             )
             self.assertEqual(
                 scheduler.detail_window_remaining(quota, lane, evening), 250

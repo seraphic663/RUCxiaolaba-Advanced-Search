@@ -84,7 +84,7 @@ class AutomaticQuotaTest(unittest.TestCase):
         self.now = self.now + timedelta(minutes=2)
         with self.assertRaises(AutomaticQuotaError) as caught:
             quota.claim()
-        self.assertEqual(caught.exception.code, "source_quota_budget_exhausted")
+        self.assertEqual(caught.exception.code, "source_quota_day_changed")
         current = self._quota()
         self.assertEqual(current["date"], "2026-07-12")
         self.assertEqual(current["detail_calls"], 0)
@@ -415,6 +415,7 @@ class AutomaticQuotaTest(unittest.TestCase):
             self.assertTrue(result.succeeded)
             self.assertEqual(result.lane_id, "new")
             self.assertEqual(captured["CRAWLER_COOKIE_POOL_LANE"], "new")
+            self.assertEqual(captured["CRAWLER_AUTOMATIC_QUOTA_DATE"], "2026-07-11")
 
 
 class AdaptiveDetailBudgetTest(unittest.TestCase):
