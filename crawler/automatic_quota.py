@@ -7,6 +7,7 @@ import os
 from crawler.manual_quota import exclusive_control_lock
 
 AUTOMATIC_QUOTA_KIND_ENV = "CRAWLER_AUTOMATIC_QUOTA_KIND"
+AUTOMATIC_QUOTA_DATE_ENV = "CRAWLER_AUTOMATIC_QUOTA_DATE"
 
 
 class AutomaticQuotaError(RuntimeError):
@@ -20,11 +21,12 @@ class AutomaticQuota:
 
     VALID_KINDS = {"new_list", "active_list", "detail"}
 
-    def __init__(self, kind: str, lane_id: str = ""):
+    def __init__(self, kind: str, lane_id: str = "", *, claim_date: str = ""):
         if kind not in self.VALID_KINDS:
             raise ValueError(f"unsupported automatic quota kind: {kind}")
         self.kind = kind
         self.lane_id = str(lane_id or "")
+        self._claim_date = str(claim_date or "")
 
     @classmethod
     def from_environment(
@@ -33,7 +35,11 @@ class AutomaticQuota:
         lane_id: str = "",
     ) -> "AutomaticQuota | None":
         kind = str(os.environ.get(AUTOMATIC_QUOTA_KIND_ENV, "")).strip()
-        return cls(kind, lane_id=lane_id) if kind else None
+        return cls(
+            kind,
+            lane_id=lane_id,
+            claim_date=os.environ.get(AUTOMATIC_QUOTA_DATE_ENV, "").strip(),
+        ) if kind else None
 
     @staticmethod
     def _scheduler():
@@ -56,6 +62,24 @@ class AutomaticQuota:
                     f"crawler paused until {pause.get('until_text') or 'later'}",
                 )
             quota = scheduler.load_quota()
+            today = str(quota["date"])
+            if not self._claim_date:
+                self._claim_date = today
+            if self._claim_date != today:
+                raise AutomaticQuotaError(
+                    "source_quota_day_changed",
+                    "automatic task belongs to a previous Beijing date",
+                )
+            if (
+                self.kind == "detail"
+                and scheduler.cookie_pool_specs()
+                and scheduler.active_detail_window() is None
+            ):
+                raise AutomaticQuotaError(
+                    "source_quota_window_locked",
+                    f"automatic detail quota locked until "
+                    f"{scheduler.next_detail_window_start().isoformat()}",
+                )
             remaining = scheduler.remaining_budget(
                 self.kind,
                 quota,

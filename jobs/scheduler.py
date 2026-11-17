@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from crawler.automatic_quota import AUTOMATIC_QUOTA_KIND_ENV
+from crawler.automatic_quota import AUTOMATIC_QUOTA_DATE_ENV, AUTOMATIC_QUOTA_KIND_ENV
 from crawler.config import default_cookie_config
 from crawler.cookie_pool import COOKIE_KINDS, CookieLaneSpec, load_cookie_pool_specs
 from crawler.id_ledger import ledger_state, set_ledger_state
@@ -149,10 +149,10 @@ TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 18), TRICKLE_LIMIT_CAP)
 # readable for deployment compatibility, but cookie-pool detail work uses only
 # these two targets and the actual per-lane counter for the current day.
 DETAIL_WINDOW_BATCH_LIMIT = env_int("CRAWLER_DETAIL_WINDOW_BATCH_LIMIT", 25)
-DETAIL_MORNING_START = os.environ.get("CRAWLER_DETAIL_MORNING_START", "02:00")
-DETAIL_MORNING_END = os.environ.get("CRAWLER_DETAIL_MORNING_END", "20:00")
-DETAIL_MORNING_TARGET = 300
-DETAIL_EVENING_START = os.environ.get("CRAWLER_DETAIL_EVENING_START", "20:00")
+DETAIL_MORNING_START = os.environ.get("CRAWLER_DETAIL_MORNING_START", "01:00")
+DETAIL_MORNING_END = os.environ.get("CRAWLER_DETAIL_MORNING_END", "21:00")
+DETAIL_MORNING_TARGET = 400
+DETAIL_EVENING_START = os.environ.get("CRAWLER_DETAIL_EVENING_START", "21:00")
 DETAIL_EVENING_END = os.environ.get("CRAWLER_DETAIL_EVENING_END", "24:00")
 DETAIL_DAILY_TARGET = 500
 HISTORY_TRICKLE_INTERVAL = env_int(
@@ -1952,14 +1952,14 @@ def active_detail_window(
     """Return the active fixed detail window and its daily target.
 
     The production policy intentionally has only two windows: top up each
-    cookie lane to 300 after 02:00, then top up each lane to 500 after 20:00.
+    cookie lane to 400 after 01:00, then top up each lane to 500 after 21:00.
     """
 
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
     minute = at.hour * 60 + at.minute
-    morning_start = _clock_window_minute(DETAIL_MORNING_START, 3 * 60)
-    morning_end = _clock_window_minute(DETAIL_MORNING_END, 20 * 60)
-    evening_start = _clock_window_minute(DETAIL_EVENING_START, 20 * 60)
+    morning_start = _clock_window_minute(DETAIL_MORNING_START, 1 * 60)
+    morning_end = _clock_window_minute(DETAIL_MORNING_END, 21 * 60)
+    evening_start = _clock_window_minute(DETAIL_EVENING_START, 21 * 60)
     evening_end = _clock_window_minute(DETAIL_EVENING_END, 24 * 60)
     if morning_start <= minute < morning_end:
         return "morning", morning_start, morning_end, DETAIL_MORNING_TARGET
@@ -1973,8 +1973,8 @@ def next_detail_window_start(at: datetime | None = None) -> datetime:
 
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
     minute = at.hour * 60 + at.minute
-    morning_start = _clock_window_minute(DETAIL_MORNING_START, 3 * 60)
-    evening_start = _clock_window_minute(DETAIL_EVENING_START, 20 * 60)
+    morning_start = _clock_window_minute(DETAIL_MORNING_START, 1 * 60)
+    evening_start = _clock_window_minute(DETAIL_EVENING_START, 21 * 60)
     if minute < morning_start:
         return at.replace(
             hour=morning_start // 60,
@@ -2161,18 +2161,27 @@ def remaining_budget(
     # can still return rate_limited, which the scheduler handles separately.
     if kind in UNMETERED_LIST_KINDS:
         return 2**31 - 1
-    if kind == "detail" and lane_id and cookie_pool_specs():
-        # The current ID-followup route is governed by the explicit 02:00 and
-        # 20:00 windows.  Do not let the legacy release profile stop the first
-        # 300 calls at the old 04:00 release step.
+    if kind == "detail" and (specs := cookie_pool_specs()):
+        # Pool detail requests never fall back to the legacy release curve:
+        # it can release 5% at midnight while the fixed window is still closed.
         window = active_detail_window()
-        if window is not None:
+        if window is None:
+            return 0
+        if lane_id:
             hard_remaining = max(
                 0,
                 daily_budget("detail", quota, lane_id=lane_id)
                 - _lane_detail_calls(quota, lane_id),
             )
             return min(detail_window_remaining(quota, lane_id), hard_remaining)
+        return sum(
+            max(
+                0,
+                min(window[3], spec.budget("detail"))
+                - _lane_detail_calls(quota, spec.lane_id),
+            )
+            for spec in specs if spec.enabled
+        )
     fraction = (
         detail_quota_release_fraction(lane_id=lane_id)
         if kind == "detail"
@@ -2424,8 +2433,13 @@ def run_job(name: str) -> JobResult:
         child_env[AUTOMATIC_QUOTA_KIND_ENV] = kind
     else:
         child_env.pop(AUTOMATIC_QUOTA_KIND_ENV, None)
+        child_env.pop(AUTOMATIC_QUOTA_DATE_ENV, None)
     run_started_at = beijing_now().isoformat()
     before_date, before_calls = quota_counter_snapshot(kind, lane_id=lane_id)
+    if kind:
+        # A delayed or long-running child must not spend the next day's quota,
+        # even if it survives until the next open detail window.
+        child_env[AUTOMATIC_QUOTA_DATE_ENV] = before_date
     route = job_task_type(name)
     route_note = f" task={route}" if route else ""
     if lane_id:
