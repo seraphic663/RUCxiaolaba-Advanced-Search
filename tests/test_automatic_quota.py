@@ -417,6 +417,26 @@ class AutomaticQuotaTest(unittest.TestCase):
             self.assertEqual(captured["CRAWLER_COOKIE_POOL_LANE"], "new")
             self.assertEqual(captured["CRAWLER_AUTOMATIC_QUOTA_DATE"], "2026-07-11")
 
+    def test_child_keeps_task_date_when_counter_snapshot_crosses_midnight(self):
+        captured = {}
+
+        def snapshot(*_args, **_kwargs):
+            self.now = datetime(2026, 7, 12, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+            return "2026-07-12", 0
+
+        def fake_run(_command, **kwargs):
+            captured.update(kwargs["env"])
+            return Mock(returncode=0, stderr="")
+
+        with (
+            patch.object(scheduler, "job_lane_id", return_value="new"),
+            patch.object(scheduler, "prepare_job", return_value=(["discover-latest"], "")),
+            patch.object(scheduler, "quota_counter_snapshot", side_effect=snapshot),
+            patch.object(scheduler.subprocess, "run", side_effect=fake_run),
+        ):
+            scheduler.run_job("discover_new")
+        self.assertEqual(captured["CRAWLER_AUTOMATIC_QUOTA_DATE"], "2026-07-11")
+
 
 class AdaptiveDetailBudgetTest(unittest.TestCase):
     def setUp(self):
