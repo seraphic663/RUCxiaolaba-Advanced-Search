@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,8 @@ from storage.crawler_metrics import (
 )
 from storage.post_writer import SQLitePostStore
 from crawler.task_routing import (
+    LIST1_DUE_EXIT,
+    LIST_SCAN_ERROR_EXIT,
     TASK_HISTORY_DETAIL,
     TASK_ID_FOLLOWUP,
     TASK_LIST_ACTIVE,
@@ -113,7 +116,7 @@ PARALLEL_LANES_ENABLED = os.environ.get("CRAWLER_PARALLEL_LANES", "0") == "1"
 LANE_WORKER_MODE = os.environ.get("CRAWLER_LANE_WORKER_MODE", "").strip().lower()
 COOKIE_POOL_LANE = os.environ.get("CRAWLER_COOKIE_POOL_LANE", "").strip().lower()
 TRICKLE_SINCE = os.environ.get("CRAWLER_TRICKLE_SINCE", "2026-06-25 00:00:00")
-DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 60 * 60)
+DISCOVER_INTERVAL = env_int("CRAWLER_DISCOVER_INTERVAL", 3 * 60 * 60)
 NEW_DISCOVER_INTERVAL = env_int(
     "CRAWLER_NEW_DISCOVER_INTERVAL",
     60 * 60,
@@ -200,8 +203,8 @@ TRICKLE_MAX_DELAY = max(
     TRICKLE_MIN_DELAY,
     env_float("CRAWLER_TRICKLE_MAX_DELAY", 14.0),
 )
-LIST_PAGE_CAP = 10
-LATEST_REGULAR_PAGE_CAP = 20
+LIST_PAGE_CAP = 18
+LATEST_REGULAR_PAGE_CAP = 6
 DISCOVER_LATEST_REGULAR_PAGES = max(
     1,
     min(
@@ -531,12 +534,13 @@ TRICKLE_JOBS = {
     ],
     "discover_active": [
         "discover-active",
+        "--active-coverage",
         "--since",
         TRICKLE_SINCE,
         "--max-pages",
         str(DISCOVER_ACTIVE_REGULAR_PAGES),
         "--min-pages",
-        "2",
+        str(min(3, DISCOVER_ACTIVE_REGULAR_PAGES)),
         "--no-action-page-threshold",
         "1",
         "--min-delay",
@@ -604,12 +608,21 @@ class JobResult:
     lane_id: str = ""
 
 
+@dataclass(frozen=True)
+class ActiveListRound:
+    round_id: str
+    started_at: float
+    lane_id: str
+    task_date: str
+    since: str
+
+
 OVERDUE_JOB_PRIORITY = {
     "bootstrap_new": 0,
     "trickle_fill": 0,
     "trickle_fill_history": 3,
-    "discover_active": 1,
-    "discover_new": 2,
+    "discover_new": 1,
+    "discover_active": 2,
 }
 
 MONITOR_LIST1_SEED_KEY = "monitor_list1_seed_complete"
@@ -1889,9 +1902,11 @@ def running_heartbeat(job: str):
         worker.join(timeout=max(1.0, HEARTBEAT_INTERVAL + 1.0))
 
 
-def select_next_job(next_run: dict[str, float], now: float) -> str:
+def select_next_job(next_run: dict[str, float], now: float, *, resume_active: bool = False) -> str:
     """Prefer valuable overdue work; otherwise return the earliest future job."""
     overdue = [name for name, due_at in next_run.items() if due_at <= now]
+    if resume_active and "discover_active" in overdue:
+        return "discover_new" if "discover_new" in overdue else "discover_active"
     if overdue:
         return min(
             overdue,
@@ -2060,7 +2075,7 @@ def next_detail_window_after_no_work(finished_at: float) -> float:
     return finished_at + max(60.0, (target - now).total_seconds())
 
 
-def replace_arg(args: list[str], flag: str, value: int) -> list[str]:
+def replace_arg(args: list[str], flag: str, value: int | str) -> list[str]:
     updated = list(args)
     try:
         index = updated.index(flag)
@@ -2098,13 +2113,7 @@ def monitoring_list_args(
     *,
     at: datetime | None = None,
 ) -> list[str]:
-    """Return shallow regular scans and bounded deep scans at night.
-
-    Regular scans rely on the crawler's effective-signal stop condition, so
-    the page cap is a ceiling rather than a fixed number of requests.  The
-    configured deep window intentionally disables that early stop and reads
-    the full bounded page range to recover lower-page activity.
-    """
+    """Apply the rolling cutoff and per-feed bounds to monitoring scans."""
 
     if name not in TRICKLE_JOBS:
         return job_args(name)
@@ -2122,7 +2131,7 @@ def monitoring_list_args(
         min_pages = 1
     else:
         max_pages = DISCOVER_ACTIVE_REGULAR_PAGES
-        min_pages = 2
+        min_pages = min(3, max_pages)
     args = replace_arg(args, "--since", monitoring_since(name, at=at))
     args = replace_arg(args, "--max-pages", max_pages)
     args = replace_arg(args, "--min-pages", min_pages)
@@ -2284,7 +2293,7 @@ def record_failed_crawler_run(
         )
 
 
-def prepare_job(name: str) -> tuple[list[str] | None, str]:
+def prepare_job(name: str, *, lane_id: str | None = None) -> tuple[list[str] | None, str]:
     lock_path = QUOTA_PATH.with_name(QUOTA_PATH.name + ".lock")
     with exclusive_control_lock(lock_path):
         args = monitoring_list_args(name, at=beijing_now())
@@ -2295,13 +2304,15 @@ def prepare_job(name: str) -> tuple[list[str] | None, str]:
             return None, f"cookie_pool_no_lane_for_task={job_task_type(name)}"
         if kind in UNMETERED_LIST_KINDS:
             planned = planned_job_calls(name, args)
-            lane_id = job_lane_id(name)
+            if lane_id is None:
+                lane_id = job_lane_id(name)
             lane_note = f" lane={lane_id}" if lane_id else ""
             return args, (
                 f"{kind}_observation_unmetered{lane_note} planned_max={planned}"
             )
         quota = load_quota()
-        lane_id = job_lane_id(name)
+        if lane_id is None:
+            lane_id = job_lane_id(name)
         if name == "trickle_fill" and lane_id and cookie_pool_specs():
             window = active_detail_window()
             if window is None:
@@ -2378,10 +2389,16 @@ def job_args(name: str) -> list[str]:
     return JOBS[name]
 
 
-def run_job(name: str) -> JobResult:
-    task_date = quota_date()
-    lane_id = job_lane_id(name)
-    args, quota_note = prepare_job(name)
+def run_job(
+    name: str,
+    *,
+    active_round: ActiveListRound | None = None,
+    list1_due_at: float | None = None,
+    list1_coverage: bool = False,
+) -> JobResult:
+    task_date = active_round.task_date if active_round else quota_date()
+    lane_id = active_round.lane_id if active_round else job_lane_id(name)
+    args, quota_note = prepare_job(name, lane_id=lane_id)
     if args is None:
         print(f"[scheduler] skip {name} reason={quota_note}", flush=True)
         deferred_until = 0.0
@@ -2404,6 +2421,13 @@ def run_job(name: str) -> JobResult:
         )
     if quota_note:
         print(f"[scheduler] quota {name} {quota_note}", flush=True)
+    if list1_coverage:
+        args = [*args, "--list1-coverage"]
+    if active_round is not None:
+        args = replace_arg(args, "--since", active_round.since)
+        args.extend(["--active-round-id", active_round.round_id])
+        if list1_due_at is not None:
+            args.extend(["--yield-at-monotonic", str(list1_due_at)])
     command = [
         sys.executable,
         str(ROOT / "crawler_db.py"),
@@ -2482,15 +2506,22 @@ def run_job(name: str) -> JobResult:
         if before_date == after_date
         else max(0, after_calls)
     )
+    yielded = active_round is not None and result.returncode == LIST1_DUE_EXIT
+    scan_error_recorded = name in {"discover_new", "discover_active"} and result.returncode == LIST_SCAN_ERROR_EXIT
+    error_kind = classify_error(stderr)
+    if yielded:
+        error_kind = "list1_due"
+    elif scan_error_recorded:
+        error_kind = "list_scan_error"
     job_result = JobResult(
-        succeeded=result.returncode == 0,
-        error_kind=classify_error(stderr),
+        succeeded=result.returncode == 0 or yielded,
+        error_kind=error_kind,
         stderr=stderr,
         returncode=result.returncode,
         source_calls=source_calls,
         lane_id=lane_id,
     )
-    if not job_result.succeeded:
+    if not job_result.succeeded and not scan_error_recorded:
         record_failed_crawler_run(
             name=name,
             started_at=run_started_at,
@@ -2597,6 +2628,7 @@ def main() -> int:
         )
 
     last_pause_log: dict[str, float] = {}
+    active_round: ActiveListRound | None = None
     last_heartbeat = 0.0
     last_metrics_snapshot = 0.0
     save_heartbeat(state="started")
@@ -2609,8 +2641,11 @@ def main() -> int:
             if not bootstrap_is_complete():
                 phase = PIPELINE_PHASE_BOOTSTRAP
             sync_pipeline_jobs(phase, next_run, intervals, now)
-        due = select_next_job(next_run, now)
-        pause = active_pause(job_lane_id(due))
+        if "discover_active" not in next_run:
+            active_round = None
+        due = select_next_job(next_run, now, resume_active=active_round is not None)
+        lane = active_round.lane_id if due == "discover_active" and active_round else job_lane_id(due)
+        pause = active_pause(lane)
         if pause:
             until_monotonic = now + max(1.0, float(pause["until"]) - now_wall())
             last_logged = last_pause_log.get(due, 0.0)
@@ -2654,7 +2689,26 @@ def main() -> int:
         last_heartbeat = started_at
         try:
             with running_heartbeat(due):
-                result = run_job(due)
+                if due == "discover_active":
+                    if active_round is None:
+                        round_start = beijing_now()
+                        active_round = ActiveListRound(
+                            uuid.uuid4().hex, started_at, lane,
+                            round_start.date().isoformat(), monitoring_since(due, at=round_start),
+                        )
+                    result = run_job(due, active_round=active_round, list1_due_at=next_run["discover_new"])
+                    if result.error_kind == "list1_due":
+                        # Both jobs are now due. Run list1 once, then resume
+                        # this round with its original cutoff, lane and budget.
+                        print(f"[scheduler] yield discover_active for discover_new round={active_round.round_id}", flush=True)
+                        continue
+                    started_at = active_round.started_at
+                    active_round = None
+                else:
+                    result = run_job(
+                        due,
+                        list1_coverage=TRICKLE_ENABLED and due == "discover_new" and phase == PIPELINE_PHASE_MONITORING,
+                    )
             if result.error_kind == "rate_limited":
                 handle_rate_limit(
                     job=due,
@@ -2763,7 +2817,11 @@ def main() -> int:
                 flush=True,
             )
             save_heartbeat(state="error", job=due, detail=str(exc))
-            next_run[due] = time.monotonic() + 60
+            if due == "discover_active" and active_round is not None:
+                next_run[due] = next_job_run(active_round.started_at, time.monotonic(), intervals[due])
+                active_round = None
+            else:
+                next_run[due] = time.monotonic() + 60
             continue
         finished_at = time.monotonic()
         if due == "trickle_fill" and result.succeeded:
@@ -2779,10 +2837,13 @@ def main() -> int:
                 else intervals[due]
             )
             next_run[due] = next_job_run(started_at, finished_at, retry_delay)
+        outcome = "succeeded" if result.succeeded else "failed"
+        if result.succeeded and due in {"discover_new", "discover_active"}:
+            outcome = "list_scan_finished"
         save_heartbeat(
             state="idle",
             job=due,
-            detail="succeeded" if result.succeeded else "failed",
+            detail=outcome,
         )
         last_heartbeat = finished_at
         last_metrics_snapshot = finished_at

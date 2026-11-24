@@ -32,6 +32,37 @@ class IdLedgerTest(unittest.TestCase):
             "count_trace": 1,
         }
 
+    def test_rolling_back_page_also_rolls_back_events_order_and_checkpoint(self):
+        self.conn.commit()
+        articles = [self.article(str(i)) for i in range(20)]
+
+        def record():
+            record_list_page(self.conn, run_id="batch", endpoint="lists2", page=1, articles=articles)
+            set_ledger_state(self.conn, "test_page_checkpoint", "1")
+
+        record()
+        self.conn.rollback()
+        for table in ("post_id_ledger", "list2_observation_log", "ledger_state"):
+            self.assertEqual(self.conn.execute(f"select count(*) from {table}").fetchone()[0], 0)
+        record()
+        orders = self.conn.execute("select discovery_order from post_id_ledger order by discovery_order")
+        self.assertEqual([r[0] for r in orders], list(range(1, 21)))
+
+    def test_first_written_detail_yield_belongs_to_latest_event_only(self):
+        for count in (1, 2):
+            record_list_page(self.conn, run_id="monitor", endpoint="lists2", page=count,
+                             articles=[self.article("21", comments=count)])
+        mark_detail_finished(self.conn, "21", status="blocked")
+        mark_detail_finished(self.conn, "21", status="partial", added_comment_rows=0)
+        mark_detail_finished(self.conn, "21", status="succeeded", added_comment_rows=3)
+        record_list_page(self.conn, run_id="monitor-2", endpoint="lists2", page=12,
+                         articles=[self.article("21", comments=5)])
+        mark_detail_finished(self.conn, "21", status="succeeded", added_comment_rows=2)
+        events = self.conn.execute(
+            "select page, first_detail_new_comment_rows from list2_observation_log order by observation_id"
+        )
+        self.assertEqual([tuple(r) for r in events], [(1, None), (2, 0), (12, 2)])
+
     def test_list1_records_first_source_page_rank_and_stable_replay(self):
         articles = [self.article("10"), self.article("9", update="2026-08-12 00:30:00")]
         first = record_list_page(

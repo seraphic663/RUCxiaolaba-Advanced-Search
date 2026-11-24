@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from crawler.cli import build_parser
+from crawler.task_routing import LIST1_DUE_EXIT, LIST_SCAN_ERROR_EXIT
 from jobs.scheduler import (
     classify_error,
     job_args,
@@ -166,7 +167,7 @@ class CLIContractTest(unittest.TestCase):
             14,
         )
 
-    def test_scheduler_prioritizes_overdue_details_then_active_then_new(self):
+    def test_scheduler_runs_overdue_list1_before_starting_list2(self):
         next_run = {
             "discover_new": 10.0,
             "discover_active": 20.0,
@@ -178,9 +179,46 @@ class CLIContractTest(unittest.TestCase):
                 {"discover_new": 10.0, "discover_active": 20.0},
                 40.0,
             ),
-            "discover_active",
+            "discover_new",
         )
         self.assertEqual(select_next_job(next_run, 5.0), "discover_new")
+
+    def test_yielded_list2_runs_after_due_list1_with_no_detail_in_between(self):
+        due = {"discover_new": 10.0, "discover_active": 5.0, "trickle_fill": 20.0}
+        self.assertEqual(select_next_job(due, 30.0, resume_active=True), "discover_new")
+        due["discover_new"] += 3600.0
+        self.assertEqual(select_next_job(due, 100.0, resume_active=True), "discover_active")
+
+    def test_only_checkpointed_scheduler_list2_uses_yield_exit_code(self):
+        parser = build_parser()
+        with patch("crawler.cli._service") as service:
+            discover = service.return_value.discover_queue
+            discover.return_value = {"stop_reason": "list1_due"}
+            args = parser.parse_args([
+                "discover-active", "--since", "2026-11-21", "--active-coverage",
+                "--active-round-id", "round123", "--yield-at-monotonic", "42",
+            ])
+            self.assertEqual(args.func(args), LIST1_DUE_EXIT)
+            kwargs = discover.call_args.kwargs
+            self.assertTrue(kwargs["active_coverage"])
+            self.assertEqual(kwargs["active_round_id"], "round123")
+            self.assertEqual(kwargs["yield_at_monotonic"], 42.0)
+            manual = parser.parse_args(["discover-active", "--since", "2026-11-21"])
+            self.assertEqual(manual.func(manual), 0)
+            self.assertFalse(discover.call_args.kwargs["active_coverage"])
+            self.assertIsNone(discover.call_args.kwargs["yield_at_monotonic"])
+
+    def test_list1_coverage_is_opt_in_and_preserves_recorded_scan_error(self):
+        parser = build_parser()
+        with patch("crawler.cli._service") as service:
+            discover = service.return_value.discover_queue
+            discover.return_value = {"errors": 1}
+            manual = parser.parse_args(["discover-latest", "--since", "2026-11-21"])
+            self.assertEqual(manual.func(manual), 0)
+            self.assertFalse(discover.call_args.kwargs["list1_coverage_enabled"])
+            monitored = parser.parse_args(["discover-latest", "--since", "2026-11-21", "--list1-coverage"])
+            self.assertEqual(monitored.func(monitored), LIST_SCAN_ERROR_EXIT)
+            self.assertTrue(discover.call_args.kwargs["list1_coverage_enabled"])
 
     def test_scheduler_interval_is_measured_start_to_start(self):
         self.assertEqual(next_job_run(100.0, 340.0, 600.0), 700.0)

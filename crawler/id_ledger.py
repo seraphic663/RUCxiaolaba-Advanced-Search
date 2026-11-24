@@ -59,7 +59,7 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 def ensure_ledger_schema(conn: sqlite3.Connection) -> None:
     """Create or migrate the ledger without committing the caller's transaction."""
 
-    conn.executescript(
+    conn.execute(
         """
         create table if not exists post_id_ledger (
             post_id text primary key,
@@ -96,8 +96,11 @@ def ensure_ledger_schema(conn: sqlite3.Connection) -> None:
             bootstrap_run_id text not null default '',
             bootstrap_rank integer,
             updated_at text not null
-        );
-
+        )
+        """
+    )
+    conn.execute(
+        """
         create table if not exists list2_observation_log (
             observation_id integer primary key autoincrement,
             post_id text not null,
@@ -110,9 +113,13 @@ def ensure_ledger_schema(conn: sqlite3.Connection) -> None:
             detail_attempted integer not null default 0,
             detail_result text not null default '',
             detail_at text not null default '',
+            first_detail_new_comment_rows integer,
             unique(post_id, event_key)
-        );
-
+        )
+        """
+    )
+    conn.execute(
+        """
         create table if not exists ledger_state (
             key text primary key,
             value text not null,
@@ -134,15 +141,20 @@ def ensure_ledger_schema(conn: sqlite3.Connection) -> None:
         if name not in ledger_columns:
             conn.execute(ddl)
 
-    conn.executescript(
-        """
-        create index if not exists idx_post_id_ledger_detail
-            on post_id_ledger(needs_detail, detail_status, next_detail_at);
-        create index if not exists idx_post_id_ledger_lists2
-            on post_id_ledger(last_lists2_seen_at, source_update_time);
-        create index if not exists idx_list2_observation_run
-            on list2_observation_log(run_id, page, observed_at);
-        """
+    if "first_detail_new_comment_rows" not in _columns(conn, "list2_observation_log"):
+        conn.execute("alter table list2_observation_log add column first_detail_new_comment_rows integer")
+
+    conn.execute(
+        "create index if not exists idx_post_id_ledger_detail "
+        "on post_id_ledger(needs_detail, detail_status, next_detail_at)"
+    )
+    conn.execute(
+        "create index if not exists idx_post_id_ledger_lists2 "
+        "on post_id_ledger(last_lists2_seen_at, source_update_time)"
+    )
+    conn.execute(
+        "create index if not exists idx_list2_observation_run "
+        "on list2_observation_log(run_id, page, observed_at)"
     )
 
 
@@ -189,6 +201,7 @@ def record_list_page(
         "source_create_time_max": "",
     }
     current = str(observed_at or now_iso())
+    last_new_order = None
     for position, article in enumerate(articles):
         if not isinstance(article, dict):
             continue
@@ -202,10 +215,10 @@ def record_list_page(
         was_known = row is not None
         discovery_order = safe_int(_row_value(row, "discovery_order", 0))
         if not was_known:
-            discovery_order = safe_int(
-                ledger_state(conn, "discovery_order", default="0")
-            ) + 1
-            set_ledger_state(conn, "discovery_order", str(discovery_order))
+            if last_new_order is None:
+                last_new_order = safe_int(ledger_state(conn, "discovery_order", default="0"))
+            last_new_order += 1
+            discovery_order = last_new_order
         old_update = str(_row_value(row, "source_update_time", "") or "")
         old_count = safe_int(_row_value(row, "source_comment_count", 0))
         old_status = str(_row_value(row, "detail_status", "never") or "never")
@@ -362,6 +375,8 @@ def record_list_page(
                 params,
             )
 
+    if last_new_order is not None:
+        set_ledger_state(conn, "discovery_order", str(last_new_order))
     return stats
 
 
@@ -401,6 +416,7 @@ def mark_detail_finished(
     comment_count: int = 0,
     source_update_time: str = "",
     error: str = "",
+    added_comment_rows: int | None = None,
 ) -> None:
     """Record one detail outcome and attach it to the latest list2 event."""
 
@@ -470,12 +486,13 @@ def mark_detail_finished(
     conn.execute(
         """
         update list2_observation_log
-        set detail_attempted=1, detail_result=?, detail_at=?
+        set detail_attempted=1, detail_result=?, detail_at=?,
+            first_detail_new_comment_rows=coalesce(first_detail_new_comment_rows, ?)
         where observation_id=(
             select max(observation_id) from list2_observation_log where post_id=?
         )
         """,
-        (normalized, now, str(post_id)),
+        (normalized, now, added_comment_rows, str(post_id)),
     )
 
 

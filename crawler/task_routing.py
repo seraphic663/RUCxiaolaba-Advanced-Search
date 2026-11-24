@@ -12,6 +12,8 @@ TASK_LIST_NEW = "list_new"
 TASK_LIST_ACTIVE = "list_active"
 TASK_ID_FOLLOWUP = "id_followup"
 TASK_HISTORY_DETAIL = "history_detail"
+LIST1_DUE_EXIT = 75  # The active-list child checkpointed and released its lock.
+LIST_SCAN_ERROR_EXIT = 74  # The child already persisted this failed list scan.
 
 TASK_TYPES = (
     TASK_LIST_NEW,

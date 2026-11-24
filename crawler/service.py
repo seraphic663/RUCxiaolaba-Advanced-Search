@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from crawler.active_coverage import ActiveCoverage
 from crawler.client import MiniProgramClient
 from crawler.cookie_pool import CookiePoolClient
 from crawler.detail_pipeline import parse_detail_payload
@@ -24,6 +25,7 @@ from crawler.id_ledger import (
     record_list_page,
     set_ledger_state,
 )
+from crawler.list_coverage import List1Coverage
 from crawler.lock import database_write_lock
 from crawler.strategies.page_scan import PageScanProgress
 from crawler.task_routing import (
@@ -271,6 +273,10 @@ class CrawlerService:
         dry_run: bool = False,
         write_stubs: bool = True,
         bootstrap: bool = False,
+        list1_coverage_enabled: bool = False,
+        active_coverage: bool = False,
+        active_round_id: str = "",
+        yield_at_monotonic: float | None = None,
         min_delay: float = 0.1,
         max_delay: float = 0.3,
     ) -> dict:
@@ -329,6 +335,11 @@ class CrawlerService:
                 else:
                     store.ensure_runtime_schema()
                 bootstrap_target_page = max(1, int(max_pages)) if bootstrap else 0
+                list1_coverage = (
+                    List1Coverage(store.conn)
+                    if list1_coverage_enabled and endpoint == "lists" and not bootstrap and not dry_run
+                    else None
+                )
                 bootstrap_start_page = 1
                 if bootstrap and not dry_run:
                     stored_next_page = safe_int(
@@ -360,12 +371,13 @@ class CrawlerService:
                             "1",
                         )
                         stats["bootstrap_complete"] = True
-                baseline_ready = ledger_state(
+                baseline_marker = ledger_state(
                     store.conn,
                     "lists2_baseline_ready",
-                    default="0",
-                ) in {"1", "true", '"1"', '"true"'}
-                if not baseline_ready:
+                    default="",
+                )
+                baseline_ready = baseline_marker in {"1", "true", '"1"', '"true"'}
+                if not baseline_ready and (not active_coverage or not baseline_marker):
                     baseline_ready = bool(
                         store.conn.execute(
                             "select 1 from list2_observation_log limit 1"
@@ -374,11 +386,22 @@ class CrawlerService:
                 list2_baseline = endpoint == "lists2" and not baseline_ready
                 stats["ledger_baseline"] = bool(list2_baseline)
                 ledger_run_id = f"{command}:{run_started_at}"
+                active = (
+                    ActiveCoverage(store, active_round_id or ledger_run_id, max_pages,
+                                   baseline=list2_baseline, dry_run=dry_run)
+                    if active_coverage and endpoint == "lists2" and not bootstrap else None
+                )
+                if active:
+                    if active_round_id:
+                        ledger_run_id = f"{command}:{active_round_id}"
+                    list2_baseline = stats["ledger_baseline"] = active.saved["baseline"]
+                    if list2_baseline and not baseline_marker and not dry_run:
+                        set_ledger_state(store.conn, "lists2_baseline_ready", "0")
                 queue_before = store.crawler_queue_pending_snapshot()
                 self.add_queue_snapshot(stats, before=queue_before)
                 page_start = bootstrap_start_page if bootstrap else 1
                 page_end = bootstrap_target_page if bootstrap else max_pages
-                for page in range(page_start, page_end + 1):
+                for page in (active.pages() if active else range(page_start, page_end + 1)):
                     time.sleep(random.uniform(min_delay, max_delay))
                     data, error = self._list_page(
                         client,
@@ -388,20 +411,51 @@ class CrawlerService:
                     )
                     if error:
                         if self.is_source_quota_stop(error):
+                            if active:
+                                active.reason = "quota"
                             stats["quota_stop"] = True
                             print(f"[{command}] stop {error}", flush=True)
                             break
                         stats["errors"] += 1
                         print(f"[{command}] page={page} err={error}", flush=True)
                         if error == "cookie_expired" or self.is_rate_limited(error):
+                            if active:
+                                active.finish("blocked", stats)
+                                if not dry_run:
+                                    store.conn.commit()
                             raise RuntimeError(error)
+                        if active:
+                            active.reason = "error"
+                            break
+                        if list1_coverage:
+                            # Skipping a page would join two discontinuous intervals.
+                            break
                         continue
+                    if (active or list1_coverage) and (
+                        not isinstance(data, dict) or not isinstance(data.get("list"), list)
+                    ):
+                        if active:
+                            active.reason = "invalid_page"
+                        stats["errors"] += 1
+                        break
                     articles = data.get("list", []) if data else []
                     if not articles:
+                        if active:
+                            if active.rechecking and active.saved["calls"] < active.limit:
+                                active.restart_at_head()
+                                continue
+                            active.reason = "resume_gap" if active.rechecking else "empty"
                         print(f"[{command}] page={page} empty stop", flush=True)
                         break
+                    if (active or list1_coverage) and not all(
+                        isinstance(a, dict) and a.get("id") for a in articles
+                    ):
+                        if active:
+                            active.reason = "invalid_page"
+                        stats["errors"] += 1
+                        break
                     signature = self.page_signature(articles)
-                    if stop_on_repeat and not bootstrap and signature in seen_signatures:
+                    if not active and stop_on_repeat and not bootstrap and signature in seen_signatures:
                         stats["repeat_stop"] = True
                         print(
                             f"[{command}] page={page} repeats page="
@@ -413,6 +467,7 @@ class CrawlerService:
                     stats["pages"] += 1
                     stats["seen"] += len(articles)
                     ledger_page = {}
+                    active_signals = active.signals(articles) if active else None
                     if not dry_run:
                         ledger_page = record_list_page(
                             store.conn,
@@ -580,13 +635,21 @@ class CrawlerService:
                             retained_ids.add(post_id)
                             stats["retained_ids"] = len(retained_ids)
                     if not dry_run:
+                        if list1_coverage and not list1_coverage.observe(page, articles, max_pages):
+                            # The stored IDs remain useful, but an undated
+                            # page cannot establish a continuous coverage range.
+                            stats["errors"] += 1
+                            stats["list1_invalid_time"] = True
                         if bootstrap:
                             set_ledger_state(
                                 store.conn,
                                 "lists_bootstrap_next_page",
                                 str(page + 1),
                             )
-                        store.conn.commit()
+                        if not active:
+                            store.conn.commit()
+                        if stats.get("list1_invalid_time"):
+                            break
                     if endpoint == "lists":
                         page_has_effective_signal = bool(
                             safe_int(ledger_page.get("source_change_signals")) > 0
@@ -620,6 +683,29 @@ class CrawlerService:
                         f"ledger_events={safe_int(ledger_page.get('new_events'))}",
                         flush=True,
                     )
+                    if active:
+                        reason = active.observe(articles, active_signals, safe_int(ledger_page.get("new_events")),
+                                                stop_on_repeat=stop_on_repeat)
+                        if not dry_run:
+                            store.conn.commit()
+                        if reason:
+                            active.reason = reason
+                            stats["repeat_stop"] = reason == "repeat"
+                            stats["no_action_stop"] = reason == "overlap"
+                            break
+                        if (active.saved["calls"] < active.limit and yield_at_monotonic is not None
+                                and time.monotonic() >= yield_at_monotonic):
+                            active.reason = "list1_due"
+                            break
+                        continue
+                    if (
+                        list1_coverage
+                        and page >= min_pages
+                        and list1_coverage.overlap
+                        and not list1_coverage.needs_another_page()
+                    ):
+                        stats["list1_overlap_stop"] = True
+                        break
                     if (
                         endpoint in {"lists", "lists2"}
                         and old_pages >= old_page_threshold
@@ -634,6 +720,7 @@ class CrawlerService:
                         page >= min_pages
                         and no_action_page_threshold > 0
                         and no_action_pages >= no_action_page_threshold
+                        and not (list1_coverage and list1_coverage.needs_another_page())
                     ):
                         stats["no_action_stop"] = True
                         print(
@@ -641,10 +728,13 @@ class CrawlerService:
                             flush=True,
                         )
                         break
+                if active:
+                    active.finish(active.reason, stats)
                 if (
                     endpoint == "lists2"
                     and not dry_run
                     and not stats["quota_stop"]
+                    and (not active or active.reason in {"empty", "overlap", "cap", "repeat"})
                     and stats["pages"] > 0
                 ):
                     set_ledger_state(store.conn, "lists2_baseline_ready", "1")
@@ -668,6 +758,8 @@ class CrawlerService:
                             "1",
                         )
                         stats["bootstrap_complete"] = True
+                if list1_coverage:
+                    stats.update(list1_coverage.report())
                 queue_after = store.crawler_queue_pending_snapshot()
                 self.add_queue_snapshot(
                     stats,
@@ -982,6 +1074,7 @@ class CrawlerService:
                                         partial["after_comment_rows"]
                                     ),
                                     error=error,
+                                    added_comment_rows=safe_int(partial["added_comment_rows"]),
                                 )
                                 if error.endswith("empty_content"):
                                     status = store.defer_crawler_queue_failure(
@@ -1100,10 +1193,17 @@ class CrawlerService:
                         )
                     else:
                         store.upsert_post(post, comments, commit=False)
+                        after_rows = safe_int(
+                            store.conn.execute(
+                                "select count(*) from comments where post_id=?",
+                                (post_id,),
+                            ).fetchone()[0]
+                        )
                         mark_detail_finished(
                             store.conn,
                             post_id,
                             status="succeeded",
+                            added_comment_rows=max(0, after_rows - before_rows),
                             comment_count=safe_int(post["comment_count"]),
                             source_update_time=str(
                                 post.get("list_update_time")
@@ -1128,12 +1228,6 @@ class CrawlerService:
                         elif queue_status == "deferred":
                             stats["deferred_observations"] += 1
                         store.conn.commit()
-                        after_rows = safe_int(
-                            store.conn.execute(
-                                "select count(*) from comments where post_id=?",
-                                (post_id,),
-                            ).fetchone()[0]
-                        )
                         after_comment_media_rows = safe_int(
                             store.conn.execute(
                                 """

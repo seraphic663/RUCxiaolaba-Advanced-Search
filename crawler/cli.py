@@ -15,6 +15,8 @@ from crawler.config import (
 from crawler.normalizer import normalize_detail
 from crawler.service import CrawlerService
 from crawler.task_routing import (
+    LIST1_DUE_EXIT,
+    LIST_SCAN_ERROR_EXIT,
     TASK_HISTORY_DETAIL,
     TASK_ID_FOLLOWUP,
     TASK_TYPES,
@@ -93,7 +95,10 @@ def command_incremental(args) -> int:
 
 
 def command_discover(args) -> int:
-    _service(args).discover_queue(
+    round_id = getattr(args, "active_round_id", "")
+    list1_coverage = getattr(args, "list1_coverage_enabled", False)
+    active_coverage = getattr(args, "active_coverage", False)
+    stats = _service(args).discover_queue(
         command=args.command,
         endpoint=args.endpoint,
         since=args.since,
@@ -105,9 +110,17 @@ def command_discover(args) -> int:
         dry_run=args.dry_run,
         write_stubs=not args.no_write_stubs,
         bootstrap=args.bootstrap,
+        list1_coverage_enabled=list1_coverage,
+        active_coverage=active_coverage,
+        active_round_id=round_id,
+        yield_at_monotonic=getattr(args, "yield_at_monotonic", None),
         min_delay=args.min_delay,
         max_delay=args.max_delay,
     )
+    if round_id and stats.get("stop_reason") == "list1_due":
+        return LIST1_DUE_EXIT
+    if (list1_coverage or active_coverage) and stats.get("errors"):
+        return LIST_SCAN_ERROR_EXIT
     return 0
 
 
@@ -280,6 +293,8 @@ def build_parser() -> argparse.ArgumentParser:
         canonical_command="discover-latest",
     )
     discover_latest.add_argument("--since", required=True)
+    discover_latest.add_argument("--list1-coverage", dest="list1_coverage_enabled",
+                                 action="store_true", help="track overlap and gaps between new-post scans")
     discover_latest.add_argument("--max-pages", type=int, default=180)
     discover_latest.add_argument("--old-page-threshold", type=int, default=5)
     discover_latest.add_argument("--min-pages", type=int, default=2)
@@ -306,6 +321,10 @@ def build_parser() -> argparse.ArgumentParser:
         canonical_command="discover-active",
     )
     discover_active.add_argument("--since", required=True)
+    discover_active.add_argument("--active-coverage", action="store_true",
+                                 help="track overlap with the previous active-list scan")
+    discover_active.add_argument("--active-round-id", default="", help=argparse.SUPPRESS)
+    discover_active.add_argument("--yield-at-monotonic", type=float, help=argparse.SUPPRESS)
     discover_active.add_argument("--max-pages", type=int, default=120)
     discover_active.add_argument("--old-page-threshold", type=int, default=5)
     discover_active.add_argument("--min-pages", type=int, default=2)

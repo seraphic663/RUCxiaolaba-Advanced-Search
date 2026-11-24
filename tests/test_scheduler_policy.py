@@ -7,7 +7,7 @@ import sys
 import unittest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from crawler.cookie_pool import CookieLaneSpec
 from jobs import scheduler
@@ -32,14 +32,15 @@ class SchedulerPolicyTest(unittest.TestCase):
         active = scheduler.job_args("discover_active")
         self.assertEqual(
             int(latest[latest.index("--max-pages") + 1]),
-            20,
+            6,
         )
         self.assertEqual(
             int(active[active.index("--max-pages") + 1]),
-            10,
+            18,
         )
         self.assertEqual(int(latest[latest.index("--min-pages") + 1]), 1)
-        self.assertEqual(int(active[active.index("--min-pages") + 1]), 2)
+        self.assertEqual(int(active[active.index("--min-pages") + 1]), 3)
+        self.assertIn("--active-coverage", active)
         for args in (latest, active):
             self.assertEqual(
                 int(args[args.index("--no-action-page-threshold") + 1]),
@@ -50,7 +51,7 @@ class SchedulerPolicyTest(unittest.TestCase):
         tz = timezone(timedelta(hours=8))
         for hour in (0, 2, 3, 5, 6, 12, 23):
             at = datetime(2026, 8, 21, hour, 0, tzinfo=tz)
-            for job, maximum, minimum in (("discover_new", 20, 1), ("discover_active", 10, 2)):
+            for job, maximum, minimum in (("discover_new", 6, 1), ("discover_active", 18, 3)):
                 with self.subTest(hour=hour, job=job):
                     args = scheduler.monitoring_list_args(job, at=at)
                     self.assertEqual(int(args[args.index("--max-pages") + 1]), maximum)
@@ -85,10 +86,59 @@ class SchedulerPolicyTest(unittest.TestCase):
             scheduler.LIST_OLD_PAGE_THRESHOLD,
         )
 
-    def test_list1_and_list2_share_hourly_cadence(self):
+    def test_hourly_list1_and_three_hour_list2_are_staggered(self):
         self.assertEqual(scheduler.NEW_DISCOVER_INTERVAL, 3600)
-        self.assertEqual(scheduler.ACTIVE_DISCOVER_INTERVAL, 3600)
+        self.assertEqual(scheduler.ACTIVE_DISCOVER_INTERVAL, 10800)
         self.assertEqual(scheduler.ACTIVE_DISCOVER_OFFSET, 1800)
+
+    def test_active_segments_keep_lane_date_cutoff_and_get_a_new_list1_deadline(self):
+        active = scheduler.ActiveListRound("round123", 90.0, "old", "2026-11-24", "2026-11-21 01:00:00")
+        with (
+            patch.object(scheduler, "prepare_job", side_effect=lambda *_args, **_kwargs: (
+                scheduler.job_args("discover_active"), ""
+            )),
+            patch.object(scheduler, "COOKIE_POOL_PATH", "pool.json"),
+            patch.object(scheduler, "quota_counter_snapshot", return_value=("2026-11-24", 0)),
+            patch.object(scheduler.subprocess, "run", side_effect=[
+                Mock(returncode=scheduler.LIST1_DUE_EXIT, stderr=""),
+                Mock(returncode=0, stderr=""),
+            ]) as child,
+            patch.object(scheduler, "record_failed_crawler_run") as failure,
+        ):
+            first = scheduler.run_job("discover_active", active_round=active, list1_due_at=100.0)
+            resumed = scheduler.run_job("discover_active", active_round=active, list1_due_at=3700.0)
+        self.assertTrue(first.succeeded)
+        self.assertEqual(first.error_kind, "list1_due")
+        self.assertTrue(resumed.succeeded)
+        self.assertEqual(resumed.error_kind, "")
+        for call, deadline in zip(child.call_args_list, ("100.0", "3700.0")):
+            args = call.args[0]
+            self.assertEqual(args[args.index("--since") + 1], active.since)
+            self.assertEqual(args[args.index("--yield-at-monotonic") + 1], deadline)
+            self.assertEqual(args[args.index("--active-round-id") + 1], active.round_id)
+            self.assertEqual(call.kwargs["env"]["CRAWLER_COOKIE_POOL_LANE"], active.lane_id)
+            self.assertEqual(call.kwargs["env"]["CRAWLER_AUTOMATIC_QUOTA_DATE"], active.task_date)
+        failure.assert_not_called()
+
+    def test_only_enabled_list1_child_gets_coverage_flag_and_error_is_recorded_once(self):
+        with (
+            patch.object(scheduler, "prepare_job", side_effect=lambda *_args, **_kwargs: (
+                scheduler.job_args("discover_new"), ""
+            )),
+            patch.object(scheduler, "job_lane_id", return_value=""),
+            patch.object(scheduler, "quota_counter_snapshot", return_value=("2026-11-24", 0)),
+            patch.object(scheduler.subprocess, "run", side_effect=[
+                Mock(returncode=0, stderr=""), Mock(returncode=scheduler.LIST_SCAN_ERROR_EXIT, stderr=""),
+            ]) as child,
+            patch.object(scheduler, "record_failed_crawler_run") as failure,
+        ):
+            scheduler.run_job("discover_new")
+            monitored = scheduler.run_job("discover_new", list1_coverage=True)
+        self.assertNotIn("--list1-coverage", child.call_args_list[0].args[0])
+        self.assertIn("--list1-coverage", child.call_args_list[1].args[0])
+        self.assertFalse(monitored.succeeded)
+        self.assertEqual(monitored.error_kind, "list_scan_error")
+        failure.assert_not_called()
 
     def test_new_detail_has_day_and_night_cadence(self):
         tz = timezone(timedelta(hours=8))
@@ -216,8 +266,8 @@ print(json.dumps(pages + [arg(regular, '--no-action-page-threshold')]))
                 bounded = max(1, configured)
                 self.assertEqual(
                     json.loads(result.stdout),
-                    [min(bounded, 20), min(bounded, 10), min(bounded, 20),
-                     min(bounded, 10), 1],
+                    [min(bounded, 6), min(bounded, 18), min(bounded, 6),
+                     min(bounded, 18), 1],
                 )
 
     def test_new_windows_top_up_persisted_counts_without_resetting_them(self):

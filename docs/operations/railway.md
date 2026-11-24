@@ -60,21 +60,21 @@ CRAWLER_PARALLEL_LANES=0
 `CRAWLER_ENABLED=1` 让 `start.sh` 启动后台 scheduler；当前线上推荐同时设置 `CRAWLER_TRICKLE_ENABLED=1`，启用 quota-friendly 模式：
 
 ```text
-discover-latest  当前线上每 3 小时，全天最多 20 页、有效信号不足时提前停
-discover-active  当前线上每 3 小时，和 discover-latest 错开 1 小时；全天最多 10 页、有效信号不足时提前停
+discover-latest  每小时，常规 1–6 页，按上轮新帖头部核对覆盖
+discover-active  每 3 小时，首次错开 30 分钟，常规至少 3 个成功页、每轮最多 18 次请求
 trickle-fill     01:00 起补到各 400，21:00 起补到各 500；每批最多 25 条，三个 cookie lane 分配
 ```
 
-调度器顺序执行任务，并使用 `posts.db.crawler.lock` 防止并发写入。trickle 队列 worker 另外用 owner/token 认领围栏防止租约过期后的旧 worker 覆盖新 worker。列表全天使用同一套提前停止规则，不再设置凌晨强扫窗口；详情在 01:00 和 21:00 固定窗口运行，三个等价 cookie lane 以 25 条小批次分配，直到各自达到当天累计目标。每路 500 是自动详情硬上限，合计 1500；列表和人工调用另外记账。内部 ID `old`/`new` 保留，修改窗口或重启不重置当日计数和暂停。自动任务固定启动日期，跨北京时间零点后旧任务停止领取额度；00:00–01:00 请求级检查严格禁止池模式自动详情。
+调度器串行执行爬虫任务，使用 `posts.db.crawler.lock` 防止并发写入。list2 在页提交后可以让路给到期的 list1，续扫时复核边界。详情在 01:00 和 21:00 开窗，每批最多 25 条，每个 lane 当日累计最多 500 次。跨北京时间零点后旧任务停止领取额度。
 
 主要间隔变量，单位为秒：
 
 ```text
-CRAWLER_NEW_DISCOVER_INTERVAL=10800
+CRAWLER_NEW_DISCOVER_INTERVAL=3600
 CRAWLER_ACTIVE_DISCOVER_INTERVAL=10800
-CRAWLER_ACTIVE_DISCOVER_OFFSET=3600
-CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=20
-CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=10
+CRAWLER_ACTIVE_DISCOVER_OFFSET=1800
+CRAWLER_DISCOVER_LATEST_REGULAR_PAGES=6
+CRAWLER_DISCOVER_ACTIVE_REGULAR_PAGES=18
 CRAWLER_TRICKLE_NEW_LOOKBACK_HOURS=24
 CRAWLER_TRICKLE_FRESH_COVERAGE_HOURS=72
 CRAWLER_LIST_OLD_PAGE_THRESHOLD=1
