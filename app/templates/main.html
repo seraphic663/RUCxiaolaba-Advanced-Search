@@ -313,12 +313,6 @@ function formatTime(t) {
   return t.replace(/^2026-/, '').replace(/-05-/, '/5/').replace(' ', ' ');
 }
 
-function escapeHtml(s) {
-  let d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
 function parseJsonResponse(response) {
   return response.text().then(function(text) {
     var contentType = response.headers.get('content-type') || '';
@@ -334,17 +328,6 @@ function parseJsonResponse(response) {
       throw new Error('服务器返回了无法解析的数据');
     }
   });
-}
-
-function highlightText(text, keywords) {
-  if (!keywords || keywords.length === 0) return escapeHtml(text);
-  let escaped = escapeHtml(text);
-  keywords.forEach(k => {
-    if (!k) return;
-    let re = new RegExp('(' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
-    escaped = escaped.replace(re, '<mark>$1</mark>');
-  });
-  return escaped;
 }
 
 // ===== Truncation =====
@@ -364,7 +347,7 @@ function renderIdentityStatus(item) {
 let _postData = {};       // index -> { fullContent, postId, commentCount }
 let _contentState = {};   // index -> bool (true=expanded, false=collapsed)
 
-function renderPost(post, index, keywords) {
+function renderPost(post, index, highlight) {
   let fullContent = publicAccessPolicy.body_view
     ? (post.content || '')
     : '正文内容暂未向普通访客开放';
@@ -392,7 +375,7 @@ function renderPost(post, index, keywords) {
   let displayText = tc.truncated ? tc.preview : fullContent;
   let contentClick = tc.truncated ? ' onclick="event.stopPropagation(); toggleContent(' + index + ')"' : '';
   let contentHtml = '<div class="post-content' + truncatedClass + '" id="content-' + index + '"' + contentClick + '>' +
-    highlightText(displayText, keywords) +
+    highlight(displayText) +
   '</div>';
 
   // ---- Expand bar (only if truncated) ----
@@ -433,7 +416,7 @@ function toggleContent(index) {
   var data = _postData[index];
   if (!contentEl || !data) return;
 
-  var keywords = currentQuery.split(/\s+/).filter(Boolean);
+  var highlight = createTextHighlighter(currentQuery.split(/\s+/));
   var isCollapsed = contentEl.classList.contains('collapsed');
 
   if (isCollapsed) {
@@ -441,7 +424,7 @@ function toggleContent(index) {
     contentEl.classList.remove('collapsed');
     contentEl.style.maxHeight = 'none';
     contentEl.style.overflow = 'visible';
-    contentEl.innerHTML = highlightText(data.fullContent, keywords);
+    contentEl.innerHTML = highlight(data.fullContent);
     _contentState[index] = true;
 
     // Update button text (don't recreate the element, just change textContent)
@@ -453,7 +436,7 @@ function toggleContent(index) {
     contentEl.classList.add('collapsed');
     contentEl.style.maxHeight = '';
     contentEl.style.overflow = '';
-    contentEl.innerHTML = highlightText(tc.preview, keywords);
+    contentEl.innerHTML = highlight(tc.preview);
     _contentState[index] = false;
 
     var expBtn = document.getElementById('expbtn-' + index);
@@ -509,7 +492,7 @@ function loadComments(index, postId) {
             : '暂无评论';
         wrap.innerHTML = '<div style="color:#999;text-align:center;padding:20px;">' + emptyLabel + '</div>';
       } else {
-        wrap.innerHTML = renderComments(cmts, currentQuery.split(/\s+/).filter(Boolean));
+        wrap.innerHTML = renderComments(cmts, createTextHighlighter(currentQuery.split(/\s+/)));
       }
       _commentsLoaded[index] = true;
     })
@@ -518,7 +501,7 @@ function loadComments(index, postId) {
     });
 }
 
-function renderComments(cmts, keywords) {
+function renderComments(cmts, highlight) {
   var limit = uiSettings.commentLimit || 0;
   var hiddenTopLevel = limit > 0 && cmts.length > limit ? cmts.length - limit : 0;
   var visibleCmts = hiddenTopLevel > 0 ? cmts.slice(0, limit) : cmts;
@@ -527,7 +510,7 @@ function renderComments(cmts, keywords) {
     for (var i = 0; i < items.length; i++) {
       var c = items[i];
       var num = i + 1;
-      var txt = highlightText(c.detail || '', keywords);
+      var txt = highlight(c.detail || '');
       var isOp = c.is_publisher == 1;
       var opTag = isOp ? ' <span class="op-tag">楼主</span>' : '';
       var replyTo = c.reply_show_user_name ? ' → ' + escapeHtml(c.reply_show_user_name) : '';
@@ -670,7 +653,7 @@ function fetchResults() {
     .then(data => {
       paginationMode = data.pagination_mode || 'numbered';
       totalPages = data.total_pages || currentPage;
-      let keywords = currentQuery.split(/\s+/).filter(Boolean);
+      let highlight = createTextHighlighter(currentQuery.split(/\s+/));
 
       if (paginationMode === 'cursor' && !data.total_exact) {
         document.getElementById('count-text').textContent =
@@ -689,7 +672,7 @@ function fetchResults() {
         _postData = {};
         _contentState = {};
         _commentsLoaded = {};
-        resultsEl.innerHTML = data.results.map((p, i) => renderPost(p, i, keywords)).join('');
+        resultsEl.innerHTML = data.results.map((p, i) => renderPost(p, i, highlight)).join('');
       }
 
       resultsEl._pageData = data;

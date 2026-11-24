@@ -1116,6 +1116,8 @@ class SearchRepository:
                 and row["is_publisher"] == 1
                 and post["user_name"]
             ):
+                if admin and item["show_user_name"] != post["user_name"]:
+                    item["original_show_user_name"] = item["show_user_name"] or ""
                 item["show_user_name"] = post["user_name"]
             comment_id = str(row["comment_id"] or "")
             parent_id = str(row["parent_comment_id"] or "")

@@ -440,6 +440,7 @@ class HTTPContractTest(unittest.TestCase):
         self.assertEqual(comments["comment_list"][0]["identity_status"], "anonymous")
         self.assertNotIn("real_user_id", comments["comment_list"][0])
         self.assertEqual(comments["comment_list"][1]["show_user_name"], "某同学")
+        self.assertNotIn("original_show_user_name", comments["comment_list"][1])
 
         _, real_post = self.get_json(f"/api/search?q={quote('食堂')}&limit=10")
         self.assertEqual(real_post["results"][0]["identity_status"], "real")
@@ -568,6 +569,10 @@ class HTTPContractTest(unittest.TestCase):
         with opener.open(self.base + "/api/search?q=" + quote("食堂") + "&admin_required=1", timeout=5) as response:
             self.assertEqual(response.status, 200)
             self.assertIn("results", json.loads(response.read()))
+        with opener.open(self.base + "/api/comments?id=100&admin_required=1", timeout=5) as response:
+            publisher = json.load(response)["comment_list"][1]
+        self.assertEqual(publisher["show_user_name"], "某同学")
+        self.assertEqual(publisher["original_show_user_name"], "随机匿名名")
         with opener.open(self.base + "/admin?logout=1", timeout=5) as response:
             self.assertIn('name="password"', response.read().decode("utf-8"))
         with self.assertRaises(HTTPError) as error:

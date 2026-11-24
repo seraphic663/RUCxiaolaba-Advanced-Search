@@ -24,6 +24,28 @@ window.addEventListener('storage', function(event) {
   updateThemeButton();
 });
 
+function escapeHtml(text) {
+  return String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function createTextHighlighter(keywords, mode = 'contains') {
+  var terms = keywords.filter(Boolean).sort((a, b) => b.length - a.length)
+    .map(word => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  var pattern = '(' + terms.join('|') + ')';
+  if (mode === 'exact') pattern = '^' + pattern + '$';
+  var regex = terms.length ? new RegExp(pattern, 'i') : null;
+
+  return function(text, {hideUnmatched = false} = {}) {
+    var parts = regex ? String(text ?? '').split(regex) : [text];
+    if (parts.length === 1) return hideUnmatched ? '' : escapeHtml(text);
+    return parts.map(function(part, index) {
+      var escaped = escapeHtml(part);
+      return index % 2 ? '<mark>' + escaped + '</mark>' : escaped;
+    }).join('');
+  };
+}
+
 var SETTINGS_KEY = 'rucxlb-ui-settings';
 var DEFAULT_SETTINGS = {
   pageSize: 50,
