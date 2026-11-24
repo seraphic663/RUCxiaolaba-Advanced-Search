@@ -174,7 +174,7 @@ class SchedulerPolicyTest(unittest.TestCase):
         self.assertEqual(scheduler.active_detail_window(morning)[3], 400)
         self.assertEqual(scheduler.active_detail_window(daytime)[0], "morning")
         self.assertEqual(scheduler.active_detail_window(evening)[0], "evening")
-        self.assertEqual(scheduler.active_detail_window(evening)[3], 500)
+        self.assertEqual(scheduler.active_detail_window(evening)[3], 600)
 
         quota = {
             "cookie_lanes": {

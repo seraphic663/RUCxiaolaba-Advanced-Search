@@ -13,7 +13,8 @@
       "daily_budgets": {
         "new_list": 0,
         "active_list": 0,
-        "detail": 500
+        "detail": 600,
+        "total": 600
       }
     },
     {
@@ -29,7 +30,8 @@
       "daily_budgets": {
         "new_list": 0,
         "active_list": 0,
-        "detail": 500
+        "detail": 600,
+        "total": 600
       }
     },
     {
@@ -45,7 +47,8 @@
       "daily_budgets": {
         "new_list": 0,
         "active_list": 0,
-        "detail": 500
+        "detail": 600,
+        "total": 600
       }
     }
   ]

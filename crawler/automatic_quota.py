@@ -62,6 +62,8 @@ class AutomaticQuota:
                     f"crawler paused until {pause.get('until_text') or 'later'}",
                 )
             quota = scheduler.load_quota()
+            if not self.lane_id and scheduler.cookie_pool_budget("total"):
+                raise AutomaticQuotaError("source_quota_lane_required", "combined quota needs a pinned lane")
             today = str(quota["date"])
             if not self._claim_date:
                 self._claim_date = today

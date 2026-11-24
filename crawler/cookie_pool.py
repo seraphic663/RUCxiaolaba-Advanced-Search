@@ -103,6 +103,8 @@ def _parse_budgets(item: dict, lane_id: str) -> dict[str, int]:
             field=f"daily_budgets.{kind}",
             lane_id=lane_id,
         )
+    if "total" in raw:
+        budgets["total"] = _positive_int(raw["total"], field="daily_budgets.total", lane_id=lane_id)
     return budgets
 
 

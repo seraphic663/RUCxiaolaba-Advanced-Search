@@ -18,9 +18,9 @@ Web 和 crawler 保持在同一个 service，SQLite 与 Volume 由该 service �
 /app/data/posts.db
 /app/data/bigram_index.db
 /app/data/symbol_index.db
-/app/data/cookies/cookie_01.txt   # old，500 次自动详情/日
-/app/data/cookies/cookie_02.txt   # new，500 次自动详情/日
-/app/data/cookies/cookie_03.txt   # third，500 次自动详情/日
+/app/data/cookies/cookie_01.txt   # old，600 次自动列表与详情请求/日
+/app/data/cookies/cookie_02.txt   # new，600 次自动列表与详情请求/日
+/app/data/cookies/cookie_03.txt   # third，600 次自动列表与详情请求/日
 /app/data/cookie_pool.json       # 只有相对路径和预算，不含 cookie 值
 ```
 
@@ -62,10 +62,10 @@ CRAWLER_PARALLEL_LANES=0
 ```text
 discover-latest  每小时，常规 1–6 页，按上轮新帖头部核对覆盖
 discover-active  每 3 小时，首次错开 30 分钟，常规至少 3 个成功页、每轮最多 18 次请求
-trickle-fill     01:00 起补到各 400，21:00 起补到各 500；每批最多 25 条，三个 cookie lane 分配
+trickle-fill     01:00 起补到各 400，21:00 起按列表与详情合计补到各 600；每批最多 25 条，三个 cookie lane 分配
 ```
 
-调度器串行执行爬虫任务，使用 `posts.db.crawler.lock` 防止并发写入。list2 在页提交后可以让路给到期的 list1，续扫时复核边界。详情在 01:00 和 21:00 开窗，每批最多 25 条，每个 lane 当日累计最多 500 次。跨北京时间零点后旧任务停止领取额度。
+调度器串行执行爬虫任务，使用 `posts.db.crawler.lock` 防止并发写入。list2 在页提交后可以让路给到期的 list1，续扫时复核边界。详情在 01:00 和 21:00 开窗，每批最多 25 条，每个 lane 当日列表与详情合计最多 600 次。跨北京时间零点后旧任务停止领取额度。
 
 主要间隔变量，单位为秒：
 

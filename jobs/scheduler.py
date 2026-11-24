@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -157,7 +158,8 @@ DETAIL_MORNING_END = os.environ.get("CRAWLER_DETAIL_MORNING_END", "21:00")
 DETAIL_MORNING_TARGET = 400
 DETAIL_EVENING_START = os.environ.get("CRAWLER_DETAIL_EVENING_START", "21:00")
 DETAIL_EVENING_END = os.environ.get("CRAWLER_DETAIL_EVENING_END", "24:00")
-DETAIL_DAILY_TARGET = 500
+DETAIL_DAILY_TARGET = 600
+EVENING_LIST_RESERVE = env_nonnegative_int("CRAWLER_EVENING_LIST_RESERVE", 0)
 HISTORY_TRICKLE_INTERVAL = env_int(
     "CRAWLER_HISTORY_TRICKLE_INTERVAL",
     30 * 60,
@@ -397,6 +399,11 @@ def job_lane_id(name: str) -> str:
     )
     if available:
         matches = available
+    if any(spec.budget("total") for spec in matches):
+        kind = job_budget_kind(name)
+        eligible = [s for s in matches if remaining_budget(kind, quota, lane_id=s.lane_id) > 0]
+        if eligible:
+            matches = eligible
     healthy = [spec for spec in matches if not _lane_is_paused(spec.lane_id)]
     if healthy:
         matches = healthy
@@ -883,15 +890,12 @@ def lane_source_calls(quota: dict, lane_id: str) -> int:
 
 
 def configured_source_budget() -> int:
-    pool_total = sum(
-        value or 0
-        for value in (
-            cookie_pool_budget(kind)
-            for kind in COOKIE_KINDS
+    specs = cookie_pool_specs()
+    if specs:
+        return sum(
+            spec.budget("total") or sum(spec.budget(kind) for kind in COOKIE_KINDS)
+            for spec in specs if spec.enabled
         )
-    )
-    if cookie_pool_specs():
-        return pool_total
     return (
         DAILY_NEW_LIST_BUDGET + DAILY_ACTIVE_LIST_BUDGET + DAILY_DETAIL_BUDGET
     )
@@ -1967,7 +1971,8 @@ def active_detail_window(
     """Return the active fixed detail window and its daily target.
 
     The production policy intentionally has only two windows: top up each
-    cookie lane to 400 after 01:00, then top up each lane to 500 after 21:00.
+    cookie lane to 400 detail calls after 01:00, then use its remaining combined
+    list and detail allowance after 21:00.
     """
 
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
@@ -2023,8 +2028,31 @@ def detail_window_remaining(
     window = active_detail_window(at)
     if window is None or not lane_id:
         return 0
-    target = window[3]
-    return max(0, target - _lane_detail_calls(quota, lane_id))
+    total = cookie_pool_budget("total", lane_id) or 0
+    detail_used = _lane_detail_calls(quota, lane_id)
+    detail_cap = cookie_pool_budget("detail", lane_id)
+    if detail_cap is None:
+        detail_cap = 500
+    if not total:
+        return max(0, min(window[3], 500, detail_cap) - detail_used)
+    reserve = EVENING_LIST_RESERVE if window[0] == "evening" else 0
+    return max(0, min(min(detail_cap, window[3]) - detail_used,
+                      total - lane_source_calls(quota, lane_id) - reserve))
+
+
+def pending_list_reserve(next_run, intervals, now, at):
+    """Protect remaining scheduled list rounds until Beijing midnight."""
+    if at.hour < 21:
+        return 0
+    midnight = (at + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = now + (midnight - at).total_seconds()
+    reserve = 0
+    for job, pages in (("discover_new", DISCOVER_LATEST_REGULAR_PAGES),
+                       ("discover_active", DISCOVER_ACTIVE_REGULAR_PAGES)):
+        due = max(now, next_run.get(job, end))
+        if due < end:
+            reserve += math.ceil((end - due) / max(1, intervals[job])) * pages
+    return reserve
 
 
 def any_detail_window_remaining(
@@ -2165,10 +2193,12 @@ def remaining_budget(
     *,
     lane_id: str = "",
 ) -> int:
-    # List observations remain counted for audit, but do not consume the
-    # detail-only budget or the old all-source pacing wall.  The upstream API
-    # can still return rate_limited, which the scheduler handles separately.
+    # Lists share the explicit per-session total at all times. Legacy pools
+    # without a total retain their previous accounting policy.
     if kind in UNMETERED_LIST_KINDS:
+        total = cookie_pool_budget("total", lane_id) or 0
+        if total and lane_id:
+            return max(0, total - lane_source_calls(quota, lane_id))
         return 2**31 - 1
     if kind == "detail" and (specs := cookie_pool_specs()):
         # Pool detail requests never fall back to the legacy release curve:
@@ -2184,11 +2214,7 @@ def remaining_budget(
             )
             return min(detail_window_remaining(quota, lane_id), hard_remaining)
         return sum(
-            max(
-                0,
-                min(window[3], spec.budget("detail"))
-                - _lane_detail_calls(quota, spec.lane_id),
-            )
+            detail_window_remaining(quota, spec.lane_id)
             for spec in specs if spec.enabled
         )
     fraction = (
@@ -2306,6 +2332,11 @@ def prepare_job(name: str, *, lane_id: str | None = None) -> tuple[list[str] | N
             planned = planned_job_calls(name, args)
             if lane_id is None:
                 lane_id = job_lane_id(name)
+            if lane_id and cookie_pool_budget("total", lane_id):
+                remaining = remaining_budget(kind, load_quota(), lane_id=lane_id)
+                if remaining <= 0:
+                    return None, "lane_total_budget_exhausted"
+                return args, f"{kind} lane={lane_id} total_remaining={remaining} planned_max={planned}"
             lane_note = f" lane={lane_id}" if lane_id else ""
             return args, (
                 f"{kind}_observation_unmetered{lane_note} planned_max={planned}"
@@ -2440,6 +2471,7 @@ def run_job(
     if str(COOKIE_POOL_PATH or "").strip():
         command.extend(["--cookie-pool", COOKIE_POOL_PATH])
     child_env = os.environ.copy()
+    child_env["CRAWLER_EVENING_LIST_RESERVE"] = str(EVENING_LIST_RESERVE)
     child_env["SQLITE_DB"] = DB_PATH
     child_env["CRAWLER_QUOTA_FILE"] = str(QUOTA_PATH)
     child_env["CRAWLER_QUOTA_HISTORY_FILE"] = str(QUOTA_HISTORY_PATH)
@@ -2542,6 +2574,7 @@ def phase1_delay() -> float:
 
 
 def main() -> int:
+    global EVENING_LIST_RESERVE
     if not Path(DB_PATH).exists():
         raise FileNotFoundError(DB_PATH)
     if str(COOKIE_POOL_PATH or "").strip():
@@ -2643,6 +2676,10 @@ def main() -> int:
             sync_pipeline_jobs(phase, next_run, intervals, now)
         if "discover_active" not in next_run:
             active_round = None
+        new_reserve = pending_list_reserve(next_run, intervals, now, beijing_now())
+        if new_reserve < EVENING_LIST_RESERVE and "trickle_fill" in next_run:
+            next_run["trickle_fill"] = min(next_run["trickle_fill"], now)
+        EVENING_LIST_RESERVE = new_reserve
         due = select_next_job(next_run, now, resume_active=active_round is not None)
         lane = active_round.lane_id if due == "discover_active" and active_round else job_lane_id(due)
         pause = active_pause(lane)

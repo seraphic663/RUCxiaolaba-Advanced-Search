@@ -56,7 +56,7 @@ def test_third_lane_shares_detail_windows_and_release_profile(three_lanes):
     specs = load_cookie_pool_specs(three_lanes)
     assert {spec.lane_id for spec in specs} == {"new", "old", "third"}
     assert len({spec.config_path for spec in specs}) == 3
-    assert scheduler.cookie_pool_budget("detail") == 1500
+    assert scheduler.cookie_pool_budget("detail") == 1800
     assert scheduler.detail_quota_release_steps("third") == scheduler.detail_quota_release_steps("new")
     for lane in ("new", "old", "third"):
         assert scheduler.remaining_budget("detail", scheduler.load_quota(), lane_id=lane) == 400
@@ -74,7 +74,7 @@ def test_all_three_lanes_are_selected_by_actual_usage(three_lanes, monkeypatch):
         assert selected == ["new", "old", "third"]
 
 
-def test_three_lanes_stop_at_400_then_500_without_resetting_existing_counts(
+def test_three_lanes_stop_at_400_then_600_combined_without_resetting_counts(
     three_lanes, monkeypatch,
 ):
     quota = scheduler.load_quota()
@@ -85,6 +85,8 @@ def test_three_lanes_stop_at_400_then_500_without_resetting_existing_counts(
         quota["detail_calls"] = prior * 3
         for lane in lanes:
             quota["cookie_lanes"][lane]["detail_calls"] = prior
+            quota["cookie_lanes"][lane]["new_list_calls"] = 40
+            quota["cookie_lanes"][lane]["active_list_calls"] = 60
         scheduler.save_quota(quota)
         for lane in lanes:
             result = AutomaticQuota("detail", lane_id=lane).claim()
@@ -119,9 +121,33 @@ def test_window_planning_respects_lane_hard_cap(three_lanes, monkeypatch):
     assert int(args[args.index("--limit") + 1]) == 5
 
 
+def test_evening_lists_can_spend_reserved_slots_and_unused_slots_return_to_detail(three_lanes, monkeypatch):
+    at = datetime.fromisoformat("2026-11-25T23:15:00+08:00")
+    monkeypatch.setattr(scheduler, "beijing_now", lambda: at)
+    quota = scheduler.load_quota()
+    quota["cookie_lanes"]["old"].update(new_list_calls=37, active_list_calls=26, detail_calls=530)
+    scheduler.save_quota(quota)
+    reserve = scheduler.pending_list_reserve(
+        {"discover_new": 120, "discover_active": 4000},
+        {"discover_new": 3600, "discover_active": 10800}, 0, at)
+    assert reserve == 6
+    monkeypatch.setattr(scheduler, "EVENING_LIST_RESERVE", reserve)
+    detail = AutomaticQuota("detail", lane_id="old")
+    assert detail.claim()["remaining"] == 0
+    with pytest.raises(AutomaticQuotaError, match="exhausted"):
+        detail.claim()
+    AutomaticQuota("new_list", lane_id="old").claim(2)
+    monkeypatch.setattr(scheduler, "EVENING_LIST_RESERVE", 0)
+    assert detail.claim(4)["remaining"] == 0
+    for kind in ("new_list", "active_list", "detail"):
+        with pytest.raises(AutomaticQuotaError, match="exhausted"):
+            AutomaticQuota(kind, lane_id="old").claim()
+    assert scheduler.lane_source_calls(scheduler.load_quota(), "old") == 600
+
+
 @pytest.mark.parametrize("clock,target", [
     ("00:00:00", 0), ("00:59:59", 0), ("01:00:00", 400),
-    ("20:59:59", 400), ("21:00:00", 500), ("23:59:59", 500),
+    ("20:59:59", 400), ("21:00:00", 600), ("23:59:59", 600),
 ])
 def test_fixed_window_boundaries_never_use_legacy_midnight_release(
     three_lanes, monkeypatch, clock, target,
