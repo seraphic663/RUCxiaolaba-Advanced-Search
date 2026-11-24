@@ -79,7 +79,7 @@ def test_three_lanes_stop_at_400_then_600_combined_without_resetting_counts(
 ):
     quota = scheduler.load_quota()
     lanes = ("new", "old", "third")
-    for clock, prior, target in (("01:00", 399, 400), ("21:00", 499, 500)):
+    for clock, prior, target in (("01:00", 399, 400), ("19:00", 499, 500)):
         at = datetime.fromisoformat(f"2026-11-17T{clock}:00+08:00")
         monkeypatch.setattr(scheduler, "beijing_now", lambda: at)
         quota["detail_calls"] = prior * 3
@@ -145,9 +145,20 @@ def test_evening_lists_can_spend_reserved_slots_and_unused_slots_return_to_detai
     assert scheduler.lane_source_calls(scheduler.load_quota(), "old") == 600
 
 
+def test_list_reserve_opens_with_configured_evening_window(monkeypatch):
+    def reserve(clock):
+        at = datetime.fromisoformat(f"2026-11-25T{clock}+08:00")
+        return scheduler.pending_list_reserve({"discover_new": 0}, {"discover_new": 3600}, 0, at)
+
+    assert reserve("18:59:59") == 0
+    assert reserve("19:00:00") == 5 * scheduler.DISCOVER_LATEST_REGULAR_PAGES
+    monkeypatch.setattr(scheduler, "DETAIL_EVENING_START", "20:00")
+    assert reserve("19:30:00") == 0
+
+
 @pytest.mark.parametrize("clock,target", [
     ("00:00:00", 0), ("00:59:59", 0), ("01:00:00", 400),
-    ("20:59:59", 400), ("21:00:00", 600), ("23:59:59", 600),
+    ("18:59:59", 400), ("19:00:00", 600), ("23:59:59", 600),
 ])
 def test_fixed_window_boundaries_never_use_legacy_midnight_release(
     three_lanes, monkeypatch, clock, target,

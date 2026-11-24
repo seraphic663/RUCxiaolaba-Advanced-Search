@@ -147,13 +147,13 @@ list2 的 `update_time` 不能当作严格递减游标：本次扫描中页内�
 
 ## Railway 固定窗口调度
 
-`CRAWLER_ENABLED=1` 时 `start.sh` 启动 `jobs.scheduler`。生产详情调度只有两个窗口：01:00 起将 `new`、`old`、`third` 三个 cookie lane 分别补到当天 400 次详情调用；21:00 起按每路当天列表与详情合计补到 600 次。00:00–01:00 禁止自动详情请求，列表观察仍按原频率运行。
+`CRAWLER_ENABLED=1` 时 `start.sh` 启动 `jobs.scheduler`。生产详情调度只有两个窗口：01:00 起将 `new`、`old`、`third` 三个 cookie lane 分别补到当天 400 次详情调用；19:00 起按每路当天列表与详情合计补到 600 次。00:00–01:00 禁止自动详情请求，列表观察仍按原频率运行。
 
 固定策略：
 
 ```text
 01:00：每个 ID lane 的累计目标是 400（三路共 1200 次）
-21:00 起，详情可用量 = 600 − 已用详情 − 已用两类列表 − 今晚剩余列表预留。
+19:00 起，详情可用量 = 600 − 已用详情 − 已用两类列表 − 今晚剩余列表预留。
 每轮最多补 25，完成一轮后按三路实际调用数分配
 实际补量 = max(0, 窗口目标 - 当天该 lane 实际请求的 detail_calls)
 三个 lane 顺序运行，详情请求保持单请求串行和 8–14 秒间隔
@@ -162,7 +162,7 @@ rate_limited/cookie_expired：立即停止对应 lane，队列保留到下一窗
 
 `CRAWLER_COOKIE_POOL=/app/data/cookie_pool.json` 提供三个 lane 的文件路径和各自 600 次自动请求硬上限；quota 文件只记录实际请求，不做批量预留。重启或中途失败后，下一次窗口按当天实际计数补齐，因此不会因为 scheduler 重启而丢掉可用额度。
 
-当前池配置为 new、old、third 各 `detail=600, total=600`。ID 详情不再按每小时 trickle 或自适应目标运行，而是在两个固定窗口中按各窗口的实际剩余额度补详情；窗口内单轮最多 25 个，三个 lane 按实际调用数分配，priority 0 的新回复仍由队列优先选择。历史详情不属于当前 ID 主线，生产 monitoring 阶段不再单独消耗调度轮次。 21:00 后，按午夜前尚余的 list1/list2 调度轮数乘以每轮页数上限，对每路保守预留列表空间。轮次结束后重新计算并释放余量，午夜结束补量。
+当前池配置为 new、old、third 各 `detail=600, total=600`。ID 详情不再按每小时 trickle 或自适应目标运行，而是在两个固定窗口中按各窗口的实际剩余额度补详情；窗口内单轮最多 25 个，三个 lane 按实际调用数分配，priority 0 的新回复仍由队列优先选择。历史详情不属于当前 ID 主线，生产 monitoring 阶段不再单独消耗调度轮次。 19:00 后，按午夜前尚余的 list1/list2 调度轮数乘以每轮页数上限，对每路保守预留列表空间。轮次结束后重新计算并释放余量，午夜结束补量。
 
 Admin 的预览和详情只记录实际使用次数，不设本地数量或日额度上限；不扣减 new-list、active-list 或自动 detail 主计数，也不受自动详情释放约束。列表观察与自动详情共享每路每日 600 次上限。人工调用仍读取同一个全局 pause；人工计数也会进入 quota history 的真实 `source_calls`，不能在限流分析中漏算。预览支持自定义页数，任务支持任意数量的有效选中帖子；详情任务第一个帖子立即请求，后续帖子继续使用 8–14 秒串行间隔。
 
@@ -174,7 +174,7 @@ Admin 的预览和详情只记录实际使用次数，不设本地数量或日�
 
 预览只写主库旁的 `.admin_crawl.db`，10 分钟后失效，不会写入 `posts`。人工任务也保存在该 sidecar，服务重启后会恢复未完成任务。详情成功后在同一写入路径更新 SQLite FTS、Bigram 和可用的 Symbol sidecar；上游声称有评论却返回空评论、正文为空或社区不匹配时拒绝覆盖旧数据。
 
-scheduler 不再整批预扣额度；子进程在每一次真实 HTTP 请求前原子领取 1 次对应额度。固定窗口决定何时允许 ID 详情，实际补量沿用当天 lane 计数；部署、修改窗口或提前停止都不重置已用额度。例如各已请求 300 次时切换到 400 目标，只各补 100 次，再于 21:00 按三类请求的实际总余量补详情。
+scheduler 不再整批预扣额度；子进程在每一次真实 HTTP 请求前原子领取 1 次对应额度。固定窗口决定何时允许 ID 详情，实际补量沿用当天 lane 计数；部署、修改窗口或提前停止都不重置已用额度。例如各已请求 300 次时切换到 400 目标，只各补 100 次，再于 19:00 按三类请求的实际总余量补详情。
 
 每个自动任务通过 `CRAWLER_AUTOMATIC_QUOTA_DATE` 固定启动时的北京时间日期。跨日后旧任务返回 `source_quota_day_changed`，不会领取新日额度，即使它一直存活到次日 01:00 也必须退出；新任务按新日正常启动。池模式请求级检查也严格使用固定窗口，00:00–01:00 返回 `source_quota_window_locked`，不再回退到旧曲线的凌晨 5% 释放。阻止的请求不发 HTTP、不增加请求计数，已认领但未请求的队列项保留待处理。正常新日记账仍归档前一天的实际用量，然后执行 400 次详情和 600 次自动请求两个累计目标。
 
@@ -194,13 +194,13 @@ CRAWLER_TRICKLE_NEW_LOOKBACK_HOURS=24      # list1 滚动观察窗口
 CRAWLER_TRICKLE_FRESH_COVERAGE_HOURS=72    # list2 滚动观察窗口
 CRAWLER_LIST_OLD_PAGE_THRESHOLD=1          # 兼容模式的旧页停止阈值
 CRAWLER_DETAIL_MORNING_START=01:00
-CRAWLER_DETAIL_MORNING_END=21:00
-CRAWLER_DETAIL_EVENING_START=21:00
+CRAWLER_DETAIL_MORNING_END=19:00
+CRAWLER_DETAIL_EVENING_START=19:00
 CRAWLER_DETAIL_EVENING_END=24:00
-# ID 详情累计目标为 01:00->400 次详情、21:00->600 次自动请求；每轮最多 25
+# ID 详情累计目标为 01:00->400 次详情、19:00->600 次自动请求；每轮最多 25
 ```
 
-首次启动先执行 bootstrap，再进入 `list1_seed` 和 `detail_backfill`。当 ID 队列达到终态后进入 `monitoring`，按上文的覆盖规则监视两类列表。详情在北京时间 01:00 和 21:00 两个窗口补齐，每批最多 25 条。
+首次启动先执行 bootstrap，再进入 `list1_seed` 和 `detail_backfill`。当 ID 队列达到终态后进入 `monitoring`，按上文的覆盖规则监视两类列表。详情在北京时间 01:00 和 19:00 两个窗口补齐，每批最多 25 条。
 
 
 ## 限流、Cookie 失效与暂停

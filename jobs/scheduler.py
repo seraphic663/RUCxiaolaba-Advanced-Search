@@ -154,9 +154,9 @@ TRICKLE_LIMIT = min(env_int("CRAWLER_TRICKLE_LIMIT", 18), TRICKLE_LIMIT_CAP)
 # these two targets and the actual per-lane counter for the current day.
 DETAIL_WINDOW_BATCH_LIMIT = env_int("CRAWLER_DETAIL_WINDOW_BATCH_LIMIT", 25)
 DETAIL_MORNING_START = os.environ.get("CRAWLER_DETAIL_MORNING_START", "01:00")
-DETAIL_MORNING_END = os.environ.get("CRAWLER_DETAIL_MORNING_END", "21:00")
+DETAIL_MORNING_END = os.environ.get("CRAWLER_DETAIL_MORNING_END", "19:00")
 DETAIL_MORNING_TARGET = 400
-DETAIL_EVENING_START = os.environ.get("CRAWLER_DETAIL_EVENING_START", "21:00")
+DETAIL_EVENING_START = os.environ.get("CRAWLER_DETAIL_EVENING_START", "19:00")
 DETAIL_EVENING_END = os.environ.get("CRAWLER_DETAIL_EVENING_END", "24:00")
 DETAIL_DAILY_TARGET = 600
 EVENING_LIST_RESERVE = env_nonnegative_int("CRAWLER_EVENING_LIST_RESERVE", 0)
@@ -1972,14 +1972,14 @@ def active_detail_window(
 
     The production policy intentionally has only two windows: top up each
     cookie lane to 400 detail calls after 01:00, then use its remaining combined
-    list and detail allowance after 21:00.
+    list and detail allowance after 19:00.
     """
 
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
     minute = at.hour * 60 + at.minute
     morning_start = _clock_window_minute(DETAIL_MORNING_START, 1 * 60)
-    morning_end = _clock_window_minute(DETAIL_MORNING_END, 21 * 60)
-    evening_start = _clock_window_minute(DETAIL_EVENING_START, 21 * 60)
+    morning_end = _clock_window_minute(DETAIL_MORNING_END, 19 * 60)
+    evening_start = _clock_window_minute(DETAIL_EVENING_START, 19 * 60)
     evening_end = _clock_window_minute(DETAIL_EVENING_END, 24 * 60)
     if morning_start <= minute < morning_end:
         return "morning", morning_start, morning_end, DETAIL_MORNING_TARGET
@@ -1994,7 +1994,7 @@ def next_detail_window_start(at: datetime | None = None) -> datetime:
     at = at.astimezone(CHINA_TZ) if at else beijing_now()
     minute = at.hour * 60 + at.minute
     morning_start = _clock_window_minute(DETAIL_MORNING_START, 1 * 60)
-    evening_start = _clock_window_minute(DETAIL_EVENING_START, 21 * 60)
+    evening_start = _clock_window_minute(DETAIL_EVENING_START, 19 * 60)
     if minute < morning_start:
         return at.replace(
             hour=morning_start // 60,
@@ -2042,7 +2042,8 @@ def detail_window_remaining(
 
 def pending_list_reserve(next_run, intervals, now, at):
     """Protect remaining scheduled list rounds until Beijing midnight."""
-    if at.hour < 21:
+    window = active_detail_window(at)
+    if window is None or window[0] != "evening":
         return 0
     midnight = (at + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     end = now + (midnight - at).total_seconds()

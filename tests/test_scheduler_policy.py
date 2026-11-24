@@ -168,7 +168,7 @@ class SchedulerPolicyTest(unittest.TestCase):
         before = datetime(2026, 8, 21, 0, 59, tzinfo=tz)
         morning = datetime(2026, 8, 21, 1, 0, tzinfo=tz)
         daytime = datetime(2026, 8, 21, 12, 0, tzinfo=tz)
-        evening = datetime(2026, 8, 21, 21, 0, tzinfo=tz)
+        evening = datetime(2026, 8, 21, 19, 0, tzinfo=tz)
         self.assertIsNone(scheduler.active_detail_window(before))
         self.assertEqual(scheduler.active_detail_window(morning)[0], "morning")
         self.assertEqual(scheduler.active_detail_window(morning)[3], 400)
@@ -196,7 +196,7 @@ class SchedulerPolicyTest(unittest.TestCase):
         )
         self.assertEqual(
             scheduler.next_detail_window_start(daytime),
-            daytime.replace(hour=21, minute=0, second=0, microsecond=0),
+            daytime.replace(hour=19, minute=0, second=0, microsecond=0),
         )
         self.assertEqual(
             scheduler.next_detail_window_start(before),
@@ -278,8 +278,8 @@ print(json.dumps(pages + [arg(regular, '--no-action-page-threshold')]))
                 "old": {"detail_calls": 250},
             }
         }
-        before_evening = datetime(2026, 10, 27, 20, 59, tzinfo=tz)
-        evening = datetime(2026, 10, 27, 21, 0, tzinfo=tz)
+        before_evening = datetime(2026, 10, 27, 18, 59, tzinfo=tz)
+        evening = datetime(2026, 10, 27, 19, 0, tzinfo=tz)
         midnight = datetime(2026, 10, 28, 0, 0, tzinfo=tz)
         for lane in ("new", "old"):
             self.assertEqual(
